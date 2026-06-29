@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import sys
 from contextlib import contextmanager
@@ -13,9 +14,32 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def dumps(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+SECRET_QUERY_RE = re.compile(r"(?i)([?&](?:key|api_key|token|access_token|auth|authorization)=)[^&\s''\"<>]+")
+API_KEY_RE = re.compile(r"\b(?:AIza|AQ\.)[A-Za-z0-9_-]{12,}\b")
+BEARER_RE = re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._~+/=-]{16,}")
 
+
+def redact_string(value: str) -> str:
+    value = SECRET_QUERY_RE.sub(r"\1[redacted]", value)
+    value = API_KEY_RE.sub("[redacted-api-key]", value)
+    value = BEARER_RE.sub(r"\1[redacted]", value)
+    return value
+
+
+def redact_secrets(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_string(value)
+    if isinstance(value, list):
+        return [redact_secrets(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_secrets(item) for item in value)
+    if isinstance(value, dict):
+        return {key: redact_secrets(item) for key, item in value.items()}
+    return value
+
+
+def dumps(value: Any) -> str:
+    return json.dumps(redact_secrets(value), ensure_ascii=False, sort_keys=True)
 
 def loads(value: str | None, default: Any = None) -> Any:
     if not value:
@@ -198,7 +222,7 @@ class Database:
         if not fields:
             return
         assignments = ", ".join(f"{key}=?" for key in fields)
-        values = [dumps(value) if key.endswith("_json") else value for key, value in fields.items()]
+        values = [dumps(value) if key.endswith("_json") else redact_secrets(value) for key, value in fields.items()]
         with self.connect() as conn:
             conn.execute(f"UPDATE runs SET {assignments} WHERE id=?", [*values, run_id])
 
@@ -216,6 +240,8 @@ class Database:
 
     def add_log(self, run_id: int, level: str, message: str, meta: Any | None = None) -> None:
         timestamp = utc_now()
+        message = redact_string(message)
+        meta = redact_secrets(meta)
         meta_text = f" | {dumps(meta)}" if meta is not None else ""
         try:
             print(f"[{timestamp}] run={run_id} {level.upper()} {message}{meta_text}", flush=True)
@@ -375,13 +401,13 @@ class Database:
                 (run_id, limit),
             ).fetchall()
             return [
-                repair_mojibake({
+                redact_secrets(repair_mojibake({
                     "id": row["id"],
                     "timestamp": row["timestamp"],
                     "level": row["level"],
                     "message": row["message"],
                     "meta": loads(row["meta_json"], {}),
-                })
+                }))
                 for row in rows
             ]
 
@@ -497,7 +523,7 @@ class Database:
         data = dict(row)
         data["take_screenshots"] = bool(data["take_screenshots"])
         data["methodology"] = loads(data.pop("methodology_json"), [])
-        return repair_mojibake(data)
+        return redact_secrets(repair_mojibake(data))
     def _finding_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
         data["active"] = bool(data["active"])
@@ -506,7 +532,7 @@ class Database:
         data["evidence"] = loads(data.pop("evidence_json"), {})
         data["sources"] = loads(data.pop("sources_json"), [])
         data["reasons"] = loads(data.pop("reasons_json"), [])
-        return repair_mojibake(data)
+        return redact_secrets(repair_mojibake(data))
     def _case_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
         data["archived"] = bool(data["archived"])
@@ -514,4 +540,4 @@ class Database:
         data["sources"] = loads(data.pop("sources_json"), [])
         data["reasons"] = loads(data.pop("reasons_json"), [])
         data["evidence"] = loads(data.pop("evidence_json"), {})
-        return repair_mojibake(data)
+        return redact_secrets(repair_mojibake(data))

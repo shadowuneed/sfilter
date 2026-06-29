@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import hashlib
 import json
@@ -11,11 +11,30 @@ from typing import Any
 import httpx
 
 from app.config import Settings
-from app.database import Database
+from app.database import Database, redact_string
 
 
 class GeminiQuotaError(RuntimeError):
     pass
+
+
+class GeminiAPIError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        key_hash: str | None = None,
+        retryable: bool = False,
+    ):
+        super().__init__(redact_string(message))
+        self.status_code = status_code
+        self.key_hash = key_hash
+        self.retryable = retryable
+
+
+RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+AUTH_STATUS_CODES = {401, 403}
 
 
 class GeminiClient:
@@ -41,8 +60,11 @@ class GeminiClient:
             raise GeminiQuotaError("GEMINI_API_KEYS is empty")
 
         last_error: Exception | None = None
-        attempts = max(1, len(self.settings.gemini_api_keys))
-        for _ in range(attempts):
+        key_count = len(self.settings.gemini_api_keys)
+        attempts = max(key_count * 2, 3)
+        auth_failures = 0
+
+        for attempt in range(attempts):
             api_key, key_hash = self._reserve_key()
             try:
                 return self._request_json(
@@ -53,18 +75,27 @@ class GeminiClient:
                     use_url_context=use_url_context,
                     temperature=temperature,
                 )
-            except httpx.HTTPStatusError as exc:
+            except GeminiAPIError as exc:
                 last_error = exc
-                status = exc.response.status_code
-                if status in {401, 403, 429}:
-                    # Invalid/exhausted project key: try the next configured project key.
+                if exc.status_code == 400:
+                    raise exc
+                if exc.status_code in AUTH_STATUS_CODES:
+                    auth_failures += 1
+                    if auth_failures >= key_count:
+                        raise exc
                     continue
-                if status == 400:
-                    raise
-                continue
+                if not exc.retryable:
+                    raise exc
+                if attempt < attempts - 1:
+                    self._sleep_before_retry(attempt, exc.status_code)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
-                last_error = exc
-                continue
+                last_error = GeminiAPIError(
+                    f"Gemini connection error ({type(exc).__name__}): {redact_string(str(exc))}",
+                    retryable=True,
+                )
+                if attempt < attempts - 1:
+                    self._sleep_before_retry(attempt, None)
+
         if last_error:
             raise last_error
         raise GeminiQuotaError("No Gemini API key has remaining local quota")
@@ -100,8 +131,18 @@ class GeminiClient:
 
         with httpx.Client(timeout=self.settings.gemini_timeout_seconds) as client:
             response = client.post(url, params={"key": api_key}, json=payload)
-            response.raise_for_status()
+
+        if response.status_code >= 400:
+            raise self._response_error(response, key_hash)
+
+        try:
             raw = response.json()
+        except ValueError as exc:
+            raise GeminiAPIError(
+                f"Gemini returned a non-JSON response ({type(exc).__name__})",
+                key_hash=key_hash,
+                retryable=True,
+            ) from None
 
         text = self._extract_text(raw)
         parsed = self._parse_json_text(text)
@@ -112,6 +153,32 @@ class GeminiClient:
             "raw_text_length": len(text),
         }
         return parsed, meta
+
+    def _response_error(self, response: httpx.Response, key_hash: str) -> GeminiAPIError:
+        status = response.status_code
+        reason = response.reason_phrase or "HTTP error"
+        body = redact_string(response.text or "").strip().replace("\n", " ")
+        if len(body) > 360:
+            body = f"{body[:360]}..."
+        message = f"Gemini API {status} {reason} (model={self.settings.gemini_model}, key_hash={key_hash})"
+        if status == 503:
+            message += "; service is temporarily unavailable, retry will use another key if possible"
+        if body:
+            message += f": {body}"
+        return GeminiAPIError(
+            message,
+            status_code=status,
+            key_hash=key_hash,
+            retryable=status in RETRYABLE_STATUS_CODES,
+        )
+
+    @staticmethod
+    def _sleep_before_retry(attempt: int, status_code: int | None) -> None:
+        if attempt < 0:
+            return
+        base = 4 if status_code in {429, 503} else 2
+        delay = min(12, base * (2 ** min(attempt, 2)))
+        time.sleep(delay)
 
     def _reserve_key(self) -> tuple[str, str]:
         with self._lock:
