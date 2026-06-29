@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import threading
 from pathlib import Path
@@ -168,6 +168,14 @@ def update_case(case_id: int, update: CaseUpdate) -> dict[str, Any]:
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     return {"case": case}
+
+
+@app.get("/api/cases/{case_id:int}")
+def get_case(case_id: int) -> dict[str, Any]:
+    case = db.get_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return {"case": case, "findings": db.list_case_findings(case_id)}
 
 
 @app.get("/api/runs/{run_id}/export.csv")

@@ -343,12 +343,28 @@ class Database:
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT f.*, c.id AS case_id, c.status AS case_status, c.saved, c.archived FROM cases c
-                JOIN findings f ON f.id=c.latest_finding_id
+                SELECT f.*, c.id AS case_id, c.status AS case_status, c.saved, c.archived
+                FROM cases c
+                JOIN findings f ON f.normalized_domain=c.normalized_domain
                 WHERE c.id IN ({placeholders})
-                ORDER BY c.saved DESC, c.best_risk_score DESC, c.id DESC
+                ORDER BY c.saved DESC, c.best_risk_score DESC, f.run_id DESC, f.id DESC
                 """,
                 ids,
+            ).fetchall()
+            return [self._finding_to_dict(row) for row in rows]
+
+    def list_case_findings(self, case_id: int) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            case = conn.execute("SELECT normalized_domain FROM cases WHERE id=?", (case_id,)).fetchone()
+            if not case:
+                return []
+            rows = conn.execute(
+                """
+                SELECT * FROM findings
+                WHERE normalized_domain=?
+                ORDER BY run_id DESC, id DESC
+                """,
+                (case["normalized_domain"],),
             ).fetchall()
             return [self._finding_to_dict(row) for row in rows]
 
@@ -382,9 +398,9 @@ class Database:
         where: list[str] = []
         params: list[Any] = []
         if q:
-            where.append("(c.domain LIKE ? OR c.normalized_domain LIKE ? OR f.title LIKE ?)")
+            where.append("(c.domain LIKE ? OR c.normalized_domain LIKE ? OR f.title LIKE ? OR f.final_url LIKE ?)")
             needle = f"%{q}%"
-            params.extend([needle, needle, needle])
+            params.extend([needle, needle, needle, needle])
         if status:
             where.append("c.status=?")
             params.append(status)
@@ -404,9 +420,22 @@ class Database:
                 f"""
                 SELECT c.*, f.url, f.final_url, f.title, f.screenshot_path, f.html_path,
                        f.html_sha256, f.status_code, f.mirror_group, f.sources_json,
-                       f.reasons_json, f.evidence_json, f.created_at AS finding_created_at
+                       f.reasons_json, f.evidence_json, f.created_at AS finding_created_at,
+                       COALESCE(stats.finding_total, 0) AS finding_total,
+                       COALESCE(stats.run_total, 0) AS run_total,
+                       stats.first_run_id,
+                       stats.latest_run_id
                 FROM cases c
                 LEFT JOIN findings f ON f.id=c.latest_finding_id
+                LEFT JOIN (
+                    SELECT normalized_domain,
+                           COUNT(*) AS finding_total,
+                           COUNT(DISTINCT run_id) AS run_total,
+                           MIN(run_id) AS first_run_id,
+                           MAX(run_id) AS latest_run_id
+                    FROM findings
+                    GROUP BY normalized_domain
+                ) stats ON stats.normalized_domain=c.normalized_domain
                 {sql_where}
                 ORDER BY c.saved DESC, c.best_risk_score DESC, c.last_seen DESC
                 LIMIT ?
