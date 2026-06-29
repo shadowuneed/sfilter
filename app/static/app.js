@@ -42,6 +42,10 @@ const els = {
   drawerClose: document.getElementById("drawerClose"),
   drawerTitle: document.getElementById("drawerTitle"),
   caseDetailContent: document.getElementById("caseDetailContent"),
+  aiActivity: document.getElementById("aiActivity"),
+  aiActivityTitle: document.getElementById("aiActivityTitle"),
+  aiActivityText: document.getElementById("aiActivityText"),
+  aiActivityJump: document.getElementById("aiActivityJump"),
 };
 
 const statusLabels = {
@@ -147,6 +151,39 @@ function formatMeta(meta) {
   return parts.length ? ` · ${parts.join(" · ")}` : "";
 }
 
+function showAiActivity(title, text, status = "running") {
+  els.aiActivity.hidden = false;
+  els.aiActivity.className = `ai-activity ${status}`;
+  els.aiActivityTitle.textContent = title;
+  els.aiActivityText.textContent = text || "Argus продолжает проверку...";
+}
+
+function hideAiActivity() {
+  els.aiActivity.hidden = true;
+}
+
+function latestActivityText(logs) {
+  if (!logs || !logs.length) return "Gemini собирает кандидатов и источники...";
+  const last = logs[logs.length - 1];
+  return `${last.message}${formatMeta(last.meta)}`;
+}
+
+function updateAiActivity(run, logs = []) {
+  if (!run || !runningStatus(run.status)) {
+    hideAiActivity();
+    return;
+  }
+  if (run.status === "queued") {
+    showAiActivity("ИИ готовит запуск", "Создаю проверку и подключаю Gemini...", "queued");
+    return;
+  }
+  if (run.status === "canceling") {
+    showAiActivity("Останавливаю проверку", "Даю текущему запросу завершиться и закрываю запуск.", "canceling");
+    return;
+  }
+  showAiActivity("ИИ ищет подозрительные сайты", latestActivityText(logs), "running");
+}
+
 async function loadHealth() {
   try {
     const health = await api("/api/health");
@@ -165,6 +202,7 @@ async function loadHealth() {
 async function startRun() {
   els.runBtn.disabled = true;
   els.runBtn.textContent = "Запускаю...";
+  showAiActivity("ИИ готовит запуск", "Создаю проверку и подключаю Gemini...", "queued");
   try {
     const payload = {
       seed_query: els.seedQuery.value.trim() || null,
@@ -177,6 +215,7 @@ async function startRun() {
     await loadRun(result.run_id, { refreshRegistry: false });
     startPolling();
   } catch (error) {
+    hideAiActivity();
     alert(`Не удалось запустить проверку: ${error.message}`);
   } finally {
     els.runBtn.disabled = false;
@@ -186,6 +225,7 @@ async function startRun() {
 
 async function stopRun() {
   if (!state.selectedRunId) return;
+  showAiActivity("Останавливаю проверку", "Отправляю команду остановки...", "canceling");
   els.stopBtn.disabled = true;
   await api(`/api/runs/${state.selectedRunId}/cancel`, { method: "POST" });
   await loadRun(state.selectedRunId, { refreshRegistry: true });
@@ -242,6 +282,7 @@ async function loadRun(runId, options = {}) {
 
   renderFindings(data.findings || []);
   renderLogs(data.logs || []);
+  updateAiActivity(run, data.logs || []);
   await loadRuns();
 
   const finishedNow = terminalStatus(run.status) && previousStatus && runningStatus(previousStatus);
@@ -499,6 +540,9 @@ els.selectedCsvBtn.addEventListener("click", () => exportSelected("csv"));
 els.selectedXlsxBtn.addEventListener("click", () => exportSelected("xlsx"));
 els.drawerClose.addEventListener("click", closeDrawer);
 els.drawerOverlay.addEventListener("click", (event) => { if (event.target === els.drawerOverlay) closeDrawer(); });
+els.aiActivityJump.addEventListener("click", () => {
+  document.getElementById("runSection")?.scrollIntoView({ behavior: "smooth", block: "start" });
+});
 document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeDrawer(); });
 
 loadHealth();
