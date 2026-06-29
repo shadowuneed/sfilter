@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: argus-investigator
+    runtime: docker
+    plan: free
+    autoDeploy: false
+    envVars:
+      - key: GEMINI_API_KEYS
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: GEMINI_RPM_LIMIT
+        value: "10"
+      - key: GEMINI_RPD_LIMIT
+        value: "250"
+      - key: GEMINI_TIMEOUT_SECONDS
+        value: "90"
+      - key: DATABASE_PATH
+        value: data/argus.db
+      - key: MAX_CANDIDATES_PER_RUN
+        value: "15"
+      - key: MAX_MIRROR_CHECKS_PER_RUN
+        value: "6"
+      - key: SCREENSHOTS_ENABLED
+        value: "true"
+      - key: OSINT_FEEDS_ENABLED
+        value: "false"
