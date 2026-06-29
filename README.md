@@ -73,7 +73,17 @@ docker run --rm -p 8000:8000 --env-file .env argus-investigator
 
 ## Render
 
-`render.yaml` is ready for a Docker web service. Add `GEMINI_API_KEYS` as a secret environment variable in Render. On free Render instances, local SQLite files and evidence files are not durable across rebuilds/restarts unless persistent storage or an external database/storage service is attached.
+`render.yaml` is ready for a Docker web service. Add `GEMINI_API_KEYS` as a secret environment variable in Render.
+
+For screenshots, deploy Argus as a Docker service so the Dockerfile runs `python -m playwright install --with-deps chromium`. If you create a non-Docker Python service manually, add this to the Render build command instead:
+
+```bash
+pip install -r requirements.txt && python -m playwright install chromium
+```
+
+Open `/api/health` after deploy and check `screenshot_runtime.chromium_exists`. It should be `true`.
+
+Local SQLite files and evidence files are not durable across Render rebuilds/restarts unless persistent storage or an external database/storage service is attached. Without that, old screenshot links can disappear after a redeploy even if capture worked during the run.
 
 ## API Docs Used
 

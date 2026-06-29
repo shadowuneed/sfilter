@@ -375,9 +375,16 @@ class Investigator:
         screenshot_path = None
         screenshot_error = None
         if take_screenshots and evidence.final_url:
+            self.db.add_log(run_id, "info", "Делаю скриншот сайта", {"domain": domain, "url": evidence.final_url})
             screenshot = await self.screenshots.capture(evidence.final_url, run_id)
             screenshot_path = screenshot.path
             screenshot_error = screenshot.error
+            if screenshot_path:
+                self.db.add_log(run_id, "info", "Скриншот сохранен", {"domain": domain, "path": screenshot_path})
+            elif screenshot_error:
+                self.db.add_log(run_id, "warning", "Скриншот не сохранен", {"domain": domain, "error": screenshot_error})
+        elif not take_screenshots:
+            self.db.add_log(run_id, "info", "Скриншот пропущен: выключен в запуске", {"domain": domain})
 
         source_urls = self._clean_sources(candidate.source_urls)
         category = candidate.category or "suspicious"

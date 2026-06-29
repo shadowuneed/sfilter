@@ -23,5 +23,7 @@ services:
         value: "6"
       - key: SCREENSHOTS_ENABLED
         value: "true"
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: /ms-playwright
       - key: OSINT_FEEDS_ENABLED
         value: "false"

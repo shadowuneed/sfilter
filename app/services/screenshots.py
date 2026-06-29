@@ -4,6 +4,7 @@ import base64
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from app.config import Settings
 from app.services.domains import extract_domain
@@ -18,6 +19,28 @@ class ScreenshotResult:
 class ScreenshotService:
     def __init__(self, settings: Settings):
         self.settings = settings
+
+    def runtime_status(self) -> dict[str, Any]:
+        status: dict[str, Any] = {
+            "enabled": self.settings.screenshots_enabled,
+            "dir": str(self.settings.screenshots_dir),
+            "dir_exists": self.settings.screenshots_dir.exists(),
+            "playwright_imported": False,
+            "chromium_path": None,
+            "chromium_exists": False,
+            "error": None,
+        }
+        try:
+            from playwright.sync_api import sync_playwright
+
+            status["playwright_imported"] = True
+            with sync_playwright() as playwright:
+                chromium_path = Path(playwright.chromium.executable_path)
+                status["chromium_path"] = str(chromium_path)
+                status["chromium_exists"] = chromium_path.exists()
+        except Exception as exc:  # noqa: BLE001
+            status["error"] = f"{type(exc).__name__}: {exc}"
+        return status
 
     async def capture(self, url: str, run_id: int) -> ScreenshotResult:
         if not self.settings.screenshots_enabled:
@@ -41,7 +64,13 @@ class ScreenshotService:
             async with async_playwright() as playwright:
                 browser = await playwright.chromium.launch(
                     headless=True,
-                    args=["--disable-blink-features=AutomationControlled"],
+                    args=[
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-gpu",
+                        "--disable-blink-features=AutomationControlled",
+                    ],
                 )
                 context = await browser.new_context(
                     ignore_https_errors=True,

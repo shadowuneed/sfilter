@@ -78,6 +78,7 @@ def health() -> dict[str, Any]:
         "rpm_limit": settings.gemini_rpm_limit,
         "rpd_limit": settings.gemini_rpd_limit,
         "screenshots_enabled": settings.screenshots_enabled,
+        "screenshot_runtime": investigator.screenshots.runtime_status(),
         "database": str(settings.database_path),
     }
 
