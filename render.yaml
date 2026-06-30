@@ -38,13 +38,13 @@ services:
       - key: OSINT_FEEDS_ENABLED
         value: "false"
       - key: REQUIRE_KZ_PROXY
-        value: "true"
+        value: "false"
       - key: KZ_PROXY_URL
         sync: false
       - key: KZ_PROXY_CHECK_URL
         value: https://api.country.is/
       - key: KZ_ACCESS_LABEL
-        value: Kazakhstan access check
+        value: server direct network
     disk:
       name: argus-data
       mountPath: /var/data

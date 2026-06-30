@@ -110,7 +110,7 @@ class Settings:
     kz_proxy_url: str | None = None
     kz_proxy_source: str | None = None
     kz_access_label: str = "server direct network"
-    require_kz_proxy: bool = True
+    require_kz_proxy: bool = False
     kz_proxy_check_url: str = "https://api.country.is/"
     seed_queries: list[str] = field(default_factory=lambda: DEFAULT_SEED_QUERIES.copy())
     osint_feeds: list[str] = field(default_factory=lambda: DEFAULT_OSINT_FEEDS.copy())
@@ -158,9 +158,9 @@ def get_settings() -> Settings:
         kz_proxy_source=kz_proxy_source,
         kz_access_label=(
             os.getenv("KZ_ACCESS_LABEL")
-            or ("Kazakhstan proxy" if kz_proxy_url else "KZ proxy is not configured")
+            or ("Kazakhstan proxy" if kz_proxy_url else "server direct network")
         ).strip() or "server direct network",
-        require_kz_proxy=_bool_env("REQUIRE_KZ_PROXY", True),
+        require_kz_proxy=_bool_env("REQUIRE_KZ_PROXY", False),
         kz_proxy_check_url=os.getenv("KZ_PROXY_CHECK_URL", "https://api.country.is/").strip() or "https://api.country.is/",
         seed_queries=seed_queries,
         osint_feeds=osint_feeds,

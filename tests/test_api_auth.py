@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import os
 import unittest
 
 from fastapi.testclient import TestClient
+
+os.environ["DATABASE_URL"] = ""
+os.environ.setdefault("DATABASE_PATH", "data/test_api_auth.db")
 
 from app import main
 
@@ -67,6 +71,11 @@ class ApiAuthTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 503)
         self.assertIn("Kazakhstan proxy is required", response.text)
+
+    def test_missing_kz_proxy_is_allowed_when_not_required(self) -> None:
+        set_kz_proxy(required=False, url=None)
+
+        main._ensure_kz_proxy_ready()
 
 
 if __name__ == "__main__":

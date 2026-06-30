@@ -32,6 +32,12 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(name, "KZ_HTTP_PROXY")
         self.assertEqual(value, "socks5://proxy.kz:1080")
 
+    @patch("app.config._load_dotenv", lambda: None)
+    def test_kz_proxy_is_soft_by_default(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("REQUIRE_KZ_PROXY", None)
+            self.assertFalse(get_settings().require_kz_proxy)
+
 
 if __name__ == "__main__":
     unittest.main()

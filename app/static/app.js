@@ -318,7 +318,7 @@ async function loadHealth() {
     const kzReady = Boolean(health.kz_proxy_ready);
     const kzRequired = Boolean(health.kz_proxy_required);
     const kzText = health.kz_proxy_configured ? "KZ: proxy" : kzRequired ? "KZ: нет proxy" : "KZ: direct";
-    renderPill(els.kzAccessPill, kzText, health.kz_proxy_configured ? "ok" : kzRequired ? "bad" : "neutral");
+    renderPill(els.kzAccessPill, kzText, health.kz_proxy_configured ? "ok" : kzRequired ? "bad" : "warn");
     const keyCount = health.gemini_key_count ?? health.gemini_keys?.length ?? 0;
     const authMissing = state.authRequired && !state.authConfigured;
     const geminiHint = health.gemini_configured
@@ -328,7 +328,7 @@ async function loadHealth() {
       ? `${health.kz_access_label}${health.kz_proxy_source ? ` (${health.kz_proxy_source})` : ""}`
       : kzRequired
         ? "KZ proxy обязателен и не настроен, запуск заблокирован"
-        : "KZ proxy не задан, проверка идет из сети хостинга";
+        : "KZ proxy не задан: запуск разрешен, но доступность из Казахстана не подтверждена";
     els.healthLine.textContent = `${geminiHint}. ${kzHint}. Автозапуск: 50 сайтов.`;
     const actionBlocked = authMissing || !kzReady;
     const actionReason = authMissing
