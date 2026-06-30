@@ -139,7 +139,7 @@ function setActionLock(locked, reason = "") {
   [els.runBtn, els.manualBtn].forEach((button) => {
     if (!button) return;
     button.disabled = locked;
-    if (reason) button.title = reason;
+    button.title = reason || "";
   });
 }
 
@@ -315,19 +315,28 @@ async function loadHealth() {
         ? "AI: проверь формат"
         : "AI: ключи загружены";
     renderPill(els.geminiPill, geminiText, geminiOk ? "ok" : "warn");
-    renderPill(
-      els.kzAccessPill,
-      health.kz_proxy_configured ? "KZ: proxy" : "KZ: direct",
-      health.kz_proxy_configured ? "ok" : "neutral",
-    );
+    const kzReady = Boolean(health.kz_proxy_ready);
+    const kzRequired = Boolean(health.kz_proxy_required);
+    const kzText = health.kz_proxy_configured ? "KZ: proxy" : kzRequired ? "KZ: нет proxy" : "KZ: direct";
+    renderPill(els.kzAccessPill, kzText, health.kz_proxy_configured ? "ok" : kzRequired ? "bad" : "neutral");
     const keyCount = health.gemini_key_count ?? health.gemini_keys?.length ?? 0;
     const authMissing = state.authRequired && !state.authConfigured;
     const geminiHint = health.gemini_configured
       ? `${keyCount} ключ(а), модель ${health.gemini_model}`
       : "добавьте GEMINI_API_KEYS";
-    const kzHint = health.kz_proxy_configured ? health.kz_access_label : "KZ_PROXY_URL не задан, проверка идет из сети хостинга";
+    const kzHint = health.kz_proxy_configured
+      ? `${health.kz_access_label}${health.kz_proxy_source ? ` (${health.kz_proxy_source})` : ""}`
+      : kzRequired
+        ? "KZ proxy обязателен и не настроен, запуск заблокирован"
+        : "KZ proxy не задан, проверка идет из сети хостинга";
     els.healthLine.textContent = `${geminiHint}. ${kzHint}. Автозапуск: 50 сайтов.`;
-    setActionLock(authMissing, authMissing ? "На сервере не настроен ADMIN_TOKEN" : "");
+    const actionBlocked = authMissing || !kzReady;
+    const actionReason = authMissing
+      ? "На сервере не настроен ADMIN_TOKEN"
+      : !kzReady
+        ? "Настройте KZ_PROXY_URL, KZ_HTTP_PROXY, KZ_HTTPS_PROXY или KZ_PROXY"
+        : "";
+    setActionLock(actionBlocked, actionReason);
     if (authMissing) {
       els.healthLine.textContent = `${els.healthLine.textContent} ADMIN_TOKEN не настроен, запуски защищенного API недоступны.`;
       hideAuth();

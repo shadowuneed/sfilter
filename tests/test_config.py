@@ -4,7 +4,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from app.config import _bool_env, _optional_env, _split_env, get_settings
+from app.config import _bool_env, _first_env, _optional_env, _split_env, get_settings
 
 
 class ConfigTests(unittest.TestCase):
@@ -24,6 +24,13 @@ class ConfigTests(unittest.TestCase):
         url = "postgresql://user:secret@db.example.com:5432/postgres"
         with patch.dict(os.environ, {"DATABASE_URL": url}, clear=False):
             self.assertEqual(get_settings().database_url, url)
+
+    def test_kz_proxy_alias_is_read(self) -> None:
+        with patch.dict(os.environ, {"KZ_HTTP_PROXY": "socks5://proxy.kz:1080"}, clear=False):
+            name, value = _first_env(("KZ_PROXY_URL", "KZ_HTTP_PROXY", "KZ_HTTPS_PROXY", "KZ_PROXY"))
+
+        self.assertEqual(name, "KZ_HTTP_PROXY")
+        self.assertEqual(value, "socks5://proxy.kz:1080")
 
 
 if __name__ == "__main__":

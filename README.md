@@ -109,7 +109,7 @@ Open `/api/health` after deploy and check `screenshot_runtime.chromium_exists`. 
 
 Local SQLite files and evidence files are not durable across rebuilds/restarts unless persistent storage or an external database/storage service is attached. Postgres fixes the run/history database; screenshots and saved HTML still need durable file storage if the host filesystem is ephemeral.
 
-For a real Kazakhstan-only accessibility check, set `KZ_PROXY_URL` in Render to an HTTP/SOCKS proxy or private checker endpoint located in Kazakhstan. Without it, Render can only prove that the domain opens from Render's network, and the UI marks that limitation in the run journal and technical evidence.
+For a real Kazakhstan-only accessibility check, set `KZ_PROXY_URL` in Render to an HTTP/SOCKS proxy located in Kazakhstan. `KZ_HTTP_PROXY`, `KZ_HTTPS_PROXY`, and `KZ_PROXY` are accepted aliases. `REQUIRE_KZ_PROXY=true` is enabled by default, so Argus blocks automatic and manual launches if no Kazakhstan proxy is visible to the server. Before every launch, Argus calls `KZ_PROXY_CHECK_URL` through the proxy and requires country `KZ`; this prevents reports from being generated from Render/Vercel's own network by mistake.
 
 If the journal shows `Gemini API 401 Unauthorized`, Google rejected the specific key used for that attempt. Check that the deployed `GEMINI_API_KEYS` value contains every key, has no literal quotes or `Bearer ` prefix, and that old standard keys are restricted or migrated to Gemini auth keys. Google notes that from June 19, 2026 the Gemini API rejects unrestricted standard keys: https://ai.google.dev/gemini-api/docs/api-key
 

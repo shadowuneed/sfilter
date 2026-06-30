@@ -57,6 +57,14 @@ def _optional_env(name: str) -> str | None:
     return value or None
 
 
+def _first_env(names: tuple[str, ...]) -> tuple[str | None, str | None]:
+    for name in names:
+        value = _optional_env(name)
+        if value:
+            return name, value
+    return None, None
+
+
 DEFAULT_SEED_QUERIES = [
     'казино зеркало рабочий вход новый домен',
     'онлайн казино зеркало бонус новый домен',
@@ -100,7 +108,10 @@ class Settings:
     osint_feeds_enabled: bool = False
     user_agent: str = DEFAULT_USER_AGENT
     kz_proxy_url: str | None = None
+    kz_proxy_source: str | None = None
     kz_access_label: str = "server direct network"
+    require_kz_proxy: bool = True
+    kz_proxy_check_url: str = "https://api.country.is/"
     seed_queries: list[str] = field(default_factory=lambda: DEFAULT_SEED_QUERIES.copy())
     osint_feeds: list[str] = field(default_factory=lambda: DEFAULT_OSINT_FEEDS.copy())
 
@@ -123,6 +134,7 @@ def get_settings() -> Settings:
 
     seed_queries = _split_env("SEED_QUERIES") or DEFAULT_SEED_QUERIES.copy()
     osint_feeds = _split_env("OSINT_FEEDS") or DEFAULT_OSINT_FEEDS.copy()
+    kz_proxy_source, kz_proxy_url = _first_env(("KZ_PROXY_URL", "KZ_HTTP_PROXY", "KZ_HTTPS_PROXY", "KZ_PROXY"))
 
     settings = Settings(
         gemini_api_keys=_split_env("GEMINI_API_KEYS"),
@@ -142,11 +154,14 @@ def get_settings() -> Settings:
         screenshots_enabled=_bool_env("SCREENSHOTS_ENABLED", True),
         osint_feeds_enabled=_bool_env("OSINT_FEEDS_ENABLED", False),
         user_agent=os.getenv("USER_AGENT", DEFAULT_USER_AGENT).strip() or DEFAULT_USER_AGENT,
-        kz_proxy_url=(os.getenv("KZ_PROXY_URL") or os.getenv("KZ_HTTP_PROXY") or "").strip() or None,
+        kz_proxy_url=kz_proxy_url,
+        kz_proxy_source=kz_proxy_source,
         kz_access_label=(
             os.getenv("KZ_ACCESS_LABEL")
-            or ("Kazakhstan proxy" if os.getenv("KZ_PROXY_URL") else "server direct network")
+            or ("Kazakhstan proxy" if kz_proxy_url else "KZ proxy is not configured")
         ).strip() or "server direct network",
+        require_kz_proxy=_bool_env("REQUIRE_KZ_PROXY", True),
+        kz_proxy_check_url=os.getenv("KZ_PROXY_CHECK_URL", "https://api.country.is/").strip() or "https://api.country.is/",
         seed_queries=seed_queries,
         osint_feeds=osint_feeds,
     )

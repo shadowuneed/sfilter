@@ -15,6 +15,7 @@ from app.database import Database
 from app.services.exporter import Exporter
 from app.services.gemini import GeminiClient
 from app.services.investigator import Investigator
+from app.services.kz_access import check_kz_proxy
 
 
 settings = get_settings()
@@ -36,6 +37,21 @@ app.mount("/evidence", StaticFiles(directory=settings.evidence_dir), name="evide
 
 
 PUBLIC_API_PATHS = {"/api/health"}
+
+
+def _ensure_kz_proxy_ready() -> None:
+    if settings.require_kz_proxy and not settings.kz_proxy_url:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Kazakhstan proxy is required. Set KZ_PROXY_URL, KZ_HTTP_PROXY, "
+                "KZ_HTTPS_PROXY, or KZ_PROXY to an HTTP/SOCKS proxy located in Kazakhstan."
+            ),
+        )
+    if settings.kz_proxy_url:
+        check = check_kz_proxy(settings)
+        if not check.ok:
+            raise HTTPException(status_code=503, detail=check.message)
 
 
 def _bearer_token(authorization: str | None) -> str | None:
@@ -134,13 +150,18 @@ def health() -> dict[str, Any]:
         "database_backend": db.backend,
         "evidence_dir": str(settings.evidence_dir),
         "export_dir": str(settings.export_dir),
+        "kz_proxy_required": settings.require_kz_proxy,
         "kz_proxy_configured": bool(settings.kz_proxy_url),
+        "kz_proxy_ready": bool(settings.kz_proxy_url) or not settings.require_kz_proxy,
+        "kz_proxy_source": settings.kz_proxy_source,
+        "kz_proxy_check_url": settings.kz_proxy_check_url,
         "kz_access_label": settings.kz_access_label,
     }
 
 
 @app.post("/api/runs")
 def create_run(request: RunRequest) -> dict[str, Any]:
+    _ensure_kz_proxy_ready()
     max_candidates = min(request.max_candidates, settings.max_candidates_per_run)
     run_id = db.create_run(
         seed_query=request.seed_query,
@@ -161,6 +182,7 @@ def create_run(request: RunRequest) -> dict[str, Any]:
 
 @app.post("/api/manual-check")
 def manual_check(request: ManualCheckRequest) -> dict[str, Any]:
+    _ensure_kz_proxy_ready()
     run_id = db.create_run(
         seed_query=request.target,
         max_candidates=1,

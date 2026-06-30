@@ -432,20 +432,7 @@ class Database:
             )
 
     def insert_finding(self, run_id: int, finding: dict[str, Any]) -> int:
-        columns = [
-            "run_id", "url", "final_url", "domain", "normalized_domain", "title",
-            "category", "verdict", "risk_score", "active", "status_code", "mirror_group",
-            "screenshot_path", "html_path", "html_sha256", "dns_json", "tls_json",
-            "evidence_json", "sources_json", "reasons_json", "created_at",
-        ]
-        values = {
-            "run_id": run_id,
-            "created_at": utc_now(),
-            "active": int(bool(finding.get("active"))),
-            **finding,
-        }
-        json_fields = {"dns_json", "tls_json", "evidence_json", "sources_json", "reasons_json"}
-        row_values = [dumps(values.get(col)) if col in json_fields else values.get(col) for col in columns]
+        columns, row_values = self._finding_insert_values(run_id, finding)
         placeholders = ", ".join("?" for _ in columns)
         returning = " RETURNING id" if self.backend == "postgres" else ""
         with self.connect() as conn:
@@ -460,6 +447,23 @@ class Database:
                 finding_id = int(cursor.lastrowid)
             self._upsert_case_for_finding(conn, finding_id)
             return finding_id
+
+    def _finding_insert_values(self, run_id: int, finding: dict[str, Any]) -> tuple[list[str], list[Any]]:
+        columns = [
+            "run_id", "url", "final_url", "domain", "normalized_domain", "title",
+            "category", "verdict", "risk_score", "active", "status_code", "mirror_group",
+            "screenshot_path", "html_path", "html_sha256", "dns_json", "tls_json",
+            "evidence_json", "sources_json", "reasons_json", "created_at",
+        ]
+        values = {
+            **finding,
+            "run_id": run_id,
+            "created_at": utc_now(),
+            "active": int(bool(finding.get("active"))),
+        }
+        json_fields = {"dns_json", "tls_json", "evidence_json", "sources_json", "reasons_json"}
+        row_values = [dumps(values.get(col)) if col in json_fields else values.get(col) for col in columns]
+        return columns, row_values
 
     def _upsert_case_for_finding(self, conn: DatabaseConnection, finding_id: int) -> None:
         row = conn.execute("SELECT * FROM findings WHERE id=?", (finding_id,)).fetchone()

@@ -30,6 +30,23 @@ class DatabaseBackendTests(unittest.TestCase):
 
         self.assertIn("sslmode=verify-full", db.dsn)
 
+    def test_finding_insert_values_store_active_as_integer(self) -> None:
+        db = Database("data/test.db")
+
+        columns, values = db._finding_insert_values(
+            1,
+            {
+                "url": "https://example.com",
+                "normalized_domain": "example.com",
+                "risk_score": 70,
+                "active": True,
+            },
+        )
+
+        active_index = columns.index("active")
+        self.assertEqual(values[active_index], 1)
+        self.assertIs(type(values[active_index]), int)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -68,6 +68,11 @@ class Investigator:
         cancel_event: Event | None = None,
     ) -> None:
         self.db.update_run(run_id, status="running", candidate_count=1)
+        if self.settings.require_kz_proxy and not self.settings.kz_proxy_url:
+            message = "KZ proxy is required: set KZ_PROXY_URL, KZ_HTTP_PROXY, KZ_HTTPS_PROXY, or KZ_PROXY to a Kazakhstan HTTP/SOCKS proxy."
+            self.db.update_run(run_id, status="failed", finished_at=utc_now(), error=message)
+            self.db.add_log(run_id, "error", message, {"required": True, "configured": False})
+            return
         self.db.add_log(run_id, "info", "Ручная проверка запущена", {"target": target, "started_at": utc_now()})
         methodology = [
             "Оператор вручную указал домен или URL для проверки.",
@@ -140,6 +145,11 @@ class Investigator:
     ) -> None:
         self.db.update_run(run_id, status="running")
         self.db.add_log(run_id, "info", "Поиск запущен", {"started_at": utc_now()})
+        if self.settings.require_kz_proxy and not self.settings.kz_proxy_url:
+            message = "KZ proxy is required: set KZ_PROXY_URL, KZ_HTTP_PROXY, KZ_HTTPS_PROXY, or KZ_PROXY to a Kazakhstan HTTP/SOCKS proxy."
+            self.db.update_run(run_id, status="failed", finished_at=utc_now(), error=message)
+            self.db.add_log(run_id, "error", message, {"required": True, "configured": False})
+            return
         if self.settings.kz_proxy_url:
             self.db.add_log(
                 run_id,
