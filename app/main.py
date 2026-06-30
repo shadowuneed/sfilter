@@ -136,6 +136,7 @@ def monitor() -> FileResponse:
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
+    ml_status = investigator.ml.status()
     return {
         "ok": True,
         "app_name": "Argus",
@@ -151,6 +152,12 @@ def health() -> dict[str, Any]:
         "auth_enforced": bool(settings.auth_required and settings.admin_token),
         "screenshots_enabled": settings.screenshots_enabled,
         "screenshot_runtime": investigator.screenshots.runtime_status(),
+        "ml_enabled": investigator.ml.enabled,
+        "ml_available": investigator.ml.available,
+        "ml_model_path": ml_status.model_path,
+        "ml_classes": ml_status.classes,
+        "ml_error": ml_status.error,
+        "ml_min_confidence": settings.ml_min_confidence,
         "database": db.label,
         "database_backend": db.backend,
         "evidence_dir": str(settings.evidence_dir),

@@ -20,6 +20,7 @@ from app.services.domains import (
 )
 from app.services.evidence import EvidenceCollector, score_finding
 from app.services.gemini import GeminiClient, GeminiQuotaError
+from app.services.ml_classifier import DomainMLClassifier
 from app.services.screenshots import ScreenshotService
 
 
@@ -45,6 +46,7 @@ class Investigator:
         self.gemini = gemini
         self.evidence = EvidenceCollector(settings)
         self.screenshots = ScreenshotService(settings)
+        self.ml = DomainMLClassifier(settings)
 
     def run(self, run_id: int, seed_query: str | None, max_candidates: int, take_screenshots: bool, cancel_event: Event | None = None) -> None:
         asyncio.run(self._run(run_id, seed_query, max_candidates, take_screenshots, cancel_event))
@@ -499,7 +501,28 @@ class Investigator:
             self.db.add_log(run_id, "info", "Скриншот пропущен: выключен в запуске", {"domain": domain})
 
         source_urls = self._clean_sources(candidate.source_urls)
-        category = candidate.category or "suspicious"
+        ml_result = self.ml.classify(candidate.url, evidence)
+        if ml_result.get("available"):
+            self.db.add_log(
+                run_id,
+                "info",
+                "ML классификация сайта завершена",
+                {
+                    "domain": domain,
+                    "label": ml_result.get("label"),
+                    "confidence": ml_result.get("confidence"),
+                    "model": ml_result.get("model"),
+                },
+            )
+        elif ml_result.get("error"):
+            self.db.add_log(
+                run_id,
+                "warning",
+                "ML классификация недоступна",
+                {"domain": domain, "error": ml_result.get("error")},
+            )
+
+        category = self._category_with_ml(candidate.category or "suspicious", ml_result)
         risk, verdict, reasons = score_finding(
             category=category,
             active=evidence.active,
@@ -511,6 +534,9 @@ class Investigator:
         )
         if candidate.why:
             reasons.insert(0, candidate.why)
+        ml_reason = self._ml_reason(ml_result)
+        if ml_reason:
+            reasons.insert(1 if candidate.why else 0, ml_reason)
         if screenshot_error:
             if screenshot_path:
                 reasons.append(f"Screenshot saved with warning: {screenshot_error}")
@@ -539,11 +565,36 @@ class Investigator:
                 "search_query": candidate.search_query,
                 "brand": candidate.brand,
                 "mirror_hints": candidate.mirror_hints,
+                "ml": ml_result,
                 "screenshot_error": screenshot_error,
             },
             "sources_json": [{"url": url} for url in source_urls],
             "reasons_json": reasons,
         }
+
+    def _category_with_ml(self, category: str, ml_result: dict[str, Any]) -> str:
+        label = str(ml_result.get("label") or "").lower()
+        confidence = float(ml_result.get("confidence") or 0)
+        if label not in {"phishing", "casino", "pyramid", "suspicious"}:
+            return category
+        weak_category = category.lower() in {"", "manual", "unknown", "suspicious"}
+        if confidence >= self.settings.ml_min_confidence and (weak_category or confidence >= 0.65):
+            return label
+        return category
+
+    @staticmethod
+    def _ml_reason(ml_result: dict[str, Any]) -> str | None:
+        if not ml_result.get("available"):
+            return None
+        label = str(ml_result.get("label") or "unknown")
+        confidence = float(ml_result.get("confidence") or 0)
+        top = [
+            str(item.get("feature"))
+            for item in ml_result.get("top_features", [])
+            if item.get("feature")
+        ][:4]
+        details = f"; признаки: {', '.join(top)}" if top else ""
+        return f"ML CatBoost классифицировал сайт как {label} с уверенностью {confidence:.0%}{details}."
 
     def _candidate_from_item(
         self,

@@ -37,6 +37,12 @@ services:
         value: /ms-playwright
       - key: OSINT_FEEDS_ENABLED
         value: "false"
+      - key: ML_ENABLED
+        value: "true"
+      - key: ML_MODEL_PATH
+        value: models/domain_classifier.cbm
+      - key: ML_MIN_CONFIDENCE
+        value: "0.45"
       - key: REQUIRE_KZ_PROXY
         value: "false"
       - key: KZ_PROXY_URL

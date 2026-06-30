@@ -38,6 +38,7 @@ class ApiAuthTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["auth_required"])
+        self.assertIn("ml_available", response.json())
 
     def test_protected_api_rejects_missing_token(self) -> None:
         response = self.client.get("/api/runs")

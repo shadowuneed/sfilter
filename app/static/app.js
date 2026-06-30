@@ -186,6 +186,12 @@ function formatResponseTime(ms) {
   return `${(value / 1000).toFixed(2)} сек`;
 }
 
+function formatPercent(value) {
+  const number = Number(value || 0);
+  if (!number) return "N/A";
+  return `${Math.round(number * 100)}%`;
+}
+
 function normalizeCategory(value) {
   const text = String(value || "").toLowerCase();
   if (/(casino|gambling|betting|bookmaker)/.test(text)) return "casino";
@@ -324,12 +330,18 @@ async function loadHealth() {
     const geminiHint = health.gemini_configured
       ? `${keyCount} ключ(а), модель ${health.gemini_model}`
       : "добавьте GEMINI_API_KEYS";
+    const mlClasses = Array.isArray(health.ml_classes) && health.ml_classes.length ? ` (${health.ml_classes.join(", ")})` : "";
+    const mlHint = health.ml_available
+      ? `ML: CatBoost готов${mlClasses}`
+      : health.ml_enabled
+        ? "ML: модель недоступна"
+        : "ML: выключен";
     const kzHint = health.kz_proxy_configured
       ? `${health.kz_access_label}${health.kz_proxy_source ? ` (${health.kz_proxy_source})` : ""}`
       : kzRequired
         ? "KZ proxy обязателен и не настроен, запуск заблокирован"
         : "KZ proxy не задан: запуск разрешен, но доступность из Казахстана не подтверждена";
-    els.healthLine.textContent = `${geminiHint}. ${kzHint}. Автозапуск: 50 сайтов.`;
+    els.healthLine.textContent = `${geminiHint}. ${mlHint}. ${kzHint}. Автозапуск: 50 сайтов.`;
     const actionBlocked = authMissing || !kzReady;
     const actionReason = authMissing
       ? "На сервере не настроен ADMIN_TOKEN"
@@ -761,6 +773,7 @@ function latestFinding(item, findings) {
 
 function positiveSignals(finding) {
   const evidence = finding.evidence || {};
+  const ml = evidence.ml || {};
   const tls = finding.tls || {};
   const dns = finding.dns || {};
   const signals = [];
@@ -771,11 +784,13 @@ function positiveSignals(finding) {
   if (finding.screenshot_path) signals.push("Скриншот страницы сохранен");
   if (evidence.response_time_ms && evidence.response_time_ms < 1500) signals.push(`Быстрый ответ: ${formatResponseTime(evidence.response_time_ms)}`);
   if (evidence.access_origin) signals.push(`Проверено через: ${evidence.access_origin}`);
+  if (ml.available && ml.label === "legit") signals.push(`ML CatBoost считает сайт легитимным: ${formatPercent(ml.confidence)}`);
   return signals.length ? signals : ["Положительные технические признаки не выделены"];
 }
 
 function negativeSignals(finding) {
   const evidence = finding.evidence || {};
+  const ml = evidence.ml || {};
   const domainInfo = evidence.domain || {};
   const dns = finding.dns || {};
   const tls = finding.tls || {};
@@ -788,6 +803,7 @@ function negativeSignals(finding) {
   if (!(dns.mx_records || []).length) signals.push("MX записи не найдены");
   if (Number(evidence.redirect_count || 0) > 2) signals.push(`Много редиректов: ${evidence.redirect_count}`);
   if (evidence.blocked_by_policy) signals.push("Страница похожа на блокировку доступа");
+  if (ml.available && ml.label && ml.label !== "legit") signals.push(`ML CatBoost: ${ml.label}, уверенность ${formatPercent(ml.confidence)}`);
   return signals.length ? signals : ["Явные негативные признаки не найдены"];
 }
 
@@ -807,9 +823,15 @@ function techCard(title, rows) {
   return `<article class="tech-card"><h3>${escapeHtml(title)}</h3>${rows.join("")}</article>`;
 }
 
+function mlFeatureText(ml) {
+  const features = Array.isArray(ml?.top_features) ? ml.top_features : [];
+  return features.slice(0, 4).map((item) => item.feature).filter(Boolean).join(", ") || "None";
+}
+
 function renderCaseDetail(item, findings) {
   const finding = latestFinding(item, findings);
   const evidence = finding.evidence || {};
+  const ml = evidence.ml || {};
   const dns = finding.dns || {};
   const tls = finding.tls || {};
   const domainInfo = evidence.domain || {};
@@ -877,6 +899,12 @@ function renderCaseDetail(item, findings) {
           techRow("Размер страницы", formatBytes(evidence.page_size_bytes)),
           techRow("Редиректов", evidence.redirect_count ?? 0),
           techRow("Сеть проверки", evidence.access_origin || "server direct network"),
+        ])}
+        ${techCard("ML модель", [
+          techRow("Статус", ml.available ? "CatBoost готов" : (ml.error || "Недоступна"), ml.available ? "good" : "bad"),
+          techRow("Класс", ml.label || "None"),
+          techRow("Уверенность", formatPercent(ml.confidence), ml.label && ml.label !== "legit" ? "bad" : "good"),
+          techRow("Топ признаки", mlFeatureText(ml)),
         ])}
       </div>
     </section>

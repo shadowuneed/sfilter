@@ -37,6 +37,16 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _float_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
 def _split_env(name: str) -> list[str]:
     value = os.getenv(name, "")
     if not value:
@@ -106,6 +116,9 @@ class Settings:
     request_timeout_seconds: int = 18
     screenshots_enabled: bool = True
     osint_feeds_enabled: bool = False
+    ml_enabled: bool = True
+    ml_model_path: Path = Path("models/domain_classifier.cbm")
+    ml_min_confidence: float = 0.45
     user_agent: str = DEFAULT_USER_AGENT
     kz_proxy_url: str | None = None
     kz_proxy_source: str | None = None
@@ -153,6 +166,9 @@ def get_settings() -> Settings:
         request_timeout_seconds=_int_env("REQUEST_TIMEOUT_SECONDS", 18),
         screenshots_enabled=_bool_env("SCREENSHOTS_ENABLED", True),
         osint_feeds_enabled=_bool_env("OSINT_FEEDS_ENABLED", False),
+        ml_enabled=_bool_env("ML_ENABLED", True),
+        ml_model_path=Path(os.getenv("ML_MODEL_PATH", "models/domain_classifier.cbm")),
+        ml_min_confidence=_float_env("ML_MIN_CONFIDENCE", 0.45),
         user_agent=os.getenv("USER_AGENT", DEFAULT_USER_AGENT).strip() or DEFAULT_USER_AGENT,
         kz_proxy_url=kz_proxy_url,
         kz_proxy_source=kz_proxy_source,
