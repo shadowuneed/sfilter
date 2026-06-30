@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 
+from app.config import Settings
 from app.services.investigator import Investigator
 
 
@@ -58,6 +60,36 @@ class InvestigatorCandidateTests(unittest.TestCase):
         self.assertNotIn("home.php", csv_tokens)
         self.assertIn("casino-mirror.example", hosts_tokens)
         self.assertIn("bonus-slot.example", hosts_tokens)
+
+    def test_known_domains_are_rechecked_not_dropped(self) -> None:
+        class FakeDb:
+            def __init__(self) -> None:
+                self.logs = []
+
+            def known_domains(self) -> set[str]:
+                return {"mycasino.kz"}
+
+            def add_log(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+                self.logs.append((args, kwargs))
+
+        class FakeGemini:
+            available = False
+
+        self.investigator.settings = Settings(osint_feeds_enabled=False, osint_candidate_pool_size=10)
+        self.investigator.db = FakeDb()
+        self.investigator.gemini = FakeGemini()
+
+        candidates = asyncio.run(self.investigator._discover_candidates(1, "mycasino.kz", 5))
+
+        self.assertTrue(any(candidate.domain == "mycasino.kz" for candidate in candidates))
+
+    def test_bootstrap_adds_verification_candidates_when_discovery_is_empty(self) -> None:
+        self.investigator.settings = Settings(seed_queries=["казино зеркало рабочий вход"])
+
+        candidates = self.investigator._discover_from_bootstrap(None, 3)
+
+        self.assertEqual(len(candidates), 3)
+        self.assertTrue(all(candidate.why.startswith("Bootstrap-кандидат") for candidate in candidates))
 
 
 if __name__ == "__main__":

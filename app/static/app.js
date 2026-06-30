@@ -506,11 +506,22 @@ function renderMethodology(items) {
 function formatMeta(meta) {
   if (!meta || !Object.keys(meta).length) return "";
   const parts = [];
+  if (meta.name) parts.push(`источник: ${meta.name}`);
+  if (meta.category) parts.push(`категория: ${meta.category}`);
   if (meta.domain) parts.push(`домен: ${meta.domain}`);
   if (meta.url) parts.push(`url: ${meta.url}`);
   if (meta.reason) parts.push(`причина: ${meta.reason}`);
   if (meta.access_origin) parts.push(`сеть: ${meta.access_origin}`);
   if (meta.count !== undefined) parts.push(`кол-во: ${meta.count}`);
+  if (meta.added !== undefined) parts.push(`добавлено: ${meta.added}`);
+  if (meta.skipped !== undefined) parts.push(`пропущено: ${meta.skipped}`);
+  if (meta.raw !== undefined) parts.push(`raw: ${meta.raw}`);
+  if (meta.deduped !== undefined) parts.push(`после дедупликации: ${meta.deduped}`);
+  if (meta.known_rechecked !== undefined) parts.push(`повторно проверяются: ${meta.known_rechecked}`);
+  if (meta.items !== undefined) parts.push(`items: ${meta.items}`);
+  if (meta.sources !== undefined) parts.push(`sources: ${meta.sources}`);
+  if (meta.limit !== undefined) parts.push(`лимит: ${meta.limit}`);
+  if (meta.index !== undefined) parts.push(`#${meta.index}`);
   if (meta.findings !== undefined) parts.push(`в отчете: ${meta.findings}`);
   if (meta.risk_score !== undefined) parts.push(`риск: ${meta.risk_score}`);
   if (meta.status_code !== undefined && meta.status_code !== null) parts.push(`HTTP: ${meta.status_code}`);

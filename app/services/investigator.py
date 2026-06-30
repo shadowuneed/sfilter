@@ -63,6 +63,59 @@ CYBERSCAN_OSINT_SOURCES = [
     },
 ]
 
+BOOTSTRAP_CANDIDATES = [
+    {"domain": "1xbet.com", "category": "casino", "brand": "1xBet", "aliases": ["1xbet", "1x bet"]},
+    {"domain": "1win.com", "category": "casino", "brand": "1win", "aliases": ["1win", "1 win"]},
+    {"domain": "mostbet.com", "category": "casino", "brand": "Mostbet", "aliases": ["mostbet", "most bet"]},
+    {"domain": "mostbet-kz.org", "category": "casino", "brand": "Mostbet", "aliases": ["mostbet", "most bet"]},
+    {"domain": "pin-up.kz", "category": "casino", "brand": "Pin-Up", "aliases": ["pinup", "pin-up", "pin up"]},
+    {"domain": "pin-up.com", "category": "casino", "brand": "Pin-Up", "aliases": ["pinup", "pin-up", "pin up"]},
+    {"domain": "olimpbet.kz", "category": "casino", "brand": "Olimpbet", "aliases": ["olimp", "olimpbet"]},
+    {"domain": "melbet.com", "category": "casino", "brand": "Melbet", "aliases": ["melbet", "mel bet"]},
+    {"domain": "fonbet.kz", "category": "casino", "brand": "Fonbet", "aliases": ["fonbet", "fon bet"]},
+    {"domain": "parimatch.kz", "category": "casino", "brand": "Parimatch", "aliases": ["parimatch", "pari match"]},
+    {"domain": "bet365.com", "category": "casino", "brand": "Bet365", "aliases": ["bet365", "bet 365"]},
+    {"domain": "vavada.com", "category": "casino", "brand": "Vavada", "aliases": ["vavada"]},
+    {"domain": "vulkanvegas.com", "category": "casino", "brand": "Vulkan Vegas", "aliases": ["vulkan", "vulkan vegas"]},
+    {"domain": "joycasino.com", "category": "casino", "brand": "JoyCasino", "aliases": ["joycasino", "joy casino"]},
+    {"domain": "playfortuna.com", "category": "casino", "brand": "Play Fortuna", "aliases": ["playfortuna", "play fortuna"]},
+    {"domain": "ggbet.com", "category": "casino", "brand": "GG.Bet", "aliases": ["ggbet", "gg bet"]},
+    {"domain": "stake.com", "category": "casino", "brand": "Stake", "aliases": ["stake"]},
+    {"domain": "bc.game", "category": "casino", "brand": "BC.Game", "aliases": ["bcgame", "bc game"]},
+    {"domain": "roobet.com", "category": "casino", "brand": "Roobet", "aliases": ["roobet"]},
+    {"domain": "rollbit.com", "category": "casino", "brand": "Rollbit", "aliases": ["rollbit"]},
+    {"domain": "sportsbet.io", "category": "casino", "brand": "Sportsbet.io", "aliases": ["sportsbet"]},
+    {"domain": "cloudbet.com", "category": "casino", "brand": "Cloudbet", "aliases": ["cloudbet"]},
+    {"domain": "duelbits.com", "category": "casino", "brand": "Duelbits", "aliases": ["duelbits"]},
+    {"domain": "bitsler.com", "category": "casino", "brand": "Bitsler", "aliases": ["bitsler"]},
+    {"domain": "22bet.com", "category": "casino", "brand": "22Bet", "aliases": ["22bet", "22 bet"]},
+    {"domain": "betwinner.com", "category": "casino", "brand": "Betwinner", "aliases": ["betwinner"]},
+    {"domain": "linebet.com", "category": "casino", "brand": "Linebet", "aliases": ["linebet"]},
+    {"domain": "megapari.com", "category": "casino", "brand": "Megapari", "aliases": ["megapari"]},
+    {"domain": "rabona.com", "category": "casino", "brand": "Rabona", "aliases": ["rabona"]},
+    {"domain": "spinbetter.com", "category": "casino", "brand": "SpinBetter", "aliases": ["spinbetter", "spin better"]},
+    {"domain": "betway.com", "category": "casino", "brand": "Betway", "aliases": ["betway"]},
+    {"domain": "betfair.com", "category": "casino", "brand": "Betfair", "aliases": ["betfair"]},
+    {"domain": "unibet.com", "category": "casino", "brand": "Unibet", "aliases": ["unibet"]},
+    {"domain": "bwin.com", "category": "casino", "brand": "Bwin", "aliases": ["bwin"]},
+    {"domain": "betano.com", "category": "casino", "brand": "Betano", "aliases": ["betano"]},
+    {"domain": "pokerstars.com", "category": "casino", "brand": "PokerStars", "aliases": ["pokerstars", "poker stars"]},
+    {"domain": "888casino.com", "category": "casino", "brand": "888casino", "aliases": ["888casino", "888 casino"]},
+    {"domain": "leovegas.com", "category": "casino", "brand": "LeoVegas", "aliases": ["leovegas", "leo vegas"]},
+    {"domain": "williamhill.com", "category": "casino", "brand": "William Hill", "aliases": ["williamhill", "william hill"]},
+    {"domain": "ladbrokes.com", "category": "casino", "brand": "Ladbrokes", "aliases": ["ladbrokes"]},
+    {"domain": "coral.co.uk", "category": "casino", "brand": "Coral", "aliases": ["coral"]},
+    {"domain": "marathonbet.com", "category": "casino", "brand": "Marathonbet", "aliases": ["marathonbet", "marathon bet"]},
+    {"domain": "winline.ru", "category": "casino", "brand": "Winline", "aliases": ["winline"]},
+    {"domain": "leon.ru", "category": "casino", "brand": "Leon", "aliases": ["leon"]},
+    {"domain": "tennisi.kz", "category": "casino", "brand": "Tennisi", "aliases": ["tennisi"]},
+    {"domain": "fairspin.io", "category": "casino", "brand": "Fairspin", "aliases": ["fairspin"]},
+    {"domain": "zotabet.com", "category": "casino", "brand": "Zotabet", "aliases": ["zotabet"]},
+    {"domain": "xparibet.com", "category": "casino", "brand": "XpariBet", "aliases": ["xparibet", "xpari"]},
+    {"domain": "wazamba.com", "category": "casino", "brand": "Wazamba", "aliases": ["wazamba"]},
+    {"domain": "nationalcasino.com", "category": "casino", "brand": "National Casino", "aliases": ["national casino"]},
+]
+
 
 @dataclass
 class Candidate:
@@ -335,18 +388,61 @@ class Investigator:
                     )
                 )
 
+        if len(discovered) < max_candidates:
+            bootstrap = self._discover_from_bootstrap(seed_query, max_candidates - len(discovered))
+            if bootstrap:
+                discovered.extend(bootstrap)
+                self.db.add_log(
+                    run_id,
+                    "warning",
+                    "Discovery bootstrap добавил кандидатов для проверки",
+                    {"added": len(bootstrap), "reason": "Gemini/OSINT дали мало доменов"},
+                )
+
         candidates = self._dedupe_candidates(discovered, discovery_limit)
         known_domains = self.db.known_domains()
-        fresh: list[Candidate] = []
-        skipped_known = 0
-        for candidate in candidates:
-            if candidate.key() in known_domains:
-                skipped_known += 1
+        known_rechecked = sum(1 for candidate in candidates if candidate.key() in known_domains)
+        self.db.add_log(
+            run_id,
+            "info",
+            "Discovery candidates deduplicated",
+            {"raw": len(discovered), "deduped": len(candidates), "known_rechecked": known_rechecked},
+        )
+        return candidates[:discovery_limit]
+
+    def _discover_from_bootstrap(self, seed_query: str | None, limit: int) -> list[Candidate]:
+        if limit <= 0:
+            return []
+        focus = (seed_query or " ".join(self.settings.seed_queries)).lower()
+        normalized_focus = re.sub(r"[^a-zа-я0-9]+", " ", focus)
+        wants_gambling = bool(re.search(r"(casino|казино|bet|бет|букмекер|ставк|зеркал|mirror)", normalized_focus))
+        use_all = not seed_query or wants_gambling
+
+        candidates: list[Candidate] = []
+        for item in BOOTSTRAP_CANDIDATES:
+            aliases = [str(alias).lower() for alias in item.get("aliases", [])]
+            matched = use_all or any(alias in normalized_focus for alias in aliases)
+            if not matched:
                 continue
-            fresh.append(candidate)
-        if skipped_known:
-            self.db.add_log(run_id, "info", "Уже известные домены пропущены", {"count": skipped_known})
-        return fresh
+            domain = extract_domain(str(item["domain"]))
+            if not is_candidate_domain(domain):
+                continue
+            candidates.append(
+                Candidate(
+                    url=normalize_url(domain),
+                    domain=domain,
+                    category=str(item.get("category") or "suspicious"),
+                    why=(
+                        "Bootstrap-кандидат: внешний поиск не дал достаточно доменов, "
+                        "поэтому известный бренд/домен отправлен на техническую проверку."
+                    ),
+                    search_query=seed_query or "bootstrap brand candidates",
+                    brand=str(item.get("brand") or "") or None,
+                )
+            )
+            if len(candidates) >= limit:
+                break
+        return candidates
 
     def _discover_with_gemini(
         self,
