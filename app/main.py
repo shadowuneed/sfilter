@@ -67,6 +67,11 @@ def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/monitor")
+def monitor() -> FileResponse:
+    return FileResponse(STATIC_DIR / "index.html")
+
+
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     return {
@@ -80,6 +85,10 @@ def health() -> dict[str, Any]:
         "screenshots_enabled": settings.screenshots_enabled,
         "screenshot_runtime": investigator.screenshots.runtime_status(),
         "database": str(settings.database_path),
+        "evidence_dir": str(settings.evidence_dir),
+        "export_dir": str(settings.export_dir),
+        "kz_proxy_configured": bool(settings.kz_proxy_url),
+        "kz_access_label": settings.kz_access_label,
     }
 
 

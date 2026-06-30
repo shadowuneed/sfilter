@@ -88,6 +88,8 @@ class Settings:
     screenshots_enabled: bool = True
     osint_feeds_enabled: bool = False
     user_agent: str = DEFAULT_USER_AGENT
+    kz_proxy_url: str | None = None
+    kz_access_label: str = "server direct network"
     seed_queries: list[str] = field(default_factory=lambda: DEFAULT_SEED_QUERIES.copy())
     osint_feeds: list[str] = field(default_factory=lambda: DEFAULT_OSINT_FEEDS.copy())
 
@@ -126,6 +128,11 @@ def get_settings() -> Settings:
         screenshots_enabled=_bool_env("SCREENSHOTS_ENABLED", True),
         osint_feeds_enabled=_bool_env("OSINT_FEEDS_ENABLED", False),
         user_agent=os.getenv("USER_AGENT", DEFAULT_USER_AGENT).strip() or DEFAULT_USER_AGENT,
+        kz_proxy_url=(os.getenv("KZ_PROXY_URL") or os.getenv("KZ_HTTP_PROXY") or "").strip() or None,
+        kz_access_label=(
+            os.getenv("KZ_ACCESS_LABEL")
+            or ("Kazakhstan proxy" if os.getenv("KZ_PROXY_URL") else "server direct network")
+        ).strip() or "server direct network",
         seed_queries=seed_queries,
         osint_feeds=osint_feeds,
     )

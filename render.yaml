@@ -2,7 +2,7 @@ services:
   - type: web
     name: argus-investigator
     runtime: docker
-    plan: free
+    plan: starter
     autoDeploy: false
     envVars:
       - key: GEMINI_API_KEYS
@@ -16,7 +16,11 @@ services:
       - key: GEMINI_TIMEOUT_SECONDS
         value: "90"
       - key: DATABASE_PATH
-        value: data/argus.db
+        value: /var/data/data/argus.db
+      - key: EVIDENCE_DIR
+        value: /var/data/evidence
+      - key: EXPORT_DIR
+        value: /var/data/exports
       - key: MAX_CANDIDATES_PER_RUN
         value: "15"
       - key: MAX_MIRROR_CHECKS_PER_RUN
@@ -27,3 +31,11 @@ services:
         value: /ms-playwright
       - key: OSINT_FEEDS_ENABLED
         value: "false"
+      - key: KZ_PROXY_URL
+        sync: false
+      - key: KZ_ACCESS_LABEL
+        value: Kazakhstan access check
+    disk:
+      name: argus-data
+      mountPath: /var/data
+      sizeGB: 1

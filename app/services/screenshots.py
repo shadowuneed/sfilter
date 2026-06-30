@@ -78,7 +78,8 @@ class ScreenshotService:
                     device_scale_factor=1,
                     user_agent=self.settings.user_agent,
                     locale="ru-RU",
-                    timezone_id="Europe/Moscow",
+                    timezone_id="Asia/Almaty",
+                    proxy={"server": self.settings.kz_proxy_url} if self.settings.kz_proxy_url else None,
                 )
                 page = await context.new_page()
                 page.set_default_timeout(15_000)

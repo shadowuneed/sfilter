@@ -4,7 +4,9 @@ import hashlib
 import re
 import socket
 import ssl
+import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -13,7 +15,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from app.config import Settings
-from app.services.domains import extract_domain, normalize_url, suspicious_tld
+from app.services.domains import extract_domain, normalize_url, registered_domain, suspicious_tld
 
 
 CASINO_KEYWORDS = {
@@ -54,6 +56,21 @@ SCAM_KEYWORDS = {
     "гарантированный",
 }
 
+BLOCK_PAGE_MARKERS = {
+    "access to this site is blocked",
+    "site is blocked",
+    "blocked by",
+    "resource is blocked",
+    "доступ к данному ресурсу ограничен",
+    "доступ ограничен",
+    "сайт заблокирован",
+    "ресурс заблокирован",
+    "заблокировано",
+    "заблокирован",
+    "бұғатталған",
+    "қолжетімділік шектелген",
+}
+
 
 @dataclass
 class EvidenceResult:
@@ -67,6 +84,13 @@ class EvidenceResult:
     text_excerpt: str | None = None
     html_path: str | None = None
     html_sha256: str | None = None
+    response_time_ms: int | None = None
+    page_size_bytes: int | None = None
+    redirect_count: int = 0
+    redirect_chain: list[dict[str, Any]] = field(default_factory=list)
+    access_origin: str | None = None
+    blocked_by_policy: bool = False
+    domain_info: dict[str, Any] = field(default_factory=dict)
     dns: dict[str, Any] = field(default_factory=dict)
     tls: dict[str, Any] = field(default_factory=dict)
     keyword_hits: list[str] = field(default_factory=list)
@@ -79,6 +103,13 @@ class EvidenceResult:
             "text_excerpt": self.text_excerpt,
             "keyword_hits": self.keyword_hits,
             "errors": self.errors,
+            "response_time_ms": self.response_time_ms,
+            "page_size_bytes": self.page_size_bytes,
+            "redirect_count": self.redirect_count,
+            "redirect_chain": self.redirect_chain,
+            "access_origin": self.access_origin,
+            "blocked_by_policy": self.blocked_by_policy,
+            "domain": self.domain_info,
         }
 
 
@@ -90,6 +121,7 @@ class EvidenceCollector:
         normalized = normalize_url(url)
         result = EvidenceResult(requested_url=normalized)
         result.domain = extract_domain(normalized)
+        result.access_origin = self.settings.kz_access_label
         result.dns = self._resolve_dns(result.domain)
         result.tls = self._tls_certificate(result.domain)
 
@@ -101,16 +133,30 @@ class EvidenceCollector:
             timeout=self.settings.request_timeout_seconds,
             headers=headers,
             verify=True,
+            proxy=self.settings.kz_proxy_url,
         ) as client:
+            result.dns.update(await self._resolve_mx(client, result.domain))
+            result.domain_info = await self._domain_rdap(client, result.domain)
             for candidate in candidates:
                 try:
+                    started = time.perf_counter()
                     response = await client.get(candidate)
+                    result.response_time_ms = int((time.perf_counter() - started) * 1000)
                     result.status_code = response.status_code
                     result.final_url = str(response.url)
+                    result.page_size_bytes = len(response.content)
+                    result.redirect_count = len(response.history)
+                    result.redirect_chain = [
+                        {"status_code": item.status_code, "url": str(item.url)}
+                        for item in response.history[:10]
+                    ]
                     result.active = 200 <= response.status_code < 400
                     content_type = response.headers.get("content-type", "")
                     if "text/html" in content_type or response.text:
                         self._parse_html(result, response.text[:1_500_000], run_id)
+                    if response.status_code == 451 or self._looks_blocked(result):
+                        result.blocked_by_policy = True
+                        result.active = False
                     break
                 except Exception as exc:  # noqa: BLE001 - keep evidence of network failures.
                     result.errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
@@ -157,13 +203,33 @@ class EvidenceCollector:
 
     def _resolve_dns(self, domain: str | None) -> dict[str, Any]:
         if not domain:
-            return {"records": [], "error": "empty domain"}
+            return {"records": [], "mx_records": [], "error": "empty domain"}
         try:
             addresses = socket.getaddrinfo(domain, None)
             ips = sorted({item[4][0] for item in addresses if item and item[4]})
-            return {"records": ips[:20]}
+            return {"records": ips[:20], "mx_records": []}
         except Exception as exc:  # noqa: BLE001
-            return {"records": [], "error": f"{type(exc).__name__}: {exc}"}
+            return {"records": [], "mx_records": [], "error": f"{type(exc).__name__}: {exc}"}
+
+    async def _resolve_mx(self, client: httpx.AsyncClient, domain: str | None) -> dict[str, Any]:
+        if not domain:
+            return {"mx_records": []}
+        try:
+            response = await client.get(
+                "https://cloudflare-dns.com/dns-query",
+                params={"name": domain, "type": "MX"},
+                headers={"accept": "application/dns-json"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            records: list[str] = []
+            for answer in payload.get("Answer", []) or []:
+                data = str(answer.get("data") or "").strip().rstrip(".")
+                if data:
+                    records.append(data)
+            return {"mx_records": sorted(set(records))[:20]}
+        except Exception as exc:  # noqa: BLE001
+            return {"mx_records": [], "mx_error": f"{type(exc).__name__}: {exc}"}
 
     def _tls_certificate(self, domain: str | None) -> dict[str, Any]:
         if not domain:
@@ -180,9 +246,95 @@ class EvidenceCollector:
                 "issuer": self._cert_name(issuer),
                 "not_before": cert.get("notBefore"),
                 "not_after": cert.get("notAfter"),
+                "valid": True,
+                "expires_in_days": self._cert_days_left(cert.get("notAfter")),
             }
         except Exception as exc:  # noqa: BLE001
-            return {"error": f"{type(exc).__name__}: {exc}"}
+            return {"valid": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    async def _domain_rdap(self, client: httpx.AsyncClient, domain: str | None) -> dict[str, Any]:
+        if not domain:
+            return {}
+        reg_domain = registered_domain(domain)
+        if not reg_domain:
+            return {}
+        try:
+            response = await client.get(f"https://rdap.org/domain/{reg_domain}")
+            if response.status_code == 404:
+                return {"registered_domain": reg_domain, "error": "RDAP record not found"}
+            response.raise_for_status()
+            payload = response.json()
+            created_at = self._rdap_event(payload, "registration")
+            expires_at = self._rdap_event(payload, "expiration")
+            updated_at = self._rdap_event(payload, "last changed") or self._rdap_event(payload, "last update")
+            return {
+                "registered_domain": reg_domain,
+                "created_at": created_at,
+                "expires_at": expires_at,
+                "updated_at": updated_at,
+                "age_days": self._age_days(created_at),
+                "registrar": self._rdap_registrar(payload),
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {"registered_domain": reg_domain, "error": f"{type(exc).__name__}: {exc}"}
+
+    @staticmethod
+    def _rdap_event(payload: dict[str, Any], action: str) -> str | None:
+        action = action.lower()
+        for event in payload.get("events", []) or []:
+            if str(event.get("eventAction") or "").lower() == action:
+                return str(event.get("eventDate") or "") or None
+        return None
+
+    @staticmethod
+    def _rdap_registrar(payload: dict[str, Any]) -> str | None:
+        for entity in payload.get("entities", []) or []:
+            roles = {str(role).lower() for role in entity.get("roles", []) or []}
+            if "registrar" not in roles:
+                continue
+            vcard = entity.get("vcardArray") or []
+            if len(vcard) < 2:
+                continue
+            for item in vcard[1]:
+                if not item or item[0] not in {"fn", "org"}:
+                    continue
+                value = item[3] if len(item) > 3 else None
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+                if isinstance(value, list) and value:
+                    return str(value[0]).strip()
+        return None
+
+    @staticmethod
+    def _age_days(value: str | None) -> int | None:
+        if not value:
+            return None
+        try:
+            created = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return max(0, (datetime.now(timezone.utc) - created).days)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _cert_days_left(value: str | None) -> int | None:
+        if not value:
+            return None
+        try:
+            expires = datetime.fromtimestamp(ssl.cert_time_to_seconds(value), tz=timezone.utc)
+            return (expires - datetime.now(timezone.utc)).days
+        except Exception:
+            return None
+
+    @staticmethod
+    def _looks_blocked(result: EvidenceResult) -> bool:
+        text = " ".join(
+            [
+                result.title or "",
+                result.description or "",
+                result.text_excerpt or "",
+            ]
+        ).lower()
+        return any(marker in text for marker in BLOCK_PAGE_MARKERS)
 
     @staticmethod
     def _cert_name(value: Any) -> str:
@@ -208,10 +360,11 @@ def score_finding(
     risk = 20
 
     category_lower = (category or "").lower()
-    if category_lower in {"casino", "gambling", "betting"}:
+    category_tokens = set(re.split(r"[^a-z]+", category_lower))
+    if category_tokens & {"casino", "gambling", "betting"}:
         risk += 35
         reasons.append("Категория похожа на казино/беттинг.")
-    elif category_lower in {"phishing", "scam", "pyramid", "malware"}:
+    elif category_tokens & {"phishing", "scam", "pyramid", "malware"}:
         risk += 45
         reasons.append("Категория похожа на фишинг/скам/пирамиду.")
     elif category_lower == "suspicious":

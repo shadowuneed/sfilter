@@ -1,51 +1,40 @@
 const state = {
   selectedRunId: null,
   pollTimer: null,
-  selectedCases: new Set(),
-  runStatuses: new Map(),
   cases: [],
+  filteredCases: [],
+  runs: [],
 };
 
 const els = {
+  scanForm: document.getElementById("scanForm"),
   healthLine: document.getElementById("healthLine"),
-  statusPill: document.getElementById("statusPill"),
+  geminiPill: document.getElementById("geminiPill"),
+  kzAccessPill: document.getElementById("kzAccessPill"),
   runBtn: document.getElementById("runBtn"),
   stopBtn: document.getElementById("stopBtn"),
-  refreshBtn: document.getElementById("refreshBtn"),
   seedQuery: document.getElementById("seedQuery"),
   maxCandidates: document.getElementById("maxCandidates"),
   takeScreenshots: document.getElementById("takeScreenshots"),
   currentRun: document.getElementById("currentRun"),
   runStatus: document.getElementById("runStatus"),
-  candidateCount: document.getElementById("candidateCount"),
-  findingCount: document.getElementById("findingCount"),
-  runsList: document.getElementById("runsList"),
-  findingsList: document.getElementById("findingsList"),
-  logsList: document.getElementById("logsList"),
-  warningCount: document.getElementById("warningCount"),
-  csvLink: document.getElementById("csvLink"),
-  xlsxLink: document.getElementById("xlsxLink"),
-  casesList: document.getElementById("casesList"),
+  activeCaseCount: document.getElementById("activeCaseCount"),
+  highRiskCount: document.getElementById("highRiskCount"),
+  evidenceCount: document.getElementById("evidenceCount"),
+  trendChart: document.getElementById("trendChart"),
   caseSearch: document.getElementById("caseSearch"),
-  caseStatusFilter: document.getElementById("caseStatusFilter"),
-  caseArchiveFilter: document.getElementById("caseArchiveFilter"),
-  caseSavedFilter: document.getElementById("caseSavedFilter"),
+  categoryFilter: document.getElementById("categoryFilter"),
   caseMinRisk: document.getElementById("caseMinRisk"),
   caseFilterBtn: document.getElementById("caseFilterBtn"),
-  selectedCsvBtn: document.getElementById("selectedCsvBtn"),
-  selectedXlsxBtn: document.getElementById("selectedXlsxBtn"),
-  totalCaseCount: document.getElementById("totalCaseCount"),
-  activeCaseCount: document.getElementById("activeCaseCount"),
-  savedCaseCount: document.getElementById("savedCaseCount"),
-  selectedCaseCount: document.getElementById("selectedCaseCount"),
+  casesList: document.getElementById("casesList"),
+  runsList: document.getElementById("runsList"),
+  methodologyList: document.getElementById("methodologyList"),
+  logsList: document.getElementById("logsList"),
+  warningCount: document.getElementById("warningCount"),
   drawerOverlay: document.getElementById("drawerOverlay"),
   drawerClose: document.getElementById("drawerClose"),
   drawerTitle: document.getElementById("drawerTitle"),
   caseDetailContent: document.getElementById("caseDetailContent"),
-  aiActivity: document.getElementById("aiActivity"),
-  aiActivityTitle: document.getElementById("aiActivityTitle"),
-  aiActivityText: document.getElementById("aiActivityText"),
-  aiActivityJump: document.getElementById("aiActivityJump"),
 };
 
 const statusLabels = {
@@ -57,17 +46,18 @@ const statusLabels = {
   failed: "ошибка",
 };
 
-const caseStatusLabels = {
-  uninvestigated: "Не расследован",
-  investigating: "Расследуется",
-  investigated: "Расследован",
+const categoryLabels = {
+  casino: "Казино",
+  phishing: "Фишинг",
+  pyramid: "Пирамиды",
+  suspicious: "Подозрительный",
 };
 
-const verdictLabels = {
-  suspected_fraud_or_illegal: "высокий риск",
-  suspicious: "подозрительно",
-  needs_review: "проверить вручную",
-  low_signal: "слабый сигнал",
+const categoryColors = {
+  casino: "#f59e0b",
+  phishing: "#ef4444",
+  pyramid: "#8b5cf6",
+  suspicious: "#3b82f6",
 };
 
 async function api(path, options = {}) {
@@ -93,116 +83,106 @@ function escapeHtml(value) {
 
 function relPath(path) {
   if (!path) return null;
-  return String(path).replaceAll("\\", "/");
+  return String(path).replaceAll("\\", "/").replace(/^\/+/, "");
 }
 
 function formatDate(value) {
   if (!value) return "-";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString("ru-RU");
+}
+
+function formatDateTime(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" });
 }
 
-function statusLabel(status) {
-  return statusLabels[status] || status || "-";
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (!value) return "N/A";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function caseStatusLabel(status) {
-  return caseStatusLabels[status] || status || "-";
+function formatResponseTime(ms) {
+  const value = Number(ms || 0);
+  if (!value) return "N/A";
+  if (value < 1000) return `${value} мс`;
+  return `${(value / 1000).toFixed(2)} сек`;
 }
 
-function verdictLabel(verdict) {
-  return verdictLabels[verdict] || verdict || "-";
+function normalizeCategory(value) {
+  const text = String(value || "").toLowerCase();
+  if (/(casino|gambling|betting|bookmaker)/.test(text)) return "casino";
+  if (/(phishing|scam|malware)/.test(text)) return "phishing";
+  if (/(pyramid|investment)/.test(text)) return "pyramid";
+  return "suspicious";
+}
+
+function categoryLabel(value) {
+  return categoryLabels[normalizeCategory(value)] || "Подозрительный";
 }
 
 function riskClass(score) {
-  if (score >= 80) return "high";
-  if (score >= 55) return "mid";
+  const value = Number(score || 0);
+  if (value >= 80) return "high";
+  if (value >= 55) return "mid";
   return "low";
-}
-
-function terminalStatus(status) {
-  return ["completed", "failed", "canceled"].includes(status);
 }
 
 function runningStatus(status) {
   return ["queued", "running", "canceling"].includes(status);
 }
 
-function selectedCaseQuery() {
-  return Array.from(state.selectedCases).join(",");
+function certDate(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function updateSelectedCount() {
-  els.selectedCaseCount.textContent = state.selectedCases.size;
+function certDaysLeft(tls = {}) {
+  if (Number.isFinite(Number(tls.expires_in_days))) return Number(tls.expires_in_days);
+  const date = certDate(tls.not_after);
+  if (!date) return null;
+  return Math.floor((date.getTime() - Date.now()) / 86400000);
 }
 
-function formatMeta(meta) {
-  if (!meta || !Object.keys(meta).length) return "";
-  const parts = [];
-  if (meta.domain) parts.push(`домен: ${meta.domain}`);
-  if (meta.url) parts.push(`url: ${meta.url}`);
-  if (meta.reason) parts.push(`причина: ${meta.reason}`);
-  if (meta.count !== undefined) parts.push(`кол-во: ${meta.count}`);
-  if (meta.findings !== undefined) parts.push(`в отчете: ${meta.findings}`);
-  if (meta.risk_score !== undefined) parts.push(`риск: ${meta.risk_score}`);
-  if (meta.status_code !== undefined && meta.status_code !== null) parts.push(`HTTP: ${meta.status_code}`);
-  if (meta.error) parts.push(`ошибка: ${meta.error}`);
-  return parts.length ? ` · ${parts.join(" · ")}` : "";
+function statusLabel(status) {
+  return statusLabels[status] || status || "-";
 }
 
-function showAiActivity(title, text, status = "running") {
-  els.aiActivity.hidden = false;
-  els.aiActivity.className = `ai-activity ${status}`;
-  els.aiActivityTitle.textContent = title;
-  els.aiActivityText.textContent = text || "Argus продолжает проверку...";
-}
-
-function hideAiActivity() {
-  els.aiActivity.hidden = true;
-}
-
-function latestActivityText(logs) {
-  if (!logs || !logs.length) return "Gemini собирает кандидатов и источники...";
-  const last = logs[logs.length - 1];
-  return `${last.message}${formatMeta(last.meta)}`;
-}
-
-function updateAiActivity(run, logs = []) {
-  if (!run || !runningStatus(run.status)) {
-    hideAiActivity();
-    return;
-  }
-  if (run.status === "queued") {
-    showAiActivity("ИИ готовит запуск", "Создаю проверку и подключаю Gemini...", "queued");
-    return;
-  }
-  if (run.status === "canceling") {
-    showAiActivity("Останавливаю проверку", "Даю текущему запросу завершиться и закрываю запуск.", "canceling");
-    return;
-  }
-  showAiActivity("ИИ ищет подозрительные сайты", latestActivityText(logs), "running");
+function renderPill(el, text, cls) {
+  el.textContent = text;
+  el.className = `health-pill ${cls}`;
 }
 
 async function loadHealth() {
   try {
     const health = await api("/api/health");
-    els.statusPill.textContent = health.gemini_configured ? "готово" : "нет ключа";
-    els.statusPill.className = health.gemini_configured ? "ok" : "warn";
+    renderPill(els.geminiPill, health.gemini_configured ? "AI: готов" : "AI: нет ключа", health.gemini_configured ? "ok" : "warn");
+    renderPill(
+      els.kzAccessPill,
+      health.kz_proxy_configured ? "KZ: proxy" : "KZ: сеть сервера",
+      health.kz_proxy_configured ? "ok" : "warn",
+    );
     els.healthLine.textContent = health.gemini_configured
-      ? `${health.gemini_keys.length} ключ(а), ${health.rpm_limit}/мин и ${health.rpd_limit}/день на ключ`
-      : "Добавьте GEMINI_API_KEYS в .env";
+      ? `${health.gemini_keys.length} ключ(а), модель ${health.gemini_model}. Доступность: ${health.kz_access_label}.`
+      : "Добавьте GEMINI_API_KEYS в .env или Render Environment.";
   } catch (error) {
-    els.statusPill.textContent = "ошибка";
-    els.statusPill.className = "warn";
+    renderPill(els.geminiPill, "AI: ошибка", "bad");
+    renderPill(els.kzAccessPill, "KZ: ошибка", "bad");
     els.healthLine.textContent = error.message;
   }
 }
 
-async function startRun() {
+async function startRun(event) {
+  event?.preventDefault();
   els.runBtn.disabled = true;
-  els.runBtn.textContent = "Запускаю...";
-  showAiActivity("ИИ готовит запуск", "Создаю проверку и подключаю Gemini...", "queued");
+  els.runBtn.textContent = "Запускаю";
   try {
     const payload = {
       seed_query: els.seedQuery.value.trim() || null,
@@ -212,243 +192,276 @@ async function startRun() {
     const result = await api("/api/runs", { method: "POST", body: JSON.stringify(payload) });
     state.selectedRunId = result.run_id;
     await loadRuns();
-    await loadRun(result.run_id, { refreshRegistry: false });
+    await loadRun(result.run_id);
     startPolling();
   } catch (error) {
-    hideAiActivity();
     alert(`Не удалось запустить проверку: ${error.message}`);
   } finally {
     els.runBtn.disabled = false;
-    els.runBtn.textContent = "Начать проверку";
+    els.runBtn.textContent = "Запустить";
   }
 }
 
 async function stopRun() {
   if (!state.selectedRunId) return;
-  showAiActivity("Останавливаю проверку", "Отправляю команду остановки...", "canceling");
   els.stopBtn.disabled = true;
   await api(`/api/runs/${state.selectedRunId}/cancel`, { method: "POST" });
-  await loadRun(state.selectedRunId, { refreshRegistry: true });
+  await loadRun(state.selectedRunId);
 }
 
 async function loadRuns() {
-  const data = await api("/api/runs?limit=50");
-  if (!data.runs.length) {
-    els.runsList.innerHTML = '<div class="empty-state">Пока нет запусков.</div>';
-    return;
-  }
-  if (!state.selectedRunId) state.selectedRunId = data.runs[0].id;
-  els.runsList.innerHTML = data.runs.map((run) => {
-    const active = run.id === state.selectedRunId ? "active" : "";
-    const signal = runningStatus(run.status) ? "live" : run.status === "failed" ? "bad" : "done";
-    return `
-      <button class="run-item ${active}" data-run-id="${run.id}">
-        <span class="run-signal ${signal}"></span>
-        <span class="run-main">
-          <strong>#${run.id}</strong>
-          <small>${escapeHtml(formatDate(run.started_at))}</small>
-        </span>
-        <span class="run-side">
-          <strong>${escapeHtml(statusLabel(run.status))}</strong>
-          <small>${run.finding_count || 0} в отчете</small>
-        </span>
-      </button>`;
-  }).join("");
-  document.querySelectorAll(".run-item").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.selectedRunId = Number(button.dataset.runId);
-      loadRun(state.selectedRunId, { refreshRegistry: false });
-    });
-  });
+  const data = await api("/api/runs?limit=40");
+  state.runs = data.runs || [];
+  if (!state.selectedRunId && state.runs.length) state.selectedRunId = state.runs[0].id;
+  renderRuns();
 }
 
-async function loadRun(runId, options = {}) {
+async function loadRun(runId) {
   if (!runId) return;
   const data = await api(`/api/runs/${runId}`);
   const run = data.run;
-  const previousStatus = state.runStatuses.get(run.id);
-  state.runStatuses.set(run.id, run.status);
   state.selectedRunId = run.id;
 
   els.currentRun.textContent = `#${run.id}`;
-  els.runStatus.textContent = statusLabel(run.status);
-  els.candidateCount.textContent = run.candidate_count || 0;
-  els.findingCount.textContent = run.finding_count || 0;
-  els.csvLink.href = `/api/runs/${run.id}/export.csv`;
-  els.xlsxLink.href = `/api/runs/${run.id}/export.xlsx`;
-  els.csvLink.classList.remove("link-disabled");
-  els.xlsxLink.classList.remove("link-disabled");
+  els.runStatus.textContent = `${statusLabel(run.status)} · ${run.finding_count || 0}/${run.candidate_count || 0}`;
   els.stopBtn.disabled = !runningStatus(run.status);
 
-  renderFindings(data.findings || []);
+  renderMethodology(run.methodology || []);
   renderLogs(data.logs || []);
-  updateAiActivity(run, data.logs || []);
   await loadRuns();
 
-  const finishedNow = terminalStatus(run.status) && previousStatus && runningStatus(previousStatus);
-  if (options.refreshRegistry || finishedNow) await loadCases();
   if (runningStatus(run.status)) startPolling();
-  else stopPolling();
+  else {
+    stopPolling();
+    await loadCases();
+  }
 }
 
-function renderFindings(findings) {
-  if (!findings.length) {
-    els.findingsList.innerHTML = '<div class="empty-state">В этом запуске пока нет зафиксированных сайтов.</div>';
+function renderRuns() {
+  if (!state.runs.length) {
+    els.runsList.innerHTML = '<div class="empty-state">Запусков пока нет.</div>';
     return;
   }
-  els.findingsList.innerHTML = findings.map(findingCard).join("");
+  els.runsList.innerHTML = state.runs.map((run) => {
+    const active = run.id === state.selectedRunId ? "active" : "";
+    const signal = runningStatus(run.status) ? "live" : run.status === "failed" ? "bad" : "done";
+    return `
+      <button class="run-item ${active}" data-run-id="${run.id}" type="button">
+        <span class="run-signal ${signal}"></span>
+        <span>
+          <strong>#${run.id}</strong>
+          <small>${escapeHtml(formatDateTime(run.started_at))}</small>
+        </span>
+        <span>
+          <strong>${escapeHtml(statusLabel(run.status))}</strong>
+          <small>${run.finding_count || 0} находок</small>
+        </span>
+      </button>`;
+  }).join("");
+  document.querySelectorAll("[data-run-id]").forEach((button) => {
+    button.addEventListener("click", () => loadRun(Number(button.dataset.runId)).catch(console.error));
+  });
 }
 
-function findingCard(finding) {
-  const screenshot = relPath(finding.screenshot_path);
-  const html = relPath(finding.html_path);
-  const sourceUrl = finding.sources?.[0]?.url;
-  const reasons = (finding.reasons || []).slice(0, 5);
-  const evidence = finding.evidence || {};
-  return `
-    <article class="finding-card">
-      <div class="finding-title-row">
-        <div>
-          <strong>${escapeHtml(finding.domain)}</strong>
-          ${finding.title ? `<span>${escapeHtml(finding.title)}</span>` : ""}
-        </div>
-        <div class="risk-pill ${riskClass(finding.risk_score)}">${finding.risk_score}/100</div>
-      </div>
-      <div class="fact-grid">
-        <div><span>Вердикт</span><strong>${escapeHtml(verdictLabel(finding.verdict))}</strong></div>
-        <div><span>Тип</span><strong>${escapeHtml(finding.category || "подозрительный")}</strong></div>
-        <div><span>HTTP</span><strong>${escapeHtml(finding.status_code || "-")}</strong></div>
-      </div>
-      ${reasons.length ? `<ul class="reason-list">${reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>` : ""}
-      ${evidence.search_query ? `<div class="soft-note">Запрос: ${escapeHtml(evidence.search_query)}</div>` : ""}
-      <div class="inline-actions">
-        <a href="${escapeHtml(finding.final_url || finding.url)}" target="_blank">Открыть сайт</a>
-        ${screenshot ? `<a href="/${escapeHtml(screenshot)}" target="_blank">Скриншот</a>` : ""}
-        ${html ? `<a href="/${escapeHtml(html)}" target="_blank">HTML</a>` : ""}
-        ${sourceUrl ? `<a href="${escapeHtml(sourceUrl)}" target="_blank">Источник</a>` : ""}
-      </div>
-    </article>`;
+function renderMethodology(items) {
+  if (!items.length) {
+    els.methodologyList.innerHTML = '<div class="empty-state">Методика появится после запуска.</div>';
+    return;
+  }
+  els.methodologyList.innerHTML = items.map((item, index) => `
+    <div class="method-step">
+      <span>${index + 1}</span>
+      <p>${escapeHtml(item)}</p>
+    </div>
+  `).join("");
+}
+
+function formatMeta(meta) {
+  if (!meta || !Object.keys(meta).length) return "";
+  const parts = [];
+  if (meta.domain) parts.push(`домен: ${meta.domain}`);
+  if (meta.url) parts.push(`url: ${meta.url}`);
+  if (meta.reason) parts.push(`причина: ${meta.reason}`);
+  if (meta.access_origin) parts.push(`сеть: ${meta.access_origin}`);
+  if (meta.count !== undefined) parts.push(`кол-во: ${meta.count}`);
+  if (meta.findings !== undefined) parts.push(`в отчете: ${meta.findings}`);
+  if (meta.risk_score !== undefined) parts.push(`риск: ${meta.risk_score}`);
+  if (meta.status_code !== undefined && meta.status_code !== null) parts.push(`HTTP: ${meta.status_code}`);
+  if (meta.error) parts.push(`ошибка: ${meta.error}`);
+  return parts.length ? ` · ${parts.join(" · ")}` : "";
 }
 
 function renderLogs(logs) {
   const warnings = logs.filter((log) => ["warning", "error"].includes(log.level)).length;
-  els.warningCount.textContent = `${warnings} ошибок/пропусков`;
+  els.warningCount.textContent = `${warnings} предупреждений`;
   if (!logs.length) {
     els.logsList.innerHTML = '<div class="empty-state">Журнал появится после запуска.</div>';
     return;
   }
-  els.logsList.innerHTML = logs.map((log) => {
+  els.logsList.innerHTML = logs.slice(-80).map((log) => {
     const cls = log.level === "error" ? "error" : log.level === "warning" ? "warning" : "";
-    return `<div class="log-line ${cls}"><span>${escapeHtml(formatDate(log.timestamp))}</span><strong>${escapeHtml(log.level)}</strong><span>${escapeHtml(log.message)}${escapeHtml(formatMeta(log.meta))}</span></div>`;
+    return `
+      <div class="log-line ${cls}">
+        <span>${escapeHtml(formatDateTime(log.timestamp))}</span>
+        <strong>${escapeHtml(log.level)}</strong>
+        <p>${escapeHtml(log.message)}${escapeHtml(formatMeta(log.meta))}</p>
+      </div>`;
   }).join("");
   els.logsList.scrollTop = els.logsList.scrollHeight;
 }
 
 async function loadCases() {
-  const params = new URLSearchParams({ limit: "1000" });
+  const params = new URLSearchParams({ archived: "false", limit: "1000" });
   if (els.caseSearch.value.trim()) params.set("q", els.caseSearch.value.trim());
-  if (els.caseStatusFilter.value) params.set("status", els.caseStatusFilter.value);
-  if (els.caseArchiveFilter.value !== "") params.set("archived", els.caseArchiveFilter.value);
-  if (els.caseSavedFilter.value !== "") params.set("saved", els.caseSavedFilter.value);
   if (els.caseMinRisk.value) params.set("min_risk", els.caseMinRisk.value);
   const data = await api(`/api/cases?${params.toString()}`);
   state.cases = data.cases || [];
+  const category = els.categoryFilter.value;
+  state.filteredCases = category
+    ? state.cases.filter((item) => normalizeCategory(item.category) === category)
+    : state.cases;
   renderCaseStats(state.cases);
-  renderCases(state.cases);
+  renderCases(state.filteredCases);
+  drawTrend(state.cases);
 }
 
 function renderCaseStats(cases) {
-  els.totalCaseCount.textContent = cases.length;
-  els.activeCaseCount.textContent = cases.filter((item) => !item.archived).length;
-  els.savedCaseCount.textContent = cases.filter((item) => item.saved).length;
-  updateSelectedCount();
+  els.activeCaseCount.textContent = cases.length;
+  els.highRiskCount.textContent = cases.filter((item) => Number(item.best_risk_score || 0) >= 70).length;
+  els.evidenceCount.textContent = cases.filter((item) => item.html_path || item.screenshot_path).length;
 }
 
 function renderCases(cases) {
   if (!cases.length) {
-    els.casesList.innerHTML = '<div class="empty-state">В этом фильтре пока ничего нет.</div>';
+    els.casesList.innerHTML = '<div class="empty-state">В выбранном фильтре нет рабочих доменов.</div>';
     return;
   }
-  els.casesList.innerHTML = cases.map((item) => caseRow(item)).join("");
-  bindCaseControls();
+  els.casesList.innerHTML = cases.map(domainRow).join("");
+  document.querySelectorAll("[data-case-open]").forEach((button) => {
+    button.addEventListener("click", () => openCase(Number(button.dataset.caseOpen)).catch(console.error));
+  });
 }
 
-function caseRow(item) {
-  const checked = state.selectedCases.has(item.id) ? "checked" : "";
-  const archivedClass = item.archived ? "archived" : "";
-  const screenshot = relPath(item.screenshot_path);
-  const evidenceBits = [
-    item.screenshot_path ? "скриншот" : null,
-    item.html_path ? "HTML" : null,
-    item.html_sha256 ? "SHA-256" : null,
-  ].filter(Boolean).join(" · ");
+function domainRow(item) {
+  const category = normalizeCategory(item.category);
+  const risk = Number(item.best_risk_score || 0);
   return `
-    <article class="case-row ${archivedClass}" data-case-id="${item.id}">
-      <div class="case-main">
-        <input class="case-select" type="checkbox" data-case-select="${item.id}" ${checked}>
-        <div>
-          <button class="case-domain-button" data-case-open="${item.id}">${escapeHtml(item.domain)}</button>
-          ${item.title ? `<p>${escapeHtml(item.title)}</p>` : ""}
-          <div class="case-chips">
-            <span>${escapeHtml(item.category || "suspicious")}</span>
-            <span>${escapeHtml(evidenceBits || "без скриншота")}</span>
-            ${item.saved ? "<span>сохранено</span>" : ""}
-            ${item.archived ? "<span>архив</span>" : ""}
-          </div>
-        </div>
+    <article class="domain-row" role="row">
+      <div class="domain-cell domain-name" role="cell">
+        <button data-case-open="${item.id}" type="button">${escapeHtml(item.domain)}</button>
+        ${item.title ? `<small>${escapeHtml(item.title)}</small>` : ""}
       </div>
-      <div class="risk-pill ${riskClass(item.best_risk_score)}">${item.best_risk_score}/100</div>
-      <select class="case-status-select" data-case-status="${item.id}">
-        ${Object.entries(caseStatusLabels).map(([value, label]) => `<option value="${value}" ${item.status === value ? "selected" : ""}>${label}</option>`).join("")}
-      </select>
-      <div class="case-runs">
-        <strong>${item.run_total || 0}</strong>
-        <span>запусков</span>
-        <small>последний #${escapeHtml(item.latest_run_id || "-")}</small>
+      <div role="cell">
+        <span class="category-badge ${category}">${escapeHtml(categoryLabel(item.category))}</span>
       </div>
-      <div class="case-actions">
-        <button class="secondary-btn mini" data-case-open="${item.id}">Дело</button>
-        ${screenshot ? `<a class="secondary-btn mini" href="/${escapeHtml(screenshot)}" target="_blank">Скрин</a>` : ""}
-        <button class="secondary-btn mini" data-case-save="${item.id}">${item.saved ? "Убрать" : "Сохранить"}</button>
-        <button class="secondary-btn mini" data-case-archive="${item.id}">${item.archived ? "Вернуть" : "Архив"}</button>
+      <div role="cell">
+        <span class="risk-badge ${riskClass(risk)}">${risk}%</span>
+      </div>
+      <div class="date-cell" role="cell">${escapeHtml(formatDate(item.first_seen || item.finding_created_at))}</div>
+      <div class="date-cell" role="cell">${escapeHtml(formatDate(item.last_seen || item.finding_created_at))}</div>
+      <div class="action-cell" role="cell">
+        <button class="analysis-btn" data-case-open="${item.id}" type="button">Анализ</button>
       </div>
     </article>`;
 }
 
-function bindCaseControls() {
-  document.querySelectorAll("[data-case-select]").forEach((box) => {
-    box.addEventListener("change", () => {
-      const id = Number(box.dataset.caseSelect);
-      if (box.checked) state.selectedCases.add(id);
-      else state.selectedCases.delete(id);
-      updateSelectedCount();
-    });
-  });
-  document.querySelectorAll("[data-case-status]").forEach((select) => {
-    select.addEventListener("change", () => updateCase(Number(select.dataset.caseStatus), { status: select.value }));
-  });
-  document.querySelectorAll("[data-case-save]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const id = Number(button.dataset.caseSave);
-      const current = state.cases.find((item) => item.id === id);
-      updateCase(id, { saved: !current?.saved });
-    });
-  });
-  document.querySelectorAll("[data-case-archive]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const id = Number(button.dataset.caseArchive);
-      const current = state.cases.find((item) => item.id === id);
-      updateCase(id, { archived: !current?.archived });
-    });
-  });
-  document.querySelectorAll("[data-case-open]").forEach((button) => {
-    button.addEventListener("click", () => openCase(Number(button.dataset.caseOpen)));
-  });
+function dayKey(date) {
+  return date.toISOString().slice(0, 10);
 }
 
-async function updateCase(caseId, patch) {
-  await api(`/api/cases/${caseId}`, { method: "PATCH", body: JSON.stringify(patch) });
-  await loadCases();
+function drawTrend(cases) {
+  const canvas = els.trendChart;
+  if (!canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.floor(rect.width * dpr);
+  canvas.height = Math.floor(320 * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const width = rect.width;
+  const height = 320;
+  ctx.clearRect(0, 0, width, height);
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = [];
+  for (let offset = 21; offset >= 0; offset -= 1) {
+    const date = new Date(today);
+    date.setDate(today.getDate() - offset);
+    days.push(date);
+  }
+
+  const buckets = Object.fromEntries(days.map((date) => [dayKey(date), { casino: 0, phishing: 0, pyramid: 0 }]));
+  cases.forEach((item) => {
+    const raw = item.first_seen || item.finding_created_at || item.last_seen;
+    const date = raw ? new Date(raw) : null;
+    if (!date || Number.isNaN(date.getTime())) return;
+    date.setHours(0, 0, 0, 0);
+    const key = dayKey(date);
+    if (!buckets[key]) return;
+    const category = normalizeCategory(item.category);
+    if (category in buckets[key]) buckets[key][category] += 1;
+  });
+
+  const series = ["casino", "phishing", "pyramid"].map((category) => ({
+    category,
+    values: days.map((date) => buckets[dayKey(date)][category]),
+  }));
+  const maxValue = Math.max(1, ...series.flatMap((item) => item.values));
+  const tickStep = Math.max(1, Math.ceil(maxValue / 5));
+  const axisMax = tickStep * 5;
+  const plot = { left: 54, right: 18, top: 18, bottom: 54 };
+  const plotWidth = width - plot.left - plot.right;
+  const plotHeight = height - plot.top - plot.bottom;
+
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = "rgba(148, 163, 184, 0.16)";
+  ctx.fillStyle = "#94a3b8";
+  ctx.font = "12px Inter, Segoe UI, sans-serif";
+  for (let i = 0; i <= 5; i += 1) {
+    const value = tickStep * i;
+    const y = plot.top + plotHeight - (plotHeight * i) / 5;
+    ctx.beginPath();
+    ctx.moveTo(plot.left, y);
+    ctx.lineTo(width - plot.right, y);
+    ctx.stroke();
+    ctx.fillText(String(value), 18, y + 4);
+  }
+
+  days.forEach((date, index) => {
+    if (index % 3 !== 0 && index !== days.length - 1) return;
+    const x = plot.left + (plotWidth * index) / Math.max(1, days.length - 1);
+    const label = date.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" });
+    ctx.save();
+    ctx.translate(x, height - 26);
+    ctx.rotate(-0.65);
+    ctx.fillText(label, 0, 0);
+    ctx.restore();
+  });
+
+  series.forEach(({ category, values }) => {
+    ctx.strokeStyle = categoryColors[category];
+    ctx.fillStyle = categoryColors[category];
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    values.forEach((value, index) => {
+      const x = plot.left + (plotWidth * index) / Math.max(1, values.length - 1);
+      const y = plot.top + plotHeight - (plotHeight * value) / axisMax;
+      if (index === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    values.forEach((value, index) => {
+      const x = plot.left + (plotWidth * index) / Math.max(1, values.length - 1);
+      const y = plot.top + plotHeight - (plotHeight * value) / axisMax;
+      ctx.beginPath();
+      ctx.arc(x, y, 4, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  });
 }
 
 async function openCase(caseId) {
@@ -458,65 +471,197 @@ async function openCase(caseId) {
   renderCaseDetail(data.case, data.findings || []);
 }
 
+function latestFinding(item, findings) {
+  return findings[0] || item || {};
+}
+
+function positiveSignals(finding) {
+  const evidence = finding.evidence || {};
+  const tls = finding.tls || {};
+  const dns = finding.dns || {};
+  const signals = [];
+  if (finding.status_code >= 200 && finding.status_code < 400) signals.push(`Сайт отвечает HTTP ${finding.status_code}`);
+  if (tls.valid) signals.push(`SSL сертификат действителен${tls.issuer ? `, издатель ${tls.issuer}` : ""}`);
+  if ((dns.records || []).length) signals.push(`DNS возвращает ${(dns.records || []).length} IP адрес(ов)`);
+  if (finding.html_sha256) signals.push("HTML сохранен с SHA-256 отпечатком");
+  if (finding.screenshot_path) signals.push("Скриншот страницы сохранен");
+  if (evidence.response_time_ms && evidence.response_time_ms < 1500) signals.push(`Быстрый ответ: ${formatResponseTime(evidence.response_time_ms)}`);
+  if (evidence.access_origin) signals.push(`Проверено через: ${evidence.access_origin}`);
+  return signals.length ? signals : ["Положительные технические признаки не выделены"];
+}
+
+function negativeSignals(finding) {
+  const evidence = finding.evidence || {};
+  const domainInfo = evidence.domain || {};
+  const dns = finding.dns || {};
+  const tls = finding.tls || {};
+  const signals = [...(finding.reasons || [])];
+  if (evidence.keyword_hits?.length) signals.push(`Ключевые маркеры на странице: ${evidence.keyword_hits.slice(0, 8).join(", ")}`);
+  if (domainInfo.age_days !== null && domainInfo.age_days !== undefined && domainInfo.age_days < 60) {
+    signals.push(`Очень молодой домен: ${domainInfo.age_days} дн.`);
+  }
+  if (!tls.valid) signals.push("SSL сертификат не подтвержден или недоступен");
+  if (!(dns.mx_records || []).length) signals.push("MX записи не найдены");
+  if (Number(evidence.redirect_count || 0) > 2) signals.push(`Много редиректов: ${evidence.redirect_count}`);
+  if (evidence.blocked_by_policy) signals.push("Страница похожа на блокировку доступа");
+  return signals.length ? signals : ["Явные негативные признаки не найдены"];
+}
+
+function renderSignalList(items, type) {
+  return `
+    <div class="signal-box ${type}">
+      <h3>${type === "positive" ? "Позитивные признаки" : "Подозрительные признаки"}</h3>
+      <ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+    </div>`;
+}
+
+function techRow(label, value, cls = "") {
+  return `<div class="tech-row"><span>${escapeHtml(label)}</span><strong class="${cls}">${escapeHtml(value ?? "N/A")}</strong></div>`;
+}
+
+function techCard(title, rows) {
+  return `<article class="tech-card"><h3>${escapeHtml(title)}</h3>${rows.join("")}</article>`;
+}
+
 function renderCaseDetail(item, findings) {
+  const finding = latestFinding(item, findings);
+  const evidence = finding.evidence || {};
+  const dns = finding.dns || {};
+  const tls = finding.tls || {};
+  const domainInfo = evidence.domain || {};
+  const category = normalizeCategory(finding.category || item.category);
+  const risk = Number(finding.risk_score || item.best_risk_score || 0);
+  const screenshot = relPath(finding.screenshot_path || item.screenshot_path);
+  const html = relPath(finding.html_path || item.html_path);
+  const firstSource = finding.sources?.[0]?.url || item.sources?.[0]?.url;
+  const daysLeft = certDaysLeft(tls);
+
   els.drawerTitle.textContent = item.domain;
-  const reasons = (item.reasons || []).slice(0, 6);
   els.caseDetailContent.innerHTML = `
     <div class="detail-summary">
-      <div class="risk-pill ${riskClass(item.best_risk_score)}">${item.best_risk_score}/100</div>
-      <div><span>Статус</span><strong>${escapeHtml(caseStatusLabel(item.status))}</strong></div>
-      <div><span>Запусков</span><strong>${item.run_total || 0}</strong></div>
-      <div><span>Находок</span><strong>${item.finding_total || findings.length}</strong></div>
+      <div class="risk-panel ${riskClass(risk)}">
+        <span>Риск</span>
+        <strong>${risk}%</strong>
+        <small>${escapeHtml(categoryLabel(category))}</small>
+      </div>
+      <div class="summary-text">
+        <h3>${escapeHtml(finding.title || item.title || item.domain)}</h3>
+        <p>${escapeHtml((finding.reasons || [])[0] || "Домен добавлен в мониторинг по результатам OSINT-поиска.")}</p>
+        <div class="detail-actions">
+          <a class="primary-btn" href="${escapeHtml(finding.final_url || item.final_url || item.url || "#")}" target="_blank" rel="noreferrer">Открыть сайт</a>
+          ${screenshot ? `<a class="secondary-btn" href="/${escapeHtml(screenshot)}" target="_blank" rel="noreferrer">Скриншот</a>` : ""}
+          ${html ? `<a class="secondary-btn" href="/${escapeHtml(html)}" target="_blank" rel="noreferrer">HTML</a>` : ""}
+          ${firstSource ? `<a class="secondary-btn" href="${escapeHtml(firstSource)}" target="_blank" rel="noreferrer">Источник</a>` : ""}
+        </div>
+      </div>
     </div>
-    <div class="detail-actions">
-      <a class="primary-btn" href="${escapeHtml(item.final_url || item.url || "#")}" target="_blank">Открыть сайт</a>
-      ${item.html_path ? `<a class="secondary-btn" href="/${escapeHtml(relPath(item.html_path))}" target="_blank">HTML</a>` : ""}
-      ${item.screenshot_path ? `<a class="secondary-btn" href="/${escapeHtml(relPath(item.screenshot_path))}" target="_blank">Скриншот</a>` : ""}
+
+    <div class="signals-grid">
+      ${renderSignalList(positiveSignals(finding), "positive")}
+      ${renderSignalList(negativeSignals(finding), "negative")}
     </div>
-    ${reasons.length ? `<div class="detail-block"><h4>Вердикт</h4><ul>${reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul></div>` : ""}
-    <div class="detail-block"><h4>История фиксаций</h4>${findings.map(findingTimelineItem).join("") || '<div class="empty-state">История пуста.</div>'}</div>
+
+    <div class="tabbar">
+      <button class="tab-btn active" data-tab="technical" type="button">Технические</button>
+      <button class="tab-btn" data-tab="search" type="button">Как найден</button>
+      <button class="tab-btn" data-tab="evidence" type="button">Доказательства</button>
+      <button class="tab-btn" data-tab="history" type="button">История</button>
+    </div>
+
+    <section class="tab-panel active" data-panel="technical">
+      <div class="tech-grid">
+        ${techCard("SSL сертификат", [
+          techRow("Статус", tls.valid ? "Действителен" : "Недействителен", tls.valid ? "good" : "bad"),
+          techRow("Издатель", tls.issuer || "None"),
+          techRow("Истекает", tls.not_after || "None"),
+          techRow("Дней до истечения", daysLeft ?? "None", daysLeft !== null && daysLeft >= 14 ? "good" : "bad"),
+        ])}
+        ${techCard("DNS", [
+          techRow("IP адресов", (dns.records || []).length),
+          techRow("IP", (dns.records || []).slice(0, 3).join(", ") || "None"),
+          techRow("MX записи", (dns.mx_records || []).length ? "Есть" : "Нет", (dns.mx_records || []).length ? "good" : "bad"),
+          techRow("MX", (dns.mx_records || []).slice(0, 2).join(", ") || "None"),
+        ])}
+        ${techCard("Домен", [
+          techRow("Возраст", domainInfo.age_days === null || domainInfo.age_days === undefined ? "None" : `${domainInfo.age_days} дн.`),
+          techRow("Регистратор", domainInfo.registrar || "None"),
+          techRow("Создан", domainInfo.created_at || "None"),
+          techRow("Истекает", domainInfo.expires_at || "None"),
+        ])}
+        ${techCard("Производительность", [
+          techRow("Время ответа", formatResponseTime(evidence.response_time_ms)),
+          techRow("Размер страницы", formatBytes(evidence.page_size_bytes)),
+          techRow("Редиректов", evidence.redirect_count ?? 0),
+          techRow("Сеть проверки", evidence.access_origin || "server direct network"),
+        ])}
+      </div>
+    </section>
+
+    <section class="tab-panel" data-panel="search">
+      <div class="explain-grid">
+        <div>
+          <h3>Поисковый след</h3>
+          ${techRow("Запрос", evidence.search_query || "Автоматический Gemini Search")}
+          ${techRow("Бренд", evidence.brand || "None")}
+          ${techRow("Зеркальная группа", finding.mirror_group || "None")}
+          ${techRow("Подсказки зеркал", (evidence.mirror_hints || []).join(", ") || "None")}
+        </div>
+        <div>
+          <h3>Почему подозрительный</h3>
+          <ul class="reason-list">${(finding.reasons || []).map((reason) => `<li>${escapeHtml(reason)}</li>`).join("") || "<li>Причины не сохранены</li>"}</ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel" data-panel="evidence">
+      <div class="evidence-grid">
+        ${screenshot ? `<a class="evidence-link" href="/${escapeHtml(screenshot)}" target="_blank" rel="noreferrer"><span>Скриншот</span><strong>${escapeHtml(screenshot)}</strong></a>` : ""}
+        ${html ? `<a class="evidence-link" href="/${escapeHtml(html)}" target="_blank" rel="noreferrer"><span>HTML</span><strong>${escapeHtml(html)}</strong></a>` : ""}
+        <div class="evidence-link"><span>SHA-256 HTML</span><strong>${escapeHtml(finding.html_sha256 || "None")}</strong></div>
+        <div class="evidence-link"><span>Финальный URL</span><strong>${escapeHtml(finding.final_url || finding.url || "None")}</strong></div>
+      </div>
+      <h3 class="subhead">Источники</h3>
+      <div class="source-list">${(finding.sources || []).map((source) => `<a href="${escapeHtml(source.url || source)}" target="_blank" rel="noreferrer">${escapeHtml(source.url || source)}</a>`).join("") || '<span class="muted">Источники не сохранены</span>'}</div>
+    </section>
+
+    <section class="tab-panel" data-panel="history">
+      <div class="timeline">${findings.map(findingTimelineItem).join("") || '<div class="empty-state">История пуста.</div>'}</div>
+    </section>
   `;
+
+  bindTabs();
 }
 
 function findingTimelineItem(finding) {
-  const screenshot = relPath(finding.screenshot_path);
-  const html = relPath(finding.html_path);
-  const sourceUrl = finding.sources?.[0]?.url;
   return `
     <article class="timeline-item">
-      <div class="timeline-top">
+      <div>
         <strong>Запуск #${finding.run_id}</strong>
-        <span>${escapeHtml(formatDate(finding.created_at))}</span>
-        <span class="risk-pill ${riskClass(finding.risk_score)}">${finding.risk_score}/100</span>
+        <span>${escapeHtml(formatDateTime(finding.created_at))}</span>
       </div>
-      <p>${escapeHtml((finding.reasons || [])[0] || verdictLabel(finding.verdict))}</p>
-      <div class="inline-actions">
-        <a href="${escapeHtml(finding.final_url || finding.url)}" target="_blank">Сайт</a>
-        ${screenshot ? `<a href="/${escapeHtml(screenshot)}" target="_blank">Скриншот</a>` : ""}
-        ${html ? `<a href="/${escapeHtml(html)}" target="_blank">HTML</a>` : ""}
-        ${sourceUrl ? `<a href="${escapeHtml(sourceUrl)}" target="_blank">Источник</a>` : ""}
-      </div>
-      ${finding.html_sha256 ? `<small>SHA-256: ${escapeHtml(finding.html_sha256)}</small>` : ""}
+      <span class="risk-badge ${riskClass(finding.risk_score)}">${finding.risk_score}%</span>
+      <p>${escapeHtml((finding.reasons || [])[0] || finding.verdict || "Зафиксировано")}</p>
     </article>`;
+}
+
+function bindTabs() {
+  document.querySelectorAll(".tab-btn").forEach((button) => {
+    button.addEventListener("click", () => {
+      const tab = button.dataset.tab;
+      document.querySelectorAll(".tab-btn").forEach((item) => item.classList.toggle("active", item === button));
+      document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.toggle("active", panel.dataset.panel === tab));
+    });
+  });
 }
 
 function closeDrawer() {
   els.drawerOverlay.hidden = true;
 }
 
-function exportSelected(kind) {
-  const ids = selectedCaseQuery();
-  if (!ids) {
-    alert("Выберите хотя бы одно дело в реестре.");
-    return;
-  }
-  window.location.href = `/api/cases/export.${kind}?ids=${encodeURIComponent(ids)}`;
-}
-
 function startPolling() {
   stopPolling();
   state.pollTimer = setInterval(() => {
-    if (state.selectedRunId) loadRun(state.selectedRunId, { refreshRegistry: false }).catch(console.error);
+    if (state.selectedRunId) loadRun(state.selectedRunId).catch(console.error);
   }, 4000);
 }
 
@@ -527,26 +672,24 @@ function stopPolling() {
   }
 }
 
-els.runBtn.addEventListener("click", startRun);
+els.scanForm.addEventListener("submit", startRun);
 els.stopBtn.addEventListener("click", stopRun);
-els.refreshBtn.addEventListener("click", async () => {
-  await loadRuns();
-  if (state.selectedRunId) await loadRun(state.selectedRunId, { refreshRegistry: false });
-  await loadCases();
-});
 els.caseFilterBtn.addEventListener("click", loadCases);
-els.caseSearch.addEventListener("keydown", (event) => { if (event.key === "Enter") loadCases(); });
-els.selectedCsvBtn.addEventListener("click", () => exportSelected("csv"));
-els.selectedXlsxBtn.addEventListener("click", () => exportSelected("xlsx"));
-els.drawerClose.addEventListener("click", closeDrawer);
-els.drawerOverlay.addEventListener("click", (event) => { if (event.target === els.drawerOverlay) closeDrawer(); });
-els.aiActivityJump.addEventListener("click", () => {
-  document.getElementById("runSection")?.scrollIntoView({ behavior: "smooth", block: "start" });
+els.categoryFilter.addEventListener("change", loadCases);
+els.caseSearch.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") loadCases();
 });
-document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeDrawer(); });
+els.drawerClose.addEventListener("click", closeDrawer);
+els.drawerOverlay.addEventListener("click", (event) => {
+  if (event.target === els.drawerOverlay) closeDrawer();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeDrawer();
+});
+window.addEventListener("resize", () => drawTrend(state.cases));
 
 loadHealth();
 loadRuns()
-  .then(() => (state.selectedRunId ? loadRun(state.selectedRunId, { refreshRegistry: false }) : null))
+  .then(() => (state.selectedRunId ? loadRun(state.selectedRunId) : null))
   .then(loadCases)
   .catch(console.error);

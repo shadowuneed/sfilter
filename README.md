@@ -74,6 +74,13 @@ docker run --rm -p 8000:8000 --env-file .env argus-investigator
 ## Render
 
 `render.yaml` is ready for a Docker web service. Add `GEMINI_API_KEYS` as a secret environment variable in Render.
+Persistent disks are available only on paid Render services, so the blueprint uses the `starter` plan instead of `free`.
+
+The blueprint mounts a persistent disk at `/var/data` and stores:
+
+- SQLite history at `/var/data/data/argus.db`
+- HTML and screenshots at `/var/data/evidence`
+- exports at `/var/data/exports`
 
 For screenshots, deploy Argus as a Docker service so the Dockerfile runs `python -m playwright install --with-deps chromium`. If you create a non-Docker Python service manually, add this to the Render build command instead:
 
@@ -84,6 +91,8 @@ pip install -r requirements.txt && python -m playwright install chromium
 Open `/api/health` after deploy and check `screenshot_runtime.chromium_exists`. It should be `true`.
 
 Local SQLite files and evidence files are not durable across Render rebuilds/restarts unless persistent storage or an external database/storage service is attached. Without that, old screenshot links can disappear after a redeploy even if capture worked during the run.
+
+For a real Kazakhstan-only accessibility check, set `KZ_PROXY_URL` in Render to an HTTP/SOCKS proxy or private checker endpoint located in Kazakhstan. Without it, Render can only prove that the domain opens from Render's network, and the UI marks that limitation in the run journal and technical evidence.
 
 ## API Docs Used
 

@@ -3,195 +3,168 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Argus</title>
+  <title>Argus Monitor</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <div class="app-frame">
-    <aside class="sidebar">
-      <div class="brand-block">
-        <div class="brand-mark">A</div>
-        <div>
-          <h1>Argus</h1>
-          <p>Реестр расследований</p>
-        </div>
-      </div>
-      <nav class="side-nav" aria-label="Разделы">
-        <a href="#runSection" class="nav-link active">Проверка</a>
-        <a href="#registrySection" class="nav-link">Реестр дел</a>
-        <a href="#journalSection" class="nav-link">Журнал</a>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/monitor" aria-label="Argus Monitor">
+        <span class="brand-mark">A</span>
+        <span>
+          <strong>Argus Monitor</strong>
+          <small>OSINT Kazakhstan</small>
+        </span>
+      </a>
+
+      <nav class="topnav" aria-label="Разделы">
+        <a href="#scanPanel">Поиск</a>
+        <a href="#trendPanel">Динамика</a>
+        <a href="#domainsPanel">Домены</a>
+        <a href="#auditPanel">Журнал</a>
       </nav>
-      <div class="system-card">
-        <span class="system-label">Система</span>
-        <strong id="statusPill">проверка</strong>
-        <p id="healthLine">Проверяю готовность платформы...</p>
+
+      <div class="health">
+        <span id="kzAccessPill" class="health-pill">KZ: проверка</span>
+        <span id="geminiPill" class="health-pill">AI: проверка</span>
       </div>
-    </aside>
+    </header>
 
-    <main class="content-shell">
-      <header class="page-head">
-        <div>
-          <span class="eyebrow">OSINT мониторинг</span>
-          <h2>Панель расследователя</h2>
+    <main class="workspace">
+      <section id="scanPanel" class="scan-band">
+        <div class="scan-copy">
+          <span class="eyebrow">Автоматический мониторинг</span>
+          <h1>Поиск подозрительных доменов и рабочих зеркал</h1>
+          <p id="healthLine">Проверяю готовность платформы...</p>
         </div>
-        <button id="refreshBtn" class="secondary-btn">Обновить</button>
-      </header>
 
-      <section id="runSection" class="command-grid">
-        <div class="command-panel">
-          <div class="section-head compact-head">
-            <div>
-              <span class="eyebrow">Новый запуск</span>
-              <h3>Автопоиск подозрительных сайтов</h3>
-            </div>
-          </div>
-          <label for="seedQuery">Дополнительный контекст</label>
-          <textarea id="seedQuery" rows="3" placeholder="Необязательно: бренд, регион, язык, тип жалоб"></textarea>
-          <div class="control-line">
-            <label class="field-small" for="maxCandidates">
-              <span>Сайтов в отчет</span>
+        <form id="scanForm" class="scan-form">
+          <label for="seedQuery">Фокус поиска</label>
+          <textarea id="seedQuery" rows="3" placeholder="Например: казино зеркало Казахстан, фишинг Kaspi, инвестиционная пирамида"></textarea>
+          <div class="scan-controls">
+            <label class="number-field" for="maxCandidates">
+              <span>Лимит</span>
               <input id="maxCandidates" type="number" min="1" max="15" value="8">
             </label>
-            <label class="check-line">
+            <label class="toggle-line">
               <input id="takeScreenshots" type="checkbox" checked>
               <span>Скриншоты</span>
             </label>
-            <button id="runBtn" class="primary-btn">Начать проверку</button>
-            <button id="stopBtn" class="danger-btn" disabled>Остановить</button>
+            <button id="runBtn" class="primary-btn" type="submit">Запустить</button>
+            <button id="stopBtn" class="danger-btn" type="button" disabled>Стоп</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="status-grid" aria-label="Сводка">
+        <div class="metric-tile">
+          <span>Текущий запуск</span>
+          <strong id="currentRun">-</strong>
+          <small id="runStatus">ожидание</small>
+        </div>
+        <div class="metric-tile">
+          <span>Найдено доменов</span>
+          <strong id="activeCaseCount">0</strong>
+          <small>в активном реестре</small>
+        </div>
+        <div class="metric-tile">
+          <span>Высокий риск</span>
+          <strong id="highRiskCount">0</strong>
+          <small>70% и выше</small>
+        </div>
+        <div class="metric-tile">
+          <span>Доказательства</span>
+          <strong id="evidenceCount">0</strong>
+          <small>HTML / скриншоты</small>
+        </div>
+      </section>
+
+      <section id="trendPanel" class="trend-band">
+        <div class="section-head">
+          <div>
+            <span class="eyebrow">Обнаружения</span>
+            <h2>Динамика по категориям</h2>
+          </div>
+          <div class="chart-legend">
+            <span><i class="casino"></i>Казино</span>
+            <span><i class="phishing"></i>Фишинг</span>
+            <span><i class="pyramid"></i>Пирамиды</span>
+          </div>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="trendChart" width="1200" height="320" aria-label="График динамики обнаружений"></canvas>
+        </div>
+      </section>
+
+      <section id="domainsPanel" class="domain-band">
+        <div class="section-head table-tools">
+          <div>
+            <span class="eyebrow">Реестр</span>
+            <h2>Рабочие подозрительные домены</h2>
+          </div>
+          <div class="filters">
+            <input id="caseSearch" type="search" placeholder="Домен или заголовок">
+            <select id="categoryFilter" aria-label="Категория">
+              <option value="">Все категории</option>
+              <option value="casino">Казино</option>
+              <option value="phishing">Фишинг</option>
+              <option value="pyramid">Пирамиды</option>
+              <option value="suspicious">Подозрительные</option>
+            </select>
+            <input id="caseMinRisk" type="number" min="0" max="100" placeholder="Мин. риск">
+            <button id="caseFilterBtn" class="secondary-btn" type="button">Фильтр</button>
           </div>
         </div>
 
-        <div class="status-panel">
-          <div class="status-tile large">
-            <span>Запуск</span>
-            <strong id="currentRun">-</strong>
+        <div class="domain-table" role="table" aria-label="Список доменов">
+          <div class="domain-head" role="row">
+            <span role="columnheader">Домен</span>
+            <span role="columnheader">Категория</span>
+            <span role="columnheader">Уровень риска</span>
+            <span role="columnheader">Обнаружен</span>
+            <span role="columnheader">Последняя проверка</span>
+            <span role="columnheader">Действия</span>
           </div>
-          <div class="status-tile">
-            <span>Статус</span>
-            <strong id="runStatus">-</strong>
-          </div>
-          <div class="status-tile">
-            <span>Кандидаты</span>
-            <strong id="candidateCount">0</strong>
-          </div>
-          <div class="status-tile">
-            <span>В отчете</span>
-            <strong id="findingCount">0</strong>
+          <div id="casesList" class="domain-body">
+            <div class="empty-state">Загрузка реестра...</div>
           </div>
         </div>
       </section>
 
-      <section class="work-grid">
-        <aside class="panel run-history-panel">
+      <section id="auditPanel" class="audit-grid">
+        <div class="audit-panel">
           <div class="section-head">
             <div>
               <span class="eyebrow">Запуски</span>
-              <h3>История</h3>
+              <h2>История поиска</h2>
             </div>
           </div>
           <div id="runsList" class="runs-list"></div>
-        </aside>
+        </div>
 
-        <section class="panel report-panel">
-          <div class="section-head report-head">
+        <div class="audit-panel">
+          <div class="section-head">
             <div>
-              <span class="eyebrow">Текущий отчет</span>
-              <h3>Фиксации запуска</h3>
+              <span class="eyebrow">Как искал ИИ</span>
+              <h2>Методика и журнал</h2>
             </div>
-            <div class="action-row">
-              <a id="csvLink" class="secondary-btn link-disabled" href="#">CSV запуска</a>
-              <a id="xlsxLink" class="secondary-btn link-disabled" href="#">Excel запуска</a>
-            </div>
+            <span id="warningCount" class="summary-pill">0 предупреждений</span>
           </div>
-          <div id="findingsList" class="findings-list">
-            <div class="empty-state">Выберите запуск или начните новую проверку.</div>
-          </div>
-        </section>
-      </section>
-
-      <section id="registrySection" class="panel registry-panel">
-        <div class="section-head registry-head">
-          <div>
-            <span class="eyebrow">Все расследования</span>
-            <h3>Реестр дел</h3>
-          </div>
-          <div class="action-row">
-            <button id="selectedCsvBtn" class="secondary-btn">CSV выбранных</button>
-            <button id="selectedXlsxBtn" class="secondary-btn">Excel выбранных</button>
-          </div>
+          <div id="methodologyList" class="methodology-list"></div>
+          <div id="logsList" class="logs-list"></div>
         </div>
-
-        <div class="registry-stats">
-          <div><span>Всего дел</span><strong id="totalCaseCount">0</strong></div>
-          <div><span>Активные</span><strong id="activeCaseCount">0</strong></div>
-          <div><span>Сохраненные</span><strong id="savedCaseCount">0</strong></div>
-          <div><span>Выбрано</span><strong id="selectedCaseCount">0</strong></div>
-        </div>
-
-        <div class="filters-bar">
-          <input id="caseSearch" type="search" placeholder="Домен, URL или заголовок">
-          <select id="caseStatusFilter">
-            <option value="">Все статусы</option>
-            <option value="uninvestigated">Не расследован</option>
-            <option value="investigating">Расследуется</option>
-            <option value="investigated">Расследован</option>
-          </select>
-          <select id="caseArchiveFilter">
-            <option value="false">Активные</option>
-            <option value="true">Архив</option>
-            <option value="">Все</option>
-          </select>
-          <select id="caseSavedFilter">
-            <option value="">Все</option>
-            <option value="true">Сохраненные</option>
-            <option value="false">Не сохраненные</option>
-          </select>
-          <input id="caseMinRisk" type="number" min="0" max="100" placeholder="Мин. риск">
-          <button id="caseFilterBtn" class="primary-btn slim">Фильтр</button>
-        </div>
-
-        <div class="case-table-head" aria-hidden="true">
-          <span>Дело</span>
-          <span>Риск</span>
-          <span>Статус</span>
-          <span>Запуски</span>
-          <span>Действия</span>
-        </div>
-        <div id="casesList" class="cases-list">
-          <div class="empty-state">Загрузка реестра...</div>
-        </div>
-      </section>
-
-      <section id="journalSection" class="panel log-panel">
-        <div class="section-head">
-          <div>
-            <span class="eyebrow">События запуска</span>
-            <h3>Журнал работы</h3>
-          </div>
-          <span id="warningCount" class="summary-pill">0 ошибок/пропусков</span>
-        </div>
-        <div id="logsList" class="logs-list"></div>
       </section>
     </main>
   </div>
 
-  <div id="aiActivity" class="ai-activity" hidden aria-live="polite">
-    <div class="ai-orb" aria-hidden="true"><span>AI</span></div>
-    <div class="ai-copy">
-      <strong id="aiActivityTitle">ИИ ищет</strong>
-      <p id="aiActivityText">Подготовка проверки...</p>
-    </div>
-    <button id="aiActivityJump" class="ai-jump" type="button">к запуску</button>
-  </div>
-
   <div id="drawerOverlay" class="drawer-overlay" hidden>
-    <aside class="case-drawer" aria-label="Детали дела">
+    <aside class="analysis-drawer" aria-label="Анализ домена">
       <div class="drawer-head">
         <div>
-          <span class="eyebrow">Доказательства</span>
-          <h3 id="drawerTitle">Дело</h3>
+          <span class="eyebrow">Анализ домена</span>
+          <h2 id="drawerTitle">Домен</h2>
         </div>
-        <button id="drawerClose" class="icon-btn" aria-label="Закрыть">×</button>
+        <button id="drawerClose" class="icon-btn" type="button" aria-label="Закрыть">×</button>
       </div>
       <div id="caseDetailContent" class="case-detail-content"></div>
     </aside>
