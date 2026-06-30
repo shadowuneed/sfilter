@@ -1,0 +1,97 @@
+Argus domain multiclass classifier report
+========================================
+
+Model: CatBoostClassifier
+Feature contract: 34 engineered URL/domain features recalculated from raw URLs.
+Target classes requested: legit, phishing, casino, pyramid, suspicious
+Classes present in this training run: legit, phishing, suspicious
+Missing classes: casino, pyramid
+
+Data audit
+----------
+{
+  "downloads": {
+    "malicious": {
+      "zip_exists": true,
+      "csv_exists": true,
+      "csv": "data\\ml\\raw\\malicious-urls-dataset\\malicious_phish.csv"
+    },
+    "phiusiil": {
+      "zip_exists": true,
+      "csv_exists": true,
+      "csv": "data\\ml\\raw\\phiusiil-phishing-url-dataset\\PhiUSIIL_Phishing_URL_Dataset.csv"
+    }
+  },
+  "uci": {
+    "paths": [
+      "C:\\Users\\profm\\Downloads\\phishing+websites\\Training Dataset.arff",
+      "C:\\Users\\profm\\Downloads\\phishing+websites\\.old.arff"
+    ],
+    "used": false,
+    "reason": "UCI ARFF files contain precomputed feature columns and no raw URL column; excluded by project rule."
+  },
+  "processed": {
+    "features_csv": "data\\ml\\processed\\training_features.csv",
+    "model": "models\\domain_classifier.cbm",
+    "network_features_enabled": false,
+    "limit_per_class": 2500
+  }
+}
+
+Class distribution
+------------------
+{
+  "phishing": 2500,
+  "suspicious": 2500,
+  "legit": 2500
+}
+
+Split
+-----
+train: 5250
+validation: 1125
+test: 1125
+
+Metrics
+-------
+F1-macro, classes present in this run: 0.8268
+F1-macro, requested 5-class label set: 0.4961
+Per-class recall:
+{
+  "legit": 0.8773333333333333,
+  "phishing": 0.84,
+  "suspicious": 0.7626666666666667
+}
+
+Scikit classification report
+----------------------------
+              precision    recall  f1-score   support
+
+       legit       0.83      0.88      0.85       375
+    phishing       0.77      0.84      0.80       375
+      casino       0.00      0.00      0.00         0
+     pyramid       0.00      0.00      0.00         0
+  suspicious       0.90      0.76      0.82       375
+
+    accuracy                           0.83      1125
+   macro avg       0.50      0.50      0.50      1125
+weighted avg       0.83      0.83      0.83      1125
+
+
+Confusion matrix labels order:
+['legit', 'phishing', 'casino', 'pyramid', 'suspicious']
+Confusion matrix:
+[[329, 34, 0, 0, 12], [39, 315, 0, 0, 21], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0], [27, 62, 0, 0, 286]]
+
+Interpretability
+-----------------
+Feature importance CSV: models\feature_importance.csv
+SHAP mean absolute values CSV: models\shap_feature_importance.csv
+TF-IDF top tokens CSV: models\tfidf_top_tokens.csv
+
+Notes
+-----
+- UCI Phishing Websites ARFF files are excluded from training because they do not contain raw URL/domain values.
+- PhiUSIIL precomputed columns are ignored; only URL and label are used, then Argus extracts the shared feature set again.
+- Casino and pyramid classes require curated raw domains from Kazakhstan registry/open reports plus Gemini confidence > 0.9. If those files are absent under data/ml/raw/curated/*.csv, the current run is a baseline and cannot honestly report production quality for those classes.
+- For full evidence features, rerun with --network. The default offline mode is fast and uses URL/domain-derived features plus unavailable-network sentinel values.

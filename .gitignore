@@ -16,3 +16,7 @@ logs/
 evidence/**/*.png
 evidence/**/*.jpg
 evidence/**/*.jpeg
+data/ml/raw/
+data/ml/processed/
+data/ml/tldextract/
+models/
