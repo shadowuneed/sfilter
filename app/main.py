@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import secrets
 import threading
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -32,6 +33,40 @@ STATIC_DIR = BASE_DIR / "static"
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/evidence", StaticFiles(directory=settings.evidence_dir), name="evidence")
+
+
+PUBLIC_API_PATHS = {"/api/health"}
+
+
+def _bearer_token(authorization: str | None) -> str | None:
+    if not authorization:
+        return None
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        return None
+    return token.strip()
+
+
+@app.middleware("http")
+async def api_auth_middleware(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/api/") and path not in PUBLIC_API_PATHS and settings.auth_required:
+        if not settings.admin_token:
+            return JSONResponse(
+                {"detail": "ADMIN_TOKEN is not configured on the server."},
+                status_code=503,
+            )
+
+        token = _bearer_token(request.headers.get("authorization"))
+        token = token or request.headers.get("x-api-key")
+        if not token or not secrets.compare_digest(token, settings.admin_token):
+            return JSONResponse(
+                {"detail": "Invalid or missing API token."},
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+    return await call_next(request)
 
 
 class RunRequest(BaseModel):
@@ -79,9 +114,11 @@ def health() -> dict[str, Any]:
         "app_name": "Argus",
         "gemini_configured": gemini.available,
         "gemini_model": settings.gemini_model,
-        "gemini_keys": settings.masked_keys(),
+        "gemini_key_count": len(settings.gemini_api_keys),
         "rpm_limit": settings.gemini_rpm_limit,
         "rpd_limit": settings.gemini_rpd_limit,
+        "auth_required": settings.auth_required,
+        "auth_configured": bool(settings.admin_token),
         "screenshots_enabled": settings.screenshots_enabled,
         "screenshot_runtime": investigator.screenshots.runtime_status(),
         "database": str(settings.database_path),

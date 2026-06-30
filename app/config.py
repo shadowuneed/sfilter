@@ -49,6 +49,14 @@ def _split_env(name: str) -> list[str]:
     return parts
 
 
+def _optional_env(name: str) -> str | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
 DEFAULT_SEED_QUERIES = [
     'казино зеркало рабочий вход новый домен',
     'онлайн казино зеркало бонус новый домен',
@@ -77,6 +85,8 @@ class Settings:
     gemini_rpm_limit: int = 10
     gemini_rpd_limit: int = 250
     gemini_timeout_seconds: int = 90
+    admin_token: str | None = None
+    auth_required: bool = True
 
     database_path: Path = Path("data/argus.db")
     evidence_dir: Path = Path("evidence")
@@ -119,6 +129,8 @@ def get_settings() -> Settings:
         gemini_rpm_limit=_int_env("GEMINI_RPM_LIMIT", _int_env("GEMINI_RPM_PER_KEY", 10)),
         gemini_rpd_limit=_int_env("GEMINI_RPD_LIMIT", _int_env("GEMINI_RPD_PER_KEY", 250)),
         gemini_timeout_seconds=_int_env("GEMINI_TIMEOUT_SECONDS", 90),
+        admin_token=_optional_env("ADMIN_TOKEN") or _optional_env("ARGUS_ADMIN_TOKEN"),
+        auth_required=_bool_env("AUTH_REQUIRED", True),
         database_path=Path(os.getenv("DATABASE_PATH", "data/argus.db")),
         evidence_dir=Path(os.getenv("EVIDENCE_DIR", "evidence")),
         export_dir=Path(os.getenv("EXPORT_DIR", "exports")),

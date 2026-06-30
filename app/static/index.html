@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Argus Monitor</title>
-  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/styles.css?v=20260630-auth">
 </head>
 <body>
   <div class="app-shell">
@@ -170,6 +170,20 @@
     </aside>
   </div>
 
-  <script src="/static/app.js"></script>
+  <div id="authOverlay" class="auth-overlay" hidden>
+    <form id="authForm" class="auth-box">
+      <span class="eyebrow">Доступ к API</span>
+      <h2>Введите ADMIN_TOKEN</h2>
+      <p id="authHint">Токен нужен для запуска поиска, просмотра истории и отчетов.</p>
+      <label for="apiTokenInput">API token</label>
+      <input id="apiTokenInput" type="password" autocomplete="current-password" placeholder="Bearer token">
+      <div class="auth-actions">
+        <button id="saveTokenBtn" class="primary-btn" type="submit">Сохранить</button>
+        <button id="clearTokenBtn" class="secondary-btn" type="button">Сбросить</button>
+      </div>
+    </form>
+  </div>
+
+  <script src="/static/app.js?v=20260630-auth"></script>
 </body>
 </html>

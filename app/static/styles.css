@@ -884,6 +884,46 @@ a.evidence-link:hover,
   line-height: 1.42;
 }
 
+.auth-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.72);
+  padding: 18px;
+}
+
+.auth-overlay[hidden] { display: none; }
+
+.auth-box {
+  width: min(460px, 100%);
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--band);
+  box-shadow: var(--shadow);
+  padding: 22px;
+}
+
+.auth-box h2 {
+  margin: 0;
+  font-size: 24px;
+}
+
+.auth-box p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.auth-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 @media (max-width: 1180px) {
   .topbar { grid-template-columns: 1fr; }
   .topnav { justify-content: flex-start; overflow-x: auto; }

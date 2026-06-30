@@ -4,6 +4,9 @@ const state = {
   cases: [],
   filteredCases: [],
   runs: [],
+  apiToken: localStorage.getItem("argus_api_token") || "",
+  authRequired: true,
+  authConfigured: false,
 };
 
 const els = {
@@ -35,6 +38,11 @@ const els = {
   drawerClose: document.getElementById("drawerClose"),
   drawerTitle: document.getElementById("drawerTitle"),
   caseDetailContent: document.getElementById("caseDetailContent"),
+  authOverlay: document.getElementById("authOverlay"),
+  authForm: document.getElementById("authForm"),
+  authHint: document.getElementById("authHint"),
+  apiTokenInput: document.getElementById("apiTokenInput"),
+  clearTokenBtn: document.getElementById("clearTokenBtn"),
 };
 
 const statusLabels = {
@@ -61,15 +69,53 @@ const categoryColors = {
 };
 
 async function api(path, options = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    ...(options.headers || {}),
+  };
+  if (state.apiToken) {
+    headers.Authorization = `Bearer ${state.apiToken}`;
+  }
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
     ...options,
+    headers,
   });
   if (!response.ok) {
     const text = await response.text();
+    if (response.status === 401 || response.status === 503) {
+      showAuth(text || response.statusText);
+    }
     throw new Error(text || response.statusText);
   }
   return response.json();
+}
+
+function normalizeAuthMessage(message) {
+  try {
+    const parsed = JSON.parse(message);
+    if (parsed.detail) return parsed.detail;
+  } catch {
+    // Response is already plain text.
+  }
+  return String(message);
+}
+
+function showAuth(message = "") {
+  if (!els.authOverlay) return;
+  els.authOverlay.hidden = false;
+  if (els.authHint) {
+    els.authHint.textContent = message
+      ? normalizeAuthMessage(message)
+      : "Введите ADMIN_TOKEN, который задан в Render Environment.";
+  }
+  if (els.apiTokenInput) {
+    els.apiTokenInput.value = state.apiToken;
+    setTimeout(() => els.apiTokenInput.focus(), 30);
+  }
+}
+
+function hideAuth() {
+  if (els.authOverlay) els.authOverlay.hidden = true;
 }
 
 function escapeHtml(value) {
@@ -163,15 +209,23 @@ function renderPill(el, text, cls) {
 async function loadHealth() {
   try {
     const health = await api("/api/health");
+    state.authRequired = Boolean(health.auth_required);
+    state.authConfigured = Boolean(health.auth_configured);
     renderPill(els.geminiPill, health.gemini_configured ? "AI: готов" : "AI: нет ключа", health.gemini_configured ? "ok" : "warn");
     renderPill(
       els.kzAccessPill,
       health.kz_proxy_configured ? "KZ: proxy" : "KZ: сеть сервера",
       health.kz_proxy_configured ? "ok" : "warn",
     );
+    const keyCount = health.gemini_key_count ?? health.gemini_keys?.length ?? 0;
     els.healthLine.textContent = health.gemini_configured
-      ? `${health.gemini_keys.length} ключ(а), модель ${health.gemini_model}. Доступность: ${health.kz_access_label}.`
+      ? `${keyCount} ключ(а), модель ${health.gemini_model}. Доступность: ${health.kz_access_label}.`
       : "Добавьте GEMINI_API_KEYS в .env или Render Environment.";
+    if (state.authRequired && !state.authConfigured) {
+      showAuth("ADMIN_TOKEN is not configured on the server.");
+    } else if (state.authRequired && !state.apiToken) {
+      showAuth("Введите ADMIN_TOKEN для доступа к API.");
+    }
   } catch (error) {
     renderPill(els.geminiPill, "AI: ошибка", "bad");
     renderPill(els.kzAccessPill, "KZ: ошибка", "bad");
@@ -688,8 +742,33 @@ document.addEventListener("keydown", (event) => {
 });
 window.addEventListener("resize", () => drawTrend(state.cases));
 
-loadHealth();
-loadRuns()
-  .then(() => (state.selectedRunId ? loadRun(state.selectedRunId) : null))
-  .then(loadCases)
-  .catch(console.error);
+els.authForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  state.apiToken = els.apiTokenInput.value.trim();
+  if (!state.apiToken) {
+    showAuth("Введите ADMIN_TOKEN.");
+    return;
+  }
+  localStorage.setItem("argus_api_token", state.apiToken);
+  hideAuth();
+  await bootstrap();
+});
+
+els.clearTokenBtn?.addEventListener("click", () => {
+  state.apiToken = "";
+  localStorage.removeItem("argus_api_token");
+  showAuth("Токен сброшен. Введите ADMIN_TOKEN заново.");
+});
+
+async function bootstrap() {
+  await loadHealth();
+  if (state.authRequired && (!state.authConfigured || !state.apiToken)) {
+    drawTrend([]);
+    return;
+  }
+  await loadRuns();
+  if (state.selectedRunId) await loadRun(state.selectedRunId);
+  await loadCases();
+}
+
+bootstrap().catch(console.error);

@@ -59,10 +59,14 @@ Create `.env` from `.env.example` and set keys locally or in Render environment 
 ```env
 GEMINI_API_KEYS=your_primary_key,your_backup_key
 GEMINI_MODEL=gemini-2.5-flash
+ADMIN_TOKEN=use-a-long-random-secret
+AUTH_REQUIRED=true
 DATABASE_PATH=data/argus.db
 ```
 
 Do not commit real API keys. Keys pasted into chat should be treated as sensitive; prefer rotating them later and storing only in `.env` or deployment secrets.
+
+`ADMIN_TOKEN` protects all `/api/*` endpoints except `/api/health`. The browser UI asks for this token and sends it as `Authorization: Bearer <token>`, preventing anonymous users from starting runs and spending Gemini quota.
 
 ## Docker
 
@@ -71,10 +75,19 @@ docker build -t argus-investigator .
 docker run --rm -p 8000:8000 --env-file .env argus-investigator
 ```
 
+The Docker image runs as a non-root `argus` user.
+
+## Tests
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
 ## Render
 
 `render.yaml` is ready for a Docker web service. Add `GEMINI_API_KEYS` as a secret environment variable in Render.
 Persistent disks are available only on paid Render services, so the blueprint uses the `starter` plan instead of `free`.
+For an existing Render service, add `ADMIN_TOKEN` manually in the service's Environment page because `sync: false` variables are prompted only during initial Blueprint creation.
 
 The blueprint mounts a persistent disk at `/var/data` and stores:
 

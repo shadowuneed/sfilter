@@ -7,6 +7,10 @@ services:
     envVars:
       - key: GEMINI_API_KEYS
         sync: false
+      - key: ADMIN_TOKEN
+        sync: false
+      - key: AUTH_REQUIRED
+        value: "true"
       - key: GEMINI_MODEL
         value: gemini-2.5-flash
       - key: GEMINI_RPM_LIMIT
