@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Argus Monitor</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260630-live">
+  <link rel="stylesheet" href="/static/styles.css?v=20260630-simple">
 </head>
 <body>
   <div class="app-shell">
@@ -42,10 +42,7 @@
           <label for="seedQuery">Фокус поиска</label>
           <textarea id="seedQuery" rows="3" placeholder="Например: казино зеркало Казахстан, фишинг Kaspi, инвестиционная пирамида"></textarea>
           <div class="scan-controls">
-            <label class="number-field" for="maxCandidates">
-              <span>Лимит</span>
-              <input id="maxCandidates" type="number" min="1" max="15" value="8">
-            </label>
+            <span class="fixed-run-size">50 сайтов за запуск</span>
             <label class="toggle-line">
               <input id="takeScreenshots" type="checkbox" checked>
               <span>Скриншоты</span>
@@ -225,6 +222,6 @@
     </form>
   </div>
 
-  <script src="/static/app.js?v=20260630-live"></script>
+  <script src="/static/app.js?v=20260630-simple"></script>
 </body>
 </html>

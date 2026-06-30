@@ -150,8 +150,8 @@ class Investigator:
         else:
             self.db.add_log(
                 run_id,
-                "warning",
-                "KZ_PROXY_URL не настроен: Render проверяет доступность из своей сети, а не из Казахстана",
+                "info",
+                "KZ_PROXY_URL не настроен: проверка доступности идет из сети хостинга",
                 {"access_origin": self.settings.kz_access_label},
             )
 
@@ -237,7 +237,7 @@ class Investigator:
         seed_query: str | None,
         max_candidates: int,
     ) -> list[Candidate]:
-        discovery_limit = min(max(max_candidates * 3, 8), 20)
+        discovery_limit = min(max(max_candidates * 2, 50), 120)
         discovered: list[Candidate] = []
         if self.gemini.available:
             try:

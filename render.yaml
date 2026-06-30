@@ -28,7 +28,7 @@ services:
       - key: EXPORT_DIR
         value: /var/data/exports
       - key: MAX_CANDIDATES_PER_RUN
-        value: "15"
+        value: "50"
       - key: MAX_MIRROR_CHECKS_PER_RUN
         value: "6"
       - key: SCREENSHOTS_ENABLED

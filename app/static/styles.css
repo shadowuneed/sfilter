@@ -125,6 +125,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .health-pill.ok { color: var(--green); border-color: rgba(16, 185, 129, 0.45); background: var(--green-soft); }
 .health-pill.warn { color: var(--amber); border-color: rgba(245, 158, 11, 0.45); background: var(--amber-soft); }
 .health-pill.bad { color: var(--red); border-color: rgba(239, 68, 68, 0.45); background: var(--red-soft); }
+.health-pill.neutral { color: #cbd5e1; border-color: var(--line-strong); background: var(--panel); }
 
 .workspace {
   width: min(1540px, 100%);
@@ -241,6 +242,19 @@ select:focus {
   flex-wrap: wrap;
 }
 
+.fixed-run-size {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  border-radius: 8px;
+  background: var(--blue-soft);
+  color: #bfdbfe;
+  padding: 8px 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
 .manual-check {
   margin-top: 6px;
   padding-top: 14px;
@@ -349,12 +363,10 @@ select:focus {
 }
 
 .activity-panel {
-  position: fixed;
-  top: 86px;
-  left: 50%;
-  z-index: 22;
-  width: min(1492px, calc(100% - 48px));
-  transform: translateX(-50%);
+  position: static;
+  z-index: 1;
+  width: 100%;
+  transform: none;
   padding: 14px;
   display: grid;
   grid-template-columns: minmax(250px, 0.55fr) minmax(360px, 1fr);
@@ -1148,7 +1160,6 @@ a.evidence-link:hover,
   .topnav { justify-content: flex-start; overflow-x: auto; }
   .health { justify-content: flex-start; }
   .activity-panel {
-    top: 138px;
     grid-template-columns: 1fr;
   }
   .scan-band,
@@ -1188,10 +1199,9 @@ a.evidence-link:hover,
   .mini-tech-grid,
   .activity-steps { grid-template-columns: 1fr; }
   .activity-panel {
-    top: 116px;
     width: calc(100% - 24px);
-    max-height: calc(100vh - 132px);
-    overflow: auto;
+    max-height: none;
+    overflow: visible;
   }
   .scan-controls { align-items: stretch; }
   .number-field { width: 100%; }

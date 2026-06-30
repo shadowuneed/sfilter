@@ -93,7 +93,7 @@ class Settings:
     evidence_dir: Path = Path("evidence")
     export_dir: Path = Path("exports")
 
-    max_candidates_per_run: int = 15
+    max_candidates_per_run: int = 50
     max_mirror_checks_per_run: int = 6
     request_timeout_seconds: int = 18
     screenshots_enabled: bool = True
@@ -136,7 +136,7 @@ def get_settings() -> Settings:
         database_path=Path(os.getenv("DATABASE_PATH", "data/argus.db")),
         evidence_dir=Path(os.getenv("EVIDENCE_DIR", "evidence")),
         export_dir=Path(os.getenv("EXPORT_DIR", "exports")),
-        max_candidates_per_run=_int_env("MAX_CANDIDATES_PER_RUN", 15),
+        max_candidates_per_run=_int_env("MAX_CANDIDATES_PER_RUN", 50),
         max_mirror_checks_per_run=_int_env("MAX_MIRROR_CHECKS_PER_RUN", 6),
         request_timeout_seconds=_int_env("REQUEST_TIMEOUT_SECONDS", 18),
         screenshots_enabled=_bool_env("SCREENSHOTS_ENABLED", True),

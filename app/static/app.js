@@ -10,6 +10,8 @@ const state = {
   authConfigured: false,
 };
 
+const AUTO_RUN_CANDIDATES = 50;
+
 const els = {
   scanForm: document.getElementById("scanForm"),
   healthLine: document.getElementById("healthLine"),
@@ -18,7 +20,6 @@ const els = {
   runBtn: document.getElementById("runBtn"),
   stopBtn: document.getElementById("stopBtn"),
   seedQuery: document.getElementById("seedQuery"),
-  maxCandidates: document.getElementById("maxCandidates"),
   takeScreenshots: document.getElementById("takeScreenshots"),
   manualTarget: document.getElementById("manualTarget"),
   manualCategory: document.getElementById("manualCategory"),
@@ -98,7 +99,7 @@ async function api(path, options = {}) {
   });
   if (!response.ok) {
     const text = await response.text();
-    if (response.status === 401 || response.status === 503) {
+    if (response.status === 401) {
       showAuth(text || response.statusText);
     }
     throw new Error(text || response.statusText);
@@ -132,6 +133,14 @@ function showAuth(message = "") {
 
 function hideAuth() {
   if (els.authOverlay) els.authOverlay.hidden = true;
+}
+
+function setActionLock(locked, reason = "") {
+  [els.runBtn, els.manualBtn].forEach((button) => {
+    if (!button) return;
+    button.disabled = locked;
+    if (reason) button.title = reason;
+  });
 }
 
 function escapeHtml(value) {
@@ -298,18 +307,25 @@ async function loadHealth() {
     const health = await api("/api/health");
     state.authRequired = Boolean(health.auth_required);
     state.authConfigured = Boolean(health.auth_configured);
-    renderPill(els.geminiPill, health.gemini_configured ? "AI: готов" : "AI: нет ключа", health.gemini_configured ? "ok" : "warn");
+    const geminiOk = Boolean(health.gemini_configured && health.gemini_key_format_ok);
+    const geminiText = !health.gemini_configured ? "AI: нет ключа" : geminiOk ? "AI: готов" : "AI: ключ неверный";
+    renderPill(els.geminiPill, geminiText, geminiOk ? "ok" : "warn");
     renderPill(
       els.kzAccessPill,
-      health.kz_proxy_configured ? "KZ: proxy" : "KZ: сеть сервера",
-      health.kz_proxy_configured ? "ok" : "warn",
+      health.kz_proxy_configured ? "KZ: proxy" : "KZ: direct",
+      health.kz_proxy_configured ? "ok" : "neutral",
     );
     const keyCount = health.gemini_key_count ?? health.gemini_keys?.length ?? 0;
-    els.healthLine.textContent = health.gemini_configured
-      ? `${keyCount} ключ(а), модель ${health.gemini_model}. Доступность: ${health.kz_access_label}.`
-      : "Добавьте GEMINI_API_KEYS в .env или Render Environment.";
-    if (state.authRequired && !state.authConfigured) {
-      showAuth("ADMIN_TOKEN is not configured on the server.");
+    const authMissing = state.authRequired && !state.authConfigured;
+    const geminiHint = health.gemini_configured
+      ? `${keyCount} ключ(а), модель ${health.gemini_model}`
+      : "добавьте GEMINI_API_KEYS";
+    const kzHint = health.kz_proxy_configured ? health.kz_access_label : "KZ_PROXY_URL не задан, проверка идет из сети хостинга";
+    els.healthLine.textContent = `${geminiHint}. ${kzHint}. Автозапуск: 50 сайтов.`;
+    setActionLock(authMissing, authMissing ? "На сервере не настроен ADMIN_TOKEN" : "");
+    if (authMissing) {
+      els.healthLine.textContent = `${els.healthLine.textContent} ADMIN_TOKEN не настроен, запуски защищенного API недоступны.`;
+      hideAuth();
     } else if (state.authRequired && !state.apiToken) {
       showAuth("Введите ADMIN_TOKEN для доступа к API.");
     }
@@ -331,7 +347,7 @@ async function startRun(event) {
   try {
     const payload = {
       seed_query: els.seedQuery.value.trim() || null,
-      max_candidates: Number(els.maxCandidates.value || 8),
+      max_candidates: AUTO_RUN_CANDIDATES,
       take_screenshots: els.takeScreenshots.checked,
     };
     const result = await api("/api/runs", { method: "POST", body: JSON.stringify(payload) });
@@ -969,13 +985,15 @@ els.clearTokenBtn?.addEventListener("click", () => {
 
 async function bootstrap() {
   await loadHealth();
-  if (state.authRequired && (!state.authConfigured || !state.apiToken)) {
+  if (state.authRequired && state.authConfigured && !state.apiToken) {
     drawTrend([]);
     return;
   }
-  await loadRuns();
-  if (state.selectedRunId) await loadRun(state.selectedRunId);
-  await loadCases();
+  if (!(state.authRequired && !state.authConfigured)) {
+    await loadRuns();
+    if (state.selectedRunId) await loadRun(state.selectedRunId);
+    await loadCases();
+  }
 }
 
 bootstrap().catch(console.error);

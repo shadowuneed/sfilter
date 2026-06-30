@@ -71,7 +71,7 @@ async def api_auth_middleware(request: Request, call_next):
 
 class RunRequest(BaseModel):
     seed_query: str | None = Field(default=None, max_length=2000)
-    max_candidates: int = Field(default=8, ge=1, le=100)
+    max_candidates: int = Field(default=50, ge=1, le=100)
     take_screenshots: bool = True
 
 
@@ -119,12 +119,14 @@ def health() -> dict[str, Any]:
         "ok": True,
         "app_name": "Argus",
         "gemini_configured": gemini.available,
+        "gemini_key_format_ok": gemini.key_format_ok,
         "gemini_model": settings.gemini_model,
         "gemini_key_count": len(settings.gemini_api_keys),
         "rpm_limit": settings.gemini_rpm_limit,
         "rpd_limit": settings.gemini_rpd_limit,
         "auth_required": settings.auth_required,
         "auth_configured": bool(settings.admin_token),
+        "auth_enforced": bool(settings.auth_required and settings.admin_token),
         "screenshots_enabled": settings.screenshots_enabled,
         "screenshot_runtime": investigator.screenshots.runtime_status(),
         "database": db.label,

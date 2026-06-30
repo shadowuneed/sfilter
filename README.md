@@ -4,7 +4,7 @@ Argus is a working OSINT investigation platform for suspicious casino, betting, 
 
 ## What It Does
 
-- Starts an investigation from the browser with one button. The search focus is automatic; the optional context box only adds extra hints.
+- Starts an investigation from the browser with one button. A normal run checks up to `50` candidates; the optional context box only adds extra hints.
 - Uses Gemini 2.5 Flash with Google Search grounding and URL context where available.
 - Rotates multiple Gemini API keys and tracks local limits per key: `10 RPM` and `250 RPD` by default.
 - Skips IP-only results, localhost/test domains, social/video/catalog noise, and domains already known in the database.
@@ -67,6 +67,7 @@ DATABASE_URL=postgresql://postgres:password@host:5432/postgres?sslmode=require
 Do not commit real API keys. Keys pasted into chat should be treated as sensitive; prefer rotating them later and storing only in `.env` or deployment secrets.
 
 `ADMIN_TOKEN` protects all `/api/*` endpoints except `/api/health`. The browser UI asks for this token and sends it as `Authorization: Bearer <token>`, preventing anonymous users from starting runs and spending Gemini quota.
+Set `ADMIN_TOKEN` in the deployment environment. If it is missing, the UI no longer blocks the whole page with a login modal, but protected API actions cannot run correctly until the variable exists.
 
 `DATABASE_URL` enables persistent Postgres storage and takes priority over `DATABASE_PATH`. Use the Supabase connection string with SSL enabled. For `*.supabase.com` hosts Argus also adds `sslmode=require` automatically if it is missing. If `DATABASE_URL` is empty, Argus falls back to local SQLite at `DATABASE_PATH`, which is useful only for local development.
 
@@ -109,6 +110,8 @@ Open `/api/health` after deploy and check `screenshot_runtime.chromium_exists`. 
 Local SQLite files and evidence files are not durable across rebuilds/restarts unless persistent storage or an external database/storage service is attached. Postgres fixes the run/history database; screenshots and saved HTML still need durable file storage if the host filesystem is ephemeral.
 
 For a real Kazakhstan-only accessibility check, set `KZ_PROXY_URL` in Render to an HTTP/SOCKS proxy or private checker endpoint located in Kazakhstan. Without it, Render can only prove that the domain opens from Render's network, and the UI marks that limitation in the run journal and technical evidence.
+
+If the journal shows `Gemini API 401 Unauthorized`, the configured Gemini key is invalid for Google AI Studio. Use an API key from Google AI Studio; it normally starts with `AIza`.
 
 ## API Docs Used
 

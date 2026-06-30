@@ -48,6 +48,10 @@ class GeminiClient:
     def available(self) -> bool:
         return bool(self.settings.gemini_api_keys)
 
+    @property
+    def key_format_ok(self) -> bool:
+        return any(key.strip().startswith("AIza") for key in self.settings.gemini_api_keys)
+
     def generate_json(
         self,
         prompt: str,
@@ -161,6 +165,14 @@ class GeminiClient:
         if len(body) > 360:
             body = f"{body[:360]}..."
         message = f"Gemini API {status} {reason} (model={self.settings.gemini_model}, key_hash={key_hash})"
+        if status in AUTH_STATUS_CODES:
+            message += "; ключ отклонен Google. Проверьте GEMINI_API_KEYS: нужен API key из Google AI Studio, обычно начинается с AIza"
+            return GeminiAPIError(
+                message,
+                status_code=status,
+                key_hash=key_hash,
+                retryable=False,
+            )
         if status == 503:
             message += "; service is temporarily unavailable, retry will use another key if possible"
         if body:
