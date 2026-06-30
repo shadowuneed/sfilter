@@ -50,7 +50,33 @@ class GeminiClient:
 
     @property
     def key_format_ok(self) -> bool:
-        return any(key.strip().startswith("AIza") for key in self.settings.gemini_api_keys)
+        return bool(self.settings.gemini_api_keys) and not self.key_format_warnings
+
+    @property
+    def key_format_warnings(self) -> list[str]:
+        warnings: list[str] = []
+        for index, key in enumerate(self.settings.gemini_api_keys, start=1):
+            stripped = key.strip()
+            label = f"key {index}"
+            if not stripped:
+                warnings.append(f"{label}: empty")
+                continue
+            if stripped != key:
+                warnings.append(f"{label}: leading or trailing whitespace")
+            if stripped[:1] in {"'", '"'} or stripped[-1:] in {"'", '"'}:
+                warnings.append(f"{label}: contains literal quotes")
+            unwrapped = stripped.strip("'\"")
+            if unwrapped.lower().startswith("bearer "):
+                warnings.append(f"{label}: contains Bearer prefix")
+            if any(char.isspace() for char in stripped):
+                warnings.append(f"{label}: contains whitespace")
+            if stripped.startswith("[") or stripped.endswith("]"):
+                warnings.append(f"{label}: looks like a JSON list")
+            if "," in stripped or ";" in stripped:
+                warnings.append(f"{label}: contains a separator")
+            if len(stripped) < 20:
+                warnings.append(f"{label}: too short")
+        return warnings
 
     def generate_json(
         self,
@@ -166,7 +192,7 @@ class GeminiClient:
             body = f"{body[:360]}..."
         message = f"Gemini API {status} {reason} (model={self.settings.gemini_model}, key_hash={key_hash})"
         if status in AUTH_STATUS_CODES:
-            message += "; ключ отклонен Google. Проверьте GEMINI_API_KEYS: нужен API key из Google AI Studio, обычно начинается с AIza"
+            message += "; ключ отклонен Google. Проверьте, что этот ключ активен для Gemini API, не обрезан, не вставлен с кавычками/Bearer и не является unrestricted standard key, который Google может отклонять"
             return GeminiAPIError(
                 message,
                 status_code=status,

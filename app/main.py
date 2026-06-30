@@ -120,6 +120,7 @@ def health() -> dict[str, Any]:
         "app_name": "Argus",
         "gemini_configured": gemini.available,
         "gemini_key_format_ok": gemini.key_format_ok,
+        "gemini_key_warnings": gemini.key_format_warnings,
         "gemini_model": settings.gemini_model,
         "gemini_key_count": len(settings.gemini_api_keys),
         "rpm_limit": settings.gemini_rpm_limit,

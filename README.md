@@ -111,7 +111,7 @@ Local SQLite files and evidence files are not durable across rebuilds/restarts u
 
 For a real Kazakhstan-only accessibility check, set `KZ_PROXY_URL` in Render to an HTTP/SOCKS proxy or private checker endpoint located in Kazakhstan. Without it, Render can only prove that the domain opens from Render's network, and the UI marks that limitation in the run journal and technical evidence.
 
-If the journal shows `Gemini API 401 Unauthorized`, the configured Gemini key is invalid for Google AI Studio. Use an API key from Google AI Studio; it normally starts with `AIza`.
+If the journal shows `Gemini API 401 Unauthorized`, Google rejected the specific key used for that attempt. Check that the deployed `GEMINI_API_KEYS` value contains every key, has no literal quotes or `Bearer ` prefix, and that old standard keys are restricted or migrated to Gemini auth keys. Google notes that from June 19, 2026 the Gemini API rejects unrestricted standard keys: https://ai.google.dev/gemini-api/docs/api-key
 
 ## API Docs Used
 

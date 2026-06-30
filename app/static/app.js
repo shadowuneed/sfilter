@@ -307,8 +307,13 @@ async function loadHealth() {
     const health = await api("/api/health");
     state.authRequired = Boolean(health.auth_required);
     state.authConfigured = Boolean(health.auth_configured);
+    const geminiWarnings = Array.isArray(health.gemini_key_warnings) ? health.gemini_key_warnings : [];
     const geminiOk = Boolean(health.gemini_configured && health.gemini_key_format_ok);
-    const geminiText = !health.gemini_configured ? "AI: нет ключа" : geminiOk ? "AI: готов" : "AI: ключ неверный";
+    const geminiText = !health.gemini_configured
+      ? "AI: нет ключа"
+      : geminiWarnings.length
+        ? "AI: проверь формат"
+        : "AI: ключи загружены";
     renderPill(els.geminiPill, geminiText, geminiOk ? "ok" : "warn");
     renderPill(
       els.kzAccessPill,
