@@ -336,12 +336,17 @@ async function loadHealth() {
       : health.ml_enabled
         ? "ML: модель недоступна"
         : "ML: выключен";
+    const cyberHint = health.cyberscan_ml_available
+      ? `CyberScan: ${health.cyberscan_feature_count || 34} признака`
+      : health.cyberscan_ml_enabled
+        ? "CyberScan: модель недоступна"
+        : "CyberScan: выключен";
     const kzHint = health.kz_proxy_configured
       ? `${health.kz_access_label}${health.kz_proxy_source ? ` (${health.kz_proxy_source})` : ""}`
       : kzRequired
         ? "KZ proxy обязателен и не настроен, запуск заблокирован"
         : "KZ proxy не задан: запуск разрешен, но доступность из Казахстана не подтверждена";
-    els.healthLine.textContent = `${geminiHint}. ${mlHint}. ${kzHint}. Автозапуск: 50 сайтов.`;
+    els.healthLine.textContent = `${geminiHint}. ${mlHint}. ${cyberHint}. ${kzHint}. Автозапуск: 50 сайтов.`;
     const actionBlocked = authMissing || !kzReady;
     const actionReason = authMissing
       ? "На сервере не настроен ADMIN_TOKEN"
@@ -774,6 +779,7 @@ function latestFinding(item, findings) {
 function positiveSignals(finding) {
   const evidence = finding.evidence || {};
   const ml = evidence.ml || {};
+  const cyber = evidence.cyberscan_ml || {};
   const tls = finding.tls || {};
   const dns = finding.dns || {};
   const signals = [];
@@ -785,12 +791,15 @@ function positiveSignals(finding) {
   if (evidence.response_time_ms && evidence.response_time_ms < 1500) signals.push(`Быстрый ответ: ${formatResponseTime(evidence.response_time_ms)}`);
   if (evidence.access_origin) signals.push(`Проверено через: ${evidence.access_origin}`);
   if (ml.available && ml.label === "legit") signals.push(`ML CatBoost считает сайт легитимным: ${formatPercent(ml.confidence)}`);
+  if (cyber.available && cyber.label === "legit") signals.push(`CyberScan ML не видит сильных подозрительных признаков: ${formatPercent(cyber.confidence)}`);
   return signals.length ? signals : ["Положительные технические признаки не выделены"];
 }
 
 function negativeSignals(finding) {
   const evidence = finding.evidence || {};
   const ml = evidence.ml || {};
+  const cyber = evidence.cyberscan_ml || {};
+  const contentAi = evidence.content_ai || {};
   const domainInfo = evidence.domain || {};
   const dns = finding.dns || {};
   const tls = finding.tls || {};
@@ -804,6 +813,8 @@ function negativeSignals(finding) {
   if (Number(evidence.redirect_count || 0) > 2) signals.push(`Много редиректов: ${evidence.redirect_count}`);
   if (evidence.blocked_by_policy) signals.push("Страница похожа на блокировку доступа");
   if (ml.available && ml.label && ml.label !== "legit") signals.push(`ML CatBoost: ${ml.label}, уверенность ${formatPercent(ml.confidence)}`);
+  if (cyber.available && cyber.label === "suspicious") signals.push(`CyberScan ML: подозрительность ${formatPercent(cyber.suspicious_probability)}`);
+  if (Array.isArray(contentAi.signals)) signals.push(...contentAi.signals.slice(0, 6));
   return signals.length ? signals : ["Явные негативные признаки не найдены"];
 }
 
@@ -832,6 +843,8 @@ function renderCaseDetail(item, findings) {
   const finding = latestFinding(item, findings);
   const evidence = finding.evidence || {};
   const ml = evidence.ml || {};
+  const cyber = evidence.cyberscan_ml || {};
+  const contentAi = evidence.content_ai || {};
   const dns = finding.dns || {};
   const tls = finding.tls || {};
   const domainInfo = evidence.domain || {};
@@ -905,6 +918,18 @@ function renderCaseDetail(item, findings) {
           techRow("Класс", ml.label || "None"),
           techRow("Уверенность", formatPercent(ml.confidence), ml.label && ml.label !== "legit" ? "bad" : "good"),
           techRow("Топ признаки", mlFeatureText(ml)),
+        ])}
+        ${techCard("CyberScan ML", [
+          techRow("Статус", cyber.available ? "RandomForest готов" : (cyber.error || "Недоступна"), cyber.available ? "good" : "bad"),
+          techRow("Вердикт", cyber.label || "None"),
+          techRow("Подозрительность", formatPercent(cyber.suspicious_probability), cyber.label === "suspicious" ? "bad" : "good"),
+          techRow("Признаки", mlFeatureText(cyber)),
+        ])}
+        ${techCard("Контентный анализ", [
+          techRow("Категория", contentAi.category_hint || "None", contentAi.category_hint ? "bad" : ""),
+          techRow("Casino слов", (contentAi.casino_keywords || []).length),
+          techRow("Password форм", contentAi.forms?.num_password_forms ?? 0),
+          techRow("iframe / hidden", `${contentAi.num_iframes || 0} / ${contentAi.num_hidden_elements || 0}`),
         ])}
       </div>
     </section>

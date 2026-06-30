@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import re
 from dataclasses import dataclass, field
+from io import StringIO
 from threading import Event
 from typing import Any
 
@@ -20,10 +22,46 @@ from app.services.domains import (
     normalize_url,
     registered_domain,
 )
+from app.services.content_intelligence import ContentIntelligence
+from app.services.cyberscan_classifier import CyberScanClassifier
 from app.services.evidence import EvidenceCollector, score_finding
 from app.services.gemini import GeminiClient, GeminiQuotaError
 from app.services.ml_classifier import DomainMLClassifier
 from app.services.screenshots import ScreenshotService
+
+
+CYBERSCAN_OSINT_SOURCES = [
+    {
+        "name": "openphish",
+        "url": "https://openphish.com/feed.txt",
+        "category": "phishing",
+        "parser": "plain_list",
+    },
+    {
+        "name": "urlhaus",
+        "url": "https://urlhaus.abuse.ch/downloads/csv_recent/",
+        "category": "malware",
+        "parser": "csv",
+    },
+    {
+        "name": "phishing_database",
+        "url": "https://raw.githubusercontent.com/mitchellkrogza/Phishing.Database/master/phishing-domains-ACTIVE.txt",
+        "category": "phishing",
+        "parser": "plain_list",
+    },
+    {
+        "name": "stevenblack_gambling",
+        "url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling/hosts",
+        "category": "casino",
+        "parser": "hosts_file",
+    },
+    {
+        "name": "stopgambling",
+        "url": "https://raw.githubusercontent.com/StopGambling/domain-list/main/domains.txt",
+        "category": "casino",
+        "parser": "plain_list",
+    },
+]
 
 
 @dataclass
@@ -49,6 +87,8 @@ class Investigator:
         self.evidence = EvidenceCollector(settings)
         self.screenshots = ScreenshotService(settings)
         self.ml = DomainMLClassifier(settings)
+        self.content_ai = ContentIntelligence(settings)
+        self.cyberscan = CyberScanClassifier(settings)
 
     def run(self, run_id: int, seed_query: str | None, max_candidates: int, take_screenshots: bool, cancel_event: Event | None = None) -> None:
         asyncio.run(self._run(run_id, seed_query, max_candidates, take_screenshots, cancel_event))
@@ -251,19 +291,26 @@ class Investigator:
         seed_query: str | None,
         max_candidates: int,
     ) -> list[Candidate]:
-        discovery_limit = min(max(max_candidates * 2, 50), 120)
+        discovery_limit = min(
+            max(max_candidates * 7, 150),
+            max(max_candidates, self.settings.osint_candidate_pool_size),
+        )
         discovered: list[Candidate] = []
-        if self.gemini.available:
-            try:
-                discovered.extend(self._discover_with_gemini(run_id, seed_query, discovery_limit))
-            except Exception as exc:  # noqa: BLE001
-                self.db.add_log(run_id, "error", "Gemini не смог собрать кандидатов", {"error": str(exc)})
-        else:
-            self.db.add_log(run_id, "warning", "Gemini ключ не настроен. Автопоиск в интернете выключен.")
-
         if self.settings.osint_feeds_enabled:
             feed_candidates = await self._discover_from_feeds(run_id, discovery_limit)
             discovered.extend(feed_candidates)
+
+        if self.gemini.available and (seed_query or len(discovered) < max_candidates):
+            try:
+                gemini_limit = min(discovery_limit, max(max_candidates * 2, 50))
+                discovered.extend(self._discover_with_gemini(run_id, seed_query, gemini_limit))
+            except Exception as exc:  # noqa: BLE001
+                self.db.add_log(run_id, "error", "Gemini не смог собрать кандидатов", {"error": str(exc)})
+        else:
+            if not self.gemini.available:
+                self.db.add_log(run_id, "warning", "Gemini ключ не настроен. Автопоиск продолжается через OSINT-фиды.")
+            else:
+                self.db.add_log(run_id, "info", "Gemini пропущен: OSINT-фиды дали достаточный пул кандидатов.")
 
         if seed_query:
             for domain in find_domains(seed_query):
@@ -364,7 +411,7 @@ class Investigator:
             )
         return candidates
 
-    async def _discover_from_feeds(self, run_id: int, max_candidates: int) -> list[Candidate]:
+    async def _discover_from_plain_feeds_legacy(self, run_id: int, max_candidates: int) -> list[Candidate]:
         candidates: list[Candidate] = []
         timeout = min(self.settings.request_timeout_seconds, 15)
         headers = {"User-Agent": self.settings.user_agent}
@@ -404,6 +451,123 @@ class Investigator:
                     added += 1
                 self.db.add_log(run_id, "info", "OSINT feed обработан", {"url": feed_url, "added": added, "skipped": skipped})
         return candidates
+
+    async def _discover_from_feeds(self, run_id: int, max_candidates: int) -> list[Candidate]:
+        candidates: list[Candidate] = []
+        seen: set[str] = set()
+        timeout = min(self.settings.request_timeout_seconds, 15)
+        headers = {"User-Agent": self.settings.user_agent}
+        sources = self._osint_sources()
+
+        self.db.add_log(run_id, "info", "OSINT discovery started", {"sources": len(sources), "limit": max_candidates})
+        async with httpx.AsyncClient(timeout=timeout, headers=headers, follow_redirects=True) as client:
+            for source in sources:
+                if len(candidates) >= max_candidates:
+                    break
+                try:
+                    response = await client.get(source["url"])
+                    response.raise_for_status()
+                except Exception as exc:  # noqa: BLE001
+                    self.db.add_log(
+                        run_id,
+                        "warning",
+                        "OSINT source unavailable",
+                        {"name": source["name"], "url": source["url"], "error": str(exc)},
+                    )
+                    continue
+
+                added = 0
+                skipped = 0
+                for token in self._feed_tokens(response.text, source["parser"]):
+                    if len(candidates) >= max_candidates:
+                        break
+                    domain = extract_domain(token)
+                    if not is_candidate_domain(domain):
+                        skipped += 1
+                        continue
+                    key = registered_domain(domain)
+                    if not key or key in seen:
+                        skipped += 1
+                        continue
+                    seen.add(key)
+                    candidates.append(
+                        Candidate(
+                            url=normalize_url(token or domain),
+                            domain=domain,
+                            category=source["category"],
+                            why=f"Domain found in CyberScan-style OSINT source: {source['name']}.",
+                            search_query=f"OSINT feed: {source['name']}",
+                            source_urls=[source["url"]],
+                        )
+                    )
+                    added += 1
+                self.db.add_log(
+                    run_id,
+                    "info",
+                    "OSINT source processed",
+                    {"name": source["name"], "category": source["category"], "added": added, "skipped": skipped},
+                )
+        return candidates
+
+    def _osint_sources(self) -> list[dict[str, str]]:
+        sources = [dict(item) for item in CYBERSCAN_OSINT_SOURCES]
+        known_urls = {item["url"] for item in sources}
+        for feed_url in self.settings.osint_feeds:
+            if feed_url in known_urls:
+                continue
+            known_urls.add(feed_url)
+            sources.append(
+                {
+                    "name": extract_domain(feed_url) or "custom_feed",
+                    "url": feed_url,
+                    "category": "phishing" if "phish" in feed_url.lower() else "suspicious",
+                    "parser": "plain_list",
+                }
+            )
+        return sources
+
+    def _feed_tokens(self, text: str, parser: str) -> list[str]:
+        if parser == "csv":
+            tokens: list[str] = []
+            rows = csv.reader(StringIO("\n".join(line for line in text.splitlines() if not line.startswith("#"))))
+            for row in rows:
+                for cell in row:
+                    tokens.extend(self._domains_or_urls_from_text(cell))
+            return tokens
+
+        tokens = []
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith(("#", "!", "//")):
+                continue
+            line = line.split("#", 1)[0].strip()
+            if parser == "hosts_file":
+                parts = [part.strip() for part in line.split() if part.strip()]
+                line_tokens = [part for part in parts[1:] if "." in part] if len(parts) > 1 else parts
+            else:
+                line_tokens = [line]
+            for token in line_tokens:
+                tokens.extend(self._domains_or_urls_from_text(token))
+        return tokens
+
+    @staticmethod
+    def _domains_or_urls_from_text(text: str) -> list[str]:
+        cleaned = text.strip().strip('"').strip("'").strip(",")
+        if not cleaned:
+            return []
+        urls = [url for url in re.findall(r"(?i)https?://[^\s,\"'<>]+", cleaned) if is_candidate_url(url)]
+        if urls:
+            return urls
+        domains = [
+            domain
+            for domain in re.findall(r"(?i)(?:[a-z0-9-]+\.)+[a-z]{2,24}", cleaned)
+            if is_candidate_domain(domain)
+        ]
+        if cleaned.startswith("||"):
+            domains.append(cleaned[2:].strip("^/"))
+        if not urls and not domains and is_candidate_domain(extract_domain(cleaned)):
+            domains.append(cleaned)
+        return [*urls, *domains]
 
     async def _discover_mirrors(
         self,
@@ -516,6 +680,27 @@ class Investigator:
             self.db.add_log(run_id, "info", "Скриншот пропущен: выключен в запуске", {"domain": domain})
 
         source_urls = self._clean_sources(candidate.source_urls)
+        content_ai = self.content_ai.analyze(candidate.url, evidence)
+        cyberscan_result = self.cyberscan.classify(candidate.url, evidence, content_ai)
+        if cyberscan_result.get("available"):
+            self.db.add_log(
+                run_id,
+                "info",
+                "CyberScan ML classification completed",
+                {
+                    "domain": domain,
+                    "label": cyberscan_result.get("label"),
+                    "suspicious_probability": cyberscan_result.get("suspicious_probability"),
+                },
+            )
+        elif cyberscan_result.get("error"):
+            self.db.add_log(
+                run_id,
+                "warning",
+                "CyberScan ML unavailable",
+                {"domain": domain, "error": cyberscan_result.get("error")},
+            )
+
         ml_result = self.ml.classify(candidate.url, evidence)
         if ml_result.get("available"):
             self.db.add_log(
@@ -537,7 +722,7 @@ class Investigator:
                 {"domain": domain, "error": ml_result.get("error")},
             )
 
-        category = self._category_with_ml(candidate.category or "suspicious", ml_result)
+        category = self._category_with_ai(candidate.category or "suspicious", ml_result, cyberscan_result, content_ai)
         risk, verdict, reasons = score_finding(
             category=category,
             active=evidence.active,
@@ -547,8 +732,20 @@ class Investigator:
             domain=domain,
             mirror_group=mirror_group,
         )
+        risk = min(
+            100,
+            risk
+            + int(content_ai.get("risk_delta") or 0)
+            + self._cyberscan_risk_delta(cyberscan_result),
+        )
+        verdict = self._verdict_for_risk(risk)
         if candidate.why:
             reasons.insert(0, candidate.why)
+        for signal in reversed(content_ai.get("signals") or []):
+            reasons.insert(1 if candidate.why else 0, str(signal))
+        cyberscan_reason = self._cyberscan_reason(cyberscan_result)
+        if cyberscan_reason:
+            reasons.insert(1 if candidate.why else 0, cyberscan_reason)
         ml_reason = self._ml_reason(ml_result)
         if ml_reason:
             reasons.insert(1 if candidate.why else 0, ml_reason)
@@ -581,11 +778,36 @@ class Investigator:
                 "brand": candidate.brand,
                 "mirror_hints": candidate.mirror_hints,
                 "ml": ml_result,
+                "cyberscan_ml": cyberscan_result,
+                "content_ai": content_ai,
                 "screenshot_error": screenshot_error,
             },
             "sources_json": [{"url": url} for url in source_urls],
             "reasons_json": reasons,
         }
+
+    def _category_with_ai(
+        self,
+        category: str,
+        ml_result: dict[str, Any],
+        cyberscan_result: dict[str, Any],
+        content_ai: dict[str, Any],
+    ) -> str:
+        content_label = str(content_ai.get("category_hint") or "").lower()
+        content_confidence = str(content_ai.get("category_confidence") or "low").lower()
+        if content_label in {"casino", "pyramid", "phishing", "suspicious"} and content_confidence in {"medium", "high"}:
+            return content_label
+
+        ml_category = self._category_with_ml(category, ml_result)
+        if ml_category != category:
+            return ml_category
+
+        cyber_label = str(cyberscan_result.get("label") or "").lower()
+        cyber_probability = float(cyberscan_result.get("suspicious_probability") or 0)
+        weak_category = category.lower() in {"", "manual", "unknown", "suspicious"}
+        if cyber_label == "suspicious" and cyber_probability >= 0.68 and weak_category:
+            return "suspicious"
+        return category
 
     def _category_with_ml(self, category: str, ml_result: dict[str, Any]) -> str:
         label = str(ml_result.get("label") or "").lower()
@@ -596,6 +818,42 @@ class Investigator:
         if confidence >= self.settings.ml_min_confidence and (weak_category or confidence >= 0.65):
             return label
         return category
+
+    @staticmethod
+    def _cyberscan_risk_delta(cyberscan_result: dict[str, Any]) -> int:
+        if not cyberscan_result.get("available"):
+            return 0
+        probability = float(cyberscan_result.get("suspicious_probability") or 0)
+        if probability >= 0.85:
+            return 18
+        if probability >= 0.68:
+            return 12
+        if probability >= 0.55:
+            return 6
+        return 0
+
+    @staticmethod
+    def _cyberscan_reason(cyberscan_result: dict[str, Any]) -> str | None:
+        if not cyberscan_result.get("available"):
+            return None
+        probability = float(cyberscan_result.get("suspicious_probability") or 0)
+        top = [
+            str(item.get("feature"))
+            for item in cyberscan_result.get("top_features", [])
+            if item.get("feature")
+        ][:5]
+        details = f"; признаки: {', '.join(top)}" if top else ""
+        return f"CyberScan ML оценил вероятность подозрительности как {probability:.0%}{details}."
+
+    @staticmethod
+    def _verdict_for_risk(risk: int) -> str:
+        if risk >= 80:
+            return "suspected_fraud_or_illegal"
+        if risk >= 60:
+            return "suspicious"
+        if risk >= 40:
+            return "needs_review"
+        return "low_signal"
 
     @staticmethod
     def _ml_reason(ml_result: dict[str, Any]) -> str | None:

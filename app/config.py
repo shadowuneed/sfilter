@@ -115,9 +115,11 @@ class Settings:
     max_mirror_checks_per_run: int = 6
     request_timeout_seconds: int = 18
     screenshots_enabled: bool = True
-    osint_feeds_enabled: bool = False
+    osint_feeds_enabled: bool = True
+    osint_candidate_pool_size: int = 350
     ml_enabled: bool = True
     ml_model_path: Path = Path("models/domain_classifier.cbm")
+    cyberscan_model_path: Path = Path("models/cyberscan_model.pkl")
     ml_min_confidence: float = 0.45
     user_agent: str = DEFAULT_USER_AGENT
     kz_proxy_url: str | None = None
@@ -165,9 +167,11 @@ def get_settings() -> Settings:
         max_mirror_checks_per_run=_int_env("MAX_MIRROR_CHECKS_PER_RUN", 6),
         request_timeout_seconds=_int_env("REQUEST_TIMEOUT_SECONDS", 18),
         screenshots_enabled=_bool_env("SCREENSHOTS_ENABLED", True),
-        osint_feeds_enabled=_bool_env("OSINT_FEEDS_ENABLED", False),
+        osint_feeds_enabled=_bool_env("OSINT_FEEDS_ENABLED", True),
+        osint_candidate_pool_size=_int_env("OSINT_CANDIDATE_POOL_SIZE", 350),
         ml_enabled=_bool_env("ML_ENABLED", True),
         ml_model_path=Path(os.getenv("ML_MODEL_PATH", "models/domain_classifier.cbm")),
+        cyberscan_model_path=Path(os.getenv("CYBERSCAN_MODEL_PATH", "models/cyberscan_model.pkl")),
         ml_min_confidence=_float_env("ML_MIN_CONFIDENCE", 0.45),
         user_agent=os.getenv("USER_AGENT", DEFAULT_USER_AGENT).strip() or DEFAULT_USER_AGENT,
         kz_proxy_url=kz_proxy_url,

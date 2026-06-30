@@ -20,3 +20,4 @@ data/ml/raw/
 data/ml/processed/
 data/ml/tldextract/
 models/
+_reference/

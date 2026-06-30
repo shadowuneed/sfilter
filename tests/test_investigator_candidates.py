@@ -44,6 +44,21 @@ class InvestigatorCandidateTests(unittest.TestCase):
         self.assertEqual(candidate.url, "https://mirror-entry.lol")
         self.assertEqual(candidate.source_urls, ["https://public-report.kz/case"])
 
+    def test_feed_parser_extracts_csv_and_hosts_domains(self) -> None:
+        csv_tokens = self.investigator._feed_tokens(
+            '# comment\n"2026-06-30","https://bad-login.example/home.php","online"\n',
+            "csv",
+        )
+        hosts_tokens = self.investigator._feed_tokens(
+            "0.0.0.0 casino-mirror.example\n||bonus-slot.example^\n",
+            "hosts_file",
+        )
+
+        self.assertIn("https://bad-login.example/home.php", csv_tokens)
+        self.assertNotIn("home.php", csv_tokens)
+        self.assertIn("casino-mirror.example", hosts_tokens)
+        self.assertIn("bonus-slot.example", hosts_tokens)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -137,6 +137,7 @@ def monitor() -> FileResponse:
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     ml_status = investigator.ml.status()
+    cyberscan_status = investigator.cyberscan.status()
     return {
         "ok": True,
         "app_name": "Argus",
@@ -158,6 +159,11 @@ def health() -> dict[str, Any]:
         "ml_classes": ml_status.classes,
         "ml_error": ml_status.error,
         "ml_min_confidence": settings.ml_min_confidence,
+        "cyberscan_ml_enabled": investigator.cyberscan.enabled,
+        "cyberscan_ml_available": investigator.cyberscan.available,
+        "cyberscan_model_path": cyberscan_status.model_path,
+        "cyberscan_feature_count": len(cyberscan_status.structural_features),
+        "cyberscan_ml_error": cyberscan_status.error,
         "database": db.label,
         "database_backend": db.backend,
         "evidence_dir": str(settings.evidence_dir),

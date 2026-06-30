@@ -36,11 +36,15 @@ services:
       - key: PLAYWRIGHT_BROWSERS_PATH
         value: /ms-playwright
       - key: OSINT_FEEDS_ENABLED
-        value: "false"
+        value: "true"
+      - key: OSINT_CANDIDATE_POOL_SIZE
+        value: "350"
       - key: ML_ENABLED
         value: "true"
       - key: ML_MODEL_PATH
         value: models/domain_classifier.cbm
+      - key: CYBERSCAN_MODEL_PATH
+        value: models/cyberscan_model.pkl
       - key: ML_MIN_CONFIDENCE
         value: "0.45"
       - key: REQUIRE_KZ_PROXY

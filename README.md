@@ -5,8 +5,8 @@ Argus is a working OSINT investigation platform for suspicious casino, betting, 
 ## What It Does
 
 - Starts an investigation from the browser with one button. A normal run checks up to `50` candidates; the optional context box only adds extra hints.
-- Uses Gemini 2.5 Flash with Google Search grounding and URL context where available.
-- Runs a local CatBoost ML classifier from `models/domain_classifier.cbm` on 34 URL/domain/HTTP/DNS/TLS/content features for every opened site.
+- Builds the candidate pool from CyberScan-style OSINT feeds first: OpenPhish, URLHaus, Phishing.Database, and gambling blocklists. Gemini is used only to enrich focused searches and mirror hints.
+- Runs local ML on every opened site: CatBoost from `models/domain_classifier.cbm` plus CyberScan RandomForest from `models/cyberscan_model.pkl` over 34 URL/domain/HTTP/DNS/TLS/content features.
 - Rotates multiple Gemini API keys and tracks local limits per key: `10 RPM` and `250 RPD` by default.
 - Skips IP-only results, localhost/test domains, social/video/catalog noise, and domains already known in the database.
 - Opens candidate sites, follows redirects, records HTTP status, DNS, TLS, title/meta/text, HTML, SHA-256, and sources.
@@ -65,6 +65,9 @@ AUTH_REQUIRED=true
 DATABASE_URL=postgresql://postgres:password@host:5432/postgres?sslmode=require
 ML_ENABLED=true
 ML_MODEL_PATH=models/domain_classifier.cbm
+CYBERSCAN_MODEL_PATH=models/cyberscan_model.pkl
+OSINT_FEEDS_ENABLED=true
+OSINT_CANDIDATE_POOL_SIZE=350
 ML_MIN_CONFIDENCE=0.45
 ```
 
@@ -75,7 +78,7 @@ Set `ADMIN_TOKEN` in the deployment environment. If it is missing, the UI no lon
 
 `DATABASE_URL` enables persistent Postgres storage and takes priority over `DATABASE_PATH`. Use the Supabase connection string with SSL enabled. For `*.supabase.com` hosts Argus also adds `sslmode=require` automatically if it is missing. If `DATABASE_URL` is empty, Argus falls back to local SQLite at `DATABASE_PATH`, which is useful only for local development.
 
-`ML_MODEL_PATH` points to the trained CatBoost artifact. Gemini is used to discover candidate domains; the ML model then classifies each opened site with the label set present inside the loaded `.cbm` file and stores label, confidence, class probabilities, and SHAP-style top features inside each finding's evidence JSON. The current bundled baseline artifact is documented in `classification_report.txt`; full `casino` and `pyramid` quality still depends on adding curated raw domains for those classes and retraining with `train_model.py`.
+`ML_MODEL_PATH` points to the trained CatBoost artifact. `CYBERSCAN_MODEL_PATH` points to the bundled CyberScan RandomForest artifact copied from the reference project. Argus collects candidates from OSINT feeds first, optionally enriches the pool with Gemini, opens each reachable site, extracts evidence, and stores CatBoost, CyberScan ML, and content-analysis signals inside each finding's evidence JSON.
 
 ## Docker
 
