@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from app.database import Database
 
@@ -46,6 +48,37 @@ class DatabaseBackendTests(unittest.TestCase):
         active_index = columns.index("active")
         self.assertEqual(values[active_index], 1)
         self.assertIs(type(values[active_index]), int)
+
+    def test_case_lookup_is_direct_and_finding_history_is_limited(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "argus.db")
+            db.init()
+            run_id = db.create_run(seed_query="test", max_candidates=3, take_screenshots=False)
+            for index in range(3):
+                db.insert_finding(
+                    run_id,
+                    {
+                        "url": f"https://example.com/path-{index}",
+                        "final_url": f"https://example.com/path-{index}",
+                        "domain": "example.com",
+                        "normalized_domain": "example.com",
+                        "title": f"Example {index}",
+                        "category": "phishing",
+                        "verdict": "high",
+                        "risk_score": 70 + index,
+                        "active": True,
+                        "status_code": 200,
+                    },
+                )
+
+            case = db.get_case(1)
+            self.assertIsNotNone(case)
+            self.assertEqual(case["normalized_domain"], "example.com")
+            self.assertEqual(case["finding_total"], 3)
+
+            history = db.list_case_findings(1, limit=2)
+            self.assertEqual(len(history), 2)
+            self.assertEqual([item["title"] for item in history], ["Example 2", "Example 1"])
 
 
 if __name__ == "__main__":

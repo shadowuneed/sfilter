@@ -149,10 +149,19 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 .scan-band {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(420px, 0.72fr);
+  grid-template-columns: minmax(0, 0.95fr) minmax(420px, 0.62fr);
   gap: 24px;
   padding: 24px;
   align-items: stretch;
+  background:
+    radial-gradient(circle at 18% 15%, rgba(59, 130, 246, 0.12), transparent 30%),
+    linear-gradient(135deg, #10151d 0%, #121a24 54%, #0f141b 100%);
+}
+
+.scan-copy {
+  display: grid;
+  align-content: start;
+  gap: 16px;
 }
 
 .scan-copy h1,
@@ -168,16 +177,44 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 .scan-copy h1 {
   max-width: 780px;
-  font-size: 34px;
+  font-size: clamp(32px, 4vw, 48px);
   line-height: 1.08;
-  margin-top: 8px;
 }
 
 .scan-copy p {
   max-width: 820px;
   color: var(--muted);
   line-height: 1.55;
-  margin: 16px 0 0;
+  margin: 0;
+}
+
+.source-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.source-strip div {
+  min-height: 86px;
+  display: grid;
+  align-content: center;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.68);
+}
+
+.source-strip strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.source-strip span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .eyebrow {
@@ -272,7 +309,7 @@ select:focus {
 
 .manual-controls {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) 150px auto;
+  grid-template-columns: minmax(220px, 1fr) auto;
   gap: 10px;
   align-items: center;
 }
@@ -1168,6 +1205,7 @@ a.evidence-link:hover,
   .signals-grid,
   .explain-grid { grid-template-columns: 1fr; }
   .status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .source-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .mini-tech-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .domain-head { display: none; }
   .domain-row {
@@ -1192,6 +1230,7 @@ a.evidence-link:hover,
   .table-tools { flex-direction: column; align-items: stretch; }
   .filters,
   .status-grid,
+  .source-strip,
   .manual-controls,
   .methodology-list,
   .tech-grid,

@@ -36,6 +36,24 @@
           <span class="eyebrow">Автоматический мониторинг</span>
           <h1>Поиск подозрительных доменов и рабочих зеркал</h1>
           <p id="healthLine">Проверяю готовность платформы...</p>
+          <div class="source-strip" aria-label="Этапы анализа">
+            <div>
+              <strong>Web Search</strong>
+              <span>жалобы, форумы, отзывы</span>
+            </div>
+            <div>
+              <strong>OSINT</strong>
+              <span>фиды угроз и gambling-листы</span>
+            </div>
+            <div>
+              <strong>ML</strong>
+              <span>CyberScan + CatBoost</span>
+            </div>
+            <div>
+              <strong>Evidence</strong>
+              <span>SSL, DNS, HTML, скриншот</span>
+            </div>
+          </div>
         </div>
 
         <form id="scanForm" class="scan-form">
@@ -54,16 +72,10 @@
           <div class="manual-check">
             <div>
               <label for="manualTarget">Ручная проверка сайта</label>
-              <p>Один домен или URL без Gemini-квоты, с теми же SSL/DNS/HTTP доказательствами.</p>
+              <p>Один домен или URL без Gemini-квоты. Категорию определяют ML, контент и технические признаки.</p>
             </div>
             <div class="manual-controls">
               <input id="manualTarget" type="text" placeholder="example.kz или https://example.com">
-              <select id="manualCategory" aria-label="Категория ручной проверки">
-                <option value="suspicious">Подозрительный</option>
-                <option value="casino">Казино</option>
-                <option value="phishing">Фишинг</option>
-                <option value="pyramid">Пирамида</option>
-              </select>
               <button id="manualBtn" class="secondary-btn" type="button">Проверить сайт</button>
             </div>
           </div>

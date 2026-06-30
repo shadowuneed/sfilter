@@ -98,7 +98,7 @@ class RunRequest(BaseModel):
 
 class ManualCheckRequest(BaseModel):
     target: str = Field(..., min_length=3, max_length=2000)
-    category: str = Field(default="suspicious", max_length=60)
+    category: str = Field(default="manual", max_length=60)
     take_screenshots: bool = True
 
 
@@ -239,11 +239,14 @@ def list_runs(limit: int = 25) -> dict[str, Any]:
 
 
 @app.get("/api/runs/{run_id}")
-def get_run(run_id: int) -> dict[str, Any]:
+def get_run(run_id: int, include_findings: bool = False) -> dict[str, Any]:
     run = db.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
-    return {"run": run, "logs": db.list_logs(run_id), "findings": db.list_findings(run_id=run_id)}
+    payload: dict[str, Any] = {"run": run, "logs": db.list_logs(run_id)}
+    if include_findings:
+        payload["findings"] = db.list_findings(run_id=run_id)
+    return payload
 
 
 @app.get("/api/findings")
@@ -291,7 +294,7 @@ def get_case(case_id: int) -> dict[str, Any]:
     case = db.get_case(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    return {"case": case, "findings": db.list_case_findings(case_id)}
+    return {"case": case, "findings": db.list_case_findings(case_id, limit=25)}
 
 
 @app.get("/api/runs/{run_id}/export.csv")

@@ -8,6 +8,7 @@ const state = {
   apiToken: localStorage.getItem("argus_api_token") || "",
   authRequired: true,
   authConfigured: false,
+  caseDetails: new Map(),
 };
 
 const AUTO_RUN_CANDIDATES = 50;
@@ -22,7 +23,6 @@ const els = {
   seedQuery: document.getElementById("seedQuery"),
   takeScreenshots: document.getElementById("takeScreenshots"),
   manualTarget: document.getElementById("manualTarget"),
-  manualCategory: document.getElementById("manualCategory"),
   manualBtn: document.getElementById("manualBtn"),
   activityPanel: document.getElementById("activityPanel"),
   activityHeadline: document.getElementById("activityHeadline"),
@@ -411,7 +411,6 @@ async function startManualCheck() {
   try {
     const payload = {
       target,
-      category: els.manualCategory?.value || "suspicious",
       take_screenshots: els.takeScreenshots.checked,
     };
     const result = await api("/api/manual-check", { method: "POST", body: JSON.stringify(payload) });
@@ -539,7 +538,7 @@ function renderLogs(logs) {
 }
 
 async function loadCases() {
-  const params = new URLSearchParams({ archived: "false", limit: "1000" });
+  const params = new URLSearchParams({ archived: "false", limit: "250" });
   if (els.caseSearch.value.trim()) params.set("q", els.caseSearch.value.trim());
   if (els.caseMinRisk.value) params.set("min_risk", els.caseMinRisk.value);
   const data = await api(`/api/cases?${params.toString()}`);
@@ -560,7 +559,7 @@ function renderCaseStats(cases) {
 }
 
 function renderCases(cases) {
-  renderEvidenceCards(cases);
+  renderEvidenceCards(cases.slice(0, 6));
   if (!cases.length) {
     els.casesList.innerHTML = '<div class="empty-state">В выбранном фильтре нет рабочих доменов.</div>';
     return;
@@ -767,8 +766,15 @@ function drawTrend(cases) {
 
 async function openCase(caseId) {
   els.drawerOverlay.hidden = false;
+  els.drawerTitle.textContent = "Загрузка анализа";
+  const cached = state.caseDetails.get(caseId);
+  if (cached) {
+    renderCaseDetail(cached.case, cached.findings || []);
+    return;
+  }
   els.caseDetailContent.innerHTML = '<div class="empty-state">Загружаю доказательства...</div>';
   const data = await api(`/api/cases/${caseId}`);
+  state.caseDetails.set(caseId, data);
   renderCaseDetail(data.case, data.findings || []);
 }
 

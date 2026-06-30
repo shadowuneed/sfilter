@@ -561,7 +561,7 @@ class Database:
             ).fetchall()
             return [self._finding_to_dict(row) for row in rows]
 
-    def list_case_findings(self, case_id: int) -> list[dict[str, Any]]:
+    def list_case_findings(self, case_id: int, limit: int = 25) -> list[dict[str, Any]]:
         with self.connect() as conn:
             case = conn.execute("SELECT normalized_domain FROM cases WHERE id=?", (case_id,)).fetchone()
             if not case:
@@ -571,8 +571,9 @@ class Database:
                 SELECT * FROM findings
                 WHERE normalized_domain=?
                 ORDER BY run_id DESC, id DESC
+                LIMIT ?
                 """,
-                (case["normalized_domain"],),
+                (case["normalized_domain"], max(1, min(limit, 100))),
             ).fetchall()
             return [self._finding_to_dict(row) for row in rows]
 
@@ -658,11 +659,34 @@ class Database:
             return [self._case_to_dict(row) for row in rows]
 
     def get_case(self, case_id: int) -> dict[str, Any] | None:
-        cases = self.list_cases(archived=None, limit=1000)
-        for case in cases:
-            if case["id"] == case_id:
-                return case
-        return None
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT c.*, f.url, f.final_url, f.title, f.screenshot_path, f.html_path,
+                       f.html_sha256, f.status_code, f.mirror_group, f.sources_json,
+                       f.reasons_json, f.evidence_json, f.dns_json, f.tls_json,
+                       f.created_at AS finding_created_at,
+                       COALESCE(stats.finding_total, 0) AS finding_total,
+                       COALESCE(stats.run_total, 0) AS run_total,
+                       stats.first_run_id,
+                       stats.latest_run_id
+                FROM cases c
+                LEFT JOIN findings f ON f.id=c.latest_finding_id
+                LEFT JOIN (
+                    SELECT normalized_domain,
+                           COUNT(*) AS finding_total,
+                           COUNT(DISTINCT run_id) AS run_total,
+                           MIN(run_id) AS first_run_id,
+                           MAX(run_id) AS latest_run_id
+                    FROM findings
+                    GROUP BY normalized_domain
+                ) stats ON stats.normalized_domain=c.normalized_domain
+                WHERE c.id=?
+                LIMIT 1
+                """,
+                (case_id,),
+            ).fetchone()
+            return self._case_to_dict(row) if row else None
 
     def update_case(self, case_id: int, **fields: Any) -> dict[str, Any] | None:
         allowed = {"status", "archived", "saved", "notes"}

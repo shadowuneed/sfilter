@@ -142,7 +142,7 @@ class Investigator:
             candidate = Candidate(
                 url=normalize_url(target),
                 domain=domain,
-                category=(category or "suspicious").lower(),
+                category=(category or "manual").lower(),
                 why="Домен указан оператором для ручной проверки.",
                 search_query=target,
             )
@@ -300,17 +300,14 @@ class Investigator:
             feed_candidates = await self._discover_from_feeds(run_id, discovery_limit)
             discovered.extend(feed_candidates)
 
-        if self.gemini.available and (seed_query or len(discovered) < max_candidates):
+        if self.gemini.available:
             try:
                 gemini_limit = min(discovery_limit, max(max_candidates * 2, 50))
                 discovered.extend(self._discover_with_gemini(run_id, seed_query, gemini_limit))
             except Exception as exc:  # noqa: BLE001
                 self.db.add_log(run_id, "error", "Gemini не смог собрать кандидатов", {"error": str(exc)})
         else:
-            if not self.gemini.available:
-                self.db.add_log(run_id, "warning", "Gemini ключ не настроен. Автопоиск продолжается через OSINT-фиды.")
-            else:
-                self.db.add_log(run_id, "info", "Gemini пропущен: OSINT-фиды дали достаточный пул кандидатов.")
+            self.db.add_log(run_id, "warning", "Gemini ключ не настроен. Автопоиск продолжается через OSINT-фиды.")
 
         if seed_query:
             for domain in find_domains(seed_query):
@@ -348,6 +345,8 @@ class Investigator:
         focus = seed_query.strip() if seed_query else " ; ".join(self.settings.seed_queries)
         prompt = f"""
 Ты OSINT-следователь. Найди публичные подозрительные сайты. Учитывай, что сайт может выглядеть как обычный домен, но внутри содержать casino, betting, фишинг или финансовый скам. Найди сайты, которые похожи на:
+Используй Google Search grounding как браузерный поиск. Обязательно проверяй жалобы пользователей, форумы, отзывы, публичные обсуждения, blacklist reports и страницы с complaints.
+Важно: форум, новость, Telegram, YouTube, соцсеть или каталог не является кандидатом. Из таких страниц извлекай прямой домен подозрительного сайта и сохраняй страницу жалобы в source_urls.
 1) онлайн-казино/беттинг без очевидной лицензии,
 2) рабочие зеркала казино/беттинга,
 3) инвестиционные лохотроны или фишинговые страницы.

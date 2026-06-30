@@ -56,6 +56,21 @@ class ApiAuthTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("runs", response.json())
 
+    def test_run_detail_omits_findings_until_requested(self) -> None:
+        run_id = main.db.create_run(seed_query="api test", max_candidates=1, take_screenshots=False)
+
+        response = self.client.get(f"/api/runs/{run_id}", headers={"Authorization": "Bearer test-secret"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("logs", response.json())
+        self.assertNotIn("findings", response.json())
+
+        response = self.client.get(
+            f"/api/runs/{run_id}?include_findings=true",
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("findings", response.json())
+
     def test_missing_server_token_blocks_protected_api(self) -> None:
         set_auth(required=True, token=None)
 
