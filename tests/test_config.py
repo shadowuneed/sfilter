@@ -4,13 +4,32 @@ import os
 import unittest
 from unittest.mock import patch
 
-from app.config import _bool_env, _first_env, _optional_env, _split_env, get_settings
+from app.config import _api_keys_from_env, _bool_env, _first_env, _optional_env, _split_env, get_settings
 
 
 class ConfigTests(unittest.TestCase):
     def test_split_env_accepts_commas_semicolons_and_newlines(self) -> None:
         with patch.dict(os.environ, {"ITEMS": "one, two;three\nfour"}, clear=False):
             self.assertEqual(_split_env("ITEMS"), ["one", "two", "three", "four"])
+
+    def test_split_env_accepts_json_list(self) -> None:
+        with patch.dict(os.environ, {"ITEMS": '["one", "two"]'}, clear=False):
+            self.assertEqual(_split_env("ITEMS"), ["one", "two"])
+
+    def test_api_keys_are_cleaned_from_render_style_values(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "GEMINI_API_KEYS": '"Bearer key-one", key-two',
+                "GEMINI_API_KEY": "key-two",
+                "GOOGLE_API_KEY": "Authorization: Bearer key-three",
+            },
+            clear=False,
+        ):
+            self.assertEqual(
+                _api_keys_from_env(("GEMINI_API_KEYS", "GEMINI_API_KEY", "GOOGLE_API_KEY")),
+                ["key-one", "key-two", "key-three"],
+            )
 
     def test_optional_env_treats_blank_as_none(self) -> None:
         with patch.dict(os.environ, {"ADMIN_TOKEN": "   "}, clear=False):

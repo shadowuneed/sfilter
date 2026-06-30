@@ -25,7 +25,7 @@ from app.services.domains import (
 from app.services.content_intelligence import ContentIntelligence
 from app.services.cyberscan_classifier import CyberScanClassifier
 from app.services.evidence import EvidenceCollector, score_finding
-from app.services.gemini import GeminiClient, GeminiQuotaError
+from app.services.gemini import GeminiAPIError, GeminiClient, GeminiQuotaError
 from app.services.ml_classifier import DomainMLClassifier
 from app.services.screenshots import ScreenshotService
 
@@ -304,8 +304,20 @@ class Investigator:
             try:
                 gemini_limit = min(discovery_limit, max(max_candidates * 2, 50))
                 discovered.extend(self._discover_with_gemini(run_id, seed_query, gemini_limit))
+            except GeminiAPIError as exc:
+                level = "warning" if exc.status_code in {401, 403} else "error"
+                self.db.add_log(
+                    run_id,
+                    level,
+                    "Gemini Search недоступен, продолжаю через OSINT/ML",
+                    {"error": str(exc), "status_code": exc.status_code},
+                )
+                if not discovered and not self.settings.osint_feeds_enabled:
+                    discovered.extend(await self._discover_from_feeds(run_id, discovery_limit))
             except Exception as exc:  # noqa: BLE001
-                self.db.add_log(run_id, "error", "Gemini не смог собрать кандидатов", {"error": str(exc)})
+                self.db.add_log(run_id, "warning", "Gemini Search недоступен, продолжаю через OSINT/ML", {"error": str(exc)})
+                if not discovered and not self.settings.osint_feeds_enabled:
+                    discovered.extend(await self._discover_from_feeds(run_id, discovery_limit))
         else:
             self.db.add_log(run_id, "warning", "Gemini ключ не настроен. Автопоиск продолжается через OSINT-фиды.")
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,12 +52,45 @@ def _split_env(name: str) -> list[str]:
     value = os.getenv(name, "")
     if not value:
         return []
+    stripped = value.strip()
+    if stripped.startswith("["):
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            return [str(item).strip().strip('"').strip("'") for item in parsed if str(item).strip()]
     parts: list[str] = []
     for chunk in value.replace("\n", ",").replace(";", ",").split(","):
         item = chunk.strip()
         if item:
             parts.append(item)
     return parts
+
+
+def _clean_api_key(value: str) -> str | None:
+    item = value.strip().strip('"').strip("'")
+    if item.lower().startswith("authorization:"):
+        item = item.split(":", 1)[1].strip()
+    if item.lower().startswith("bearer "):
+        item = item[7:].strip()
+    if item.lower().startswith("key="):
+        item = item[4:].strip()
+    item = item.strip().strip('"').strip("'")
+    return item or None
+
+
+def _api_keys_from_env(names: tuple[str, ...]) -> list[str]:
+    keys: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        for raw in _split_env(name):
+            key = _clean_api_key(raw)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            keys.append(key)
+    return keys
 
 
 def _optional_env(name: str) -> str | None:
@@ -152,7 +186,7 @@ def get_settings() -> Settings:
     kz_proxy_source, kz_proxy_url = _first_env(("KZ_PROXY_URL", "KZ_HTTP_PROXY", "KZ_HTTPS_PROXY", "KZ_PROXY"))
 
     settings = Settings(
-        gemini_api_keys=_split_env("GEMINI_API_KEYS"),
+        gemini_api_keys=_api_keys_from_env(("GEMINI_API_KEYS", "GEMINI_API_KEY", "GOOGLE_API_KEY")),
         gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash",
         gemini_rpm_limit=_int_env("GEMINI_RPM_LIMIT", _int_env("GEMINI_RPM_PER_KEY", 10)),
         gemini_rpd_limit=_int_env("GEMINI_RPD_LIMIT", _int_env("GEMINI_RPD_PER_KEY", 250)),
