@@ -51,7 +51,12 @@ def _ensure_kz_proxy_ready() -> None:
     if settings.kz_proxy_url:
         check = check_kz_proxy(settings)
         if not check.ok:
-            raise HTTPException(status_code=503, detail=check.message)
+            if settings.require_kz_proxy:
+                raise HTTPException(status_code=503, detail=check.message)
+            # Soft mode: a broken optional proxy should not poison all HTTP/Playwright checks.
+            object.__setattr__(settings, "kz_proxy_url", None)
+            object.__setattr__(settings, "kz_proxy_source", None)
+            object.__setattr__(settings, "kz_access_label", "server direct network (KZ proxy unavailable)")
 
 
 def _bearer_token(authorization: str | None) -> str | None:

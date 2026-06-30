@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -9,6 +10,7 @@ os.environ["DATABASE_URL"] = ""
 os.environ.setdefault("DATABASE_PATH", "data/test_api_auth.db")
 
 from app import main
+from app.services.kz_access import KzAccessCheck
 
 
 def set_auth(*, required: bool = True, token: str | None = "test-secret") -> None:
@@ -76,6 +78,19 @@ class ApiAuthTests(unittest.TestCase):
         set_kz_proxy(required=False, url=None)
 
         main._ensure_kz_proxy_ready()
+
+    def test_failed_optional_kz_proxy_falls_back_to_direct(self) -> None:
+        set_kz_proxy(required=False, url="http://dead-proxy.kz:8080")
+        object.__setattr__(main.settings, "kz_access_label", "Kazakhstan proxy")
+
+        with patch(
+            "app.main.check_kz_proxy",
+            return_value=KzAccessCheck(ok=False, message="KZ proxy check failed"),
+        ):
+            main._ensure_kz_proxy_ready()
+
+        self.assertIsNone(main.settings.kz_proxy_url)
+        self.assertIn("server direct network", main.settings.kz_access_label)
 
 
 if __name__ == "__main__":
