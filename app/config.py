@@ -88,6 +88,7 @@ class Settings:
     admin_token: str | None = None
     auth_required: bool = True
 
+    database_url: str | None = None
     database_path: Path = Path("data/argus.db")
     evidence_dir: Path = Path("evidence")
     export_dir: Path = Path("exports")
@@ -131,6 +132,7 @@ def get_settings() -> Settings:
         gemini_timeout_seconds=_int_env("GEMINI_TIMEOUT_SECONDS", 90),
         admin_token=_optional_env("ADMIN_TOKEN") or _optional_env("ARGUS_ADMIN_TOKEN"),
         auth_required=_bool_env("AUTH_REQUIRED", True),
+        database_url=_optional_env("DATABASE_URL"),
         database_path=Path(os.getenv("DATABASE_PATH", "data/argus.db")),
         evidence_dir=Path(os.getenv("EVIDENCE_DIR", "evidence")),
         export_dir=Path(os.getenv("EXPORT_DIR", "exports")),
@@ -149,7 +151,8 @@ def get_settings() -> Settings:
         osint_feeds=osint_feeds,
     )
 
-    settings.database_path.parent.mkdir(parents=True, exist_ok=True)
+    if not settings.database_url:
+        settings.database_path.parent.mkdir(parents=True, exist_ok=True)
     settings.evidence_dir.mkdir(parents=True, exist_ok=True)
     settings.screenshots_dir.mkdir(parents=True, exist_ok=True)
     settings.export_dir.mkdir(parents=True, exist_ok=True)

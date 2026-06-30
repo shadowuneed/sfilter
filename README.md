@@ -61,12 +61,14 @@ GEMINI_API_KEYS=your_primary_key,your_backup_key
 GEMINI_MODEL=gemini-2.5-flash
 ADMIN_TOKEN=use-a-long-random-secret
 AUTH_REQUIRED=true
-DATABASE_PATH=data/argus.db
+DATABASE_URL=postgresql://postgres:password@host:5432/postgres?sslmode=require
 ```
 
 Do not commit real API keys. Keys pasted into chat should be treated as sensitive; prefer rotating them later and storing only in `.env` or deployment secrets.
 
 `ADMIN_TOKEN` protects all `/api/*` endpoints except `/api/health`. The browser UI asks for this token and sends it as `Authorization: Bearer <token>`, preventing anonymous users from starting runs and spending Gemini quota.
+
+`DATABASE_URL` enables persistent Postgres storage and takes priority over `DATABASE_PATH`. Use the Supabase connection string with SSL enabled. If `DATABASE_URL` is empty, Argus falls back to local SQLite at `DATABASE_PATH`, which is useful only for local development.
 
 ## Docker
 
@@ -89,9 +91,10 @@ The Docker image runs as a non-root `argus` user.
 Persistent disks are available only on paid Render services, so the blueprint uses the `starter` plan instead of `free`.
 For an existing Render service, add `ADMIN_TOKEN` manually in the service's Environment page because `sync: false` variables are prompted only during initial Blueprint creation.
 
-The blueprint mounts a persistent disk at `/var/data` and stores:
+For durable history on any platform, set `DATABASE_URL` to Postgres/Supabase. When `DATABASE_URL` is present, the app creates and uses Postgres tables for runs, findings, cases, logs, and Gemini usage counters.
 
-- SQLite history at `/var/data/data/argus.db`
+The blueprint still mounts a persistent disk at `/var/data` for file evidence:
+
 - HTML and screenshots at `/var/data/evidence`
 - exports at `/var/data/exports`
 
@@ -103,7 +106,7 @@ pip install -r requirements.txt && python -m playwright install chromium
 
 Open `/api/health` after deploy and check `screenshot_runtime.chromium_exists`. It should be `true`.
 
-Local SQLite files and evidence files are not durable across Render rebuilds/restarts unless persistent storage or an external database/storage service is attached. Without that, old screenshot links can disappear after a redeploy even if capture worked during the run.
+Local SQLite files and evidence files are not durable across rebuilds/restarts unless persistent storage or an external database/storage service is attached. Postgres fixes the run/history database; screenshots and saved HTML still need durable file storage if the host filesystem is ephemeral.
 
 For a real Kazakhstan-only accessibility check, set `KZ_PROXY_URL` in Render to an HTTP/SOCKS proxy or private checker endpoint located in Kazakhstan. Without it, Render can only prove that the domain opens from Render's network, and the UI marks that limitation in the run journal and technical evidence.
 

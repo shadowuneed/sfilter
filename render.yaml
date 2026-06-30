@@ -19,6 +19,8 @@ services:
         value: "250"
       - key: GEMINI_TIMEOUT_SECONDS
         value: "90"
+      - key: DATABASE_URL
+        sync: false
       - key: DATABASE_PATH
         value: /var/data/data/argus.db
       - key: EVIDENCE_DIR

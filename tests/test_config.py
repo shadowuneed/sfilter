@@ -4,7 +4,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from app.config import _bool_env, _optional_env, _split_env
+from app.config import _bool_env, _optional_env, _split_env, get_settings
 
 
 class ConfigTests(unittest.TestCase):
@@ -19,6 +19,11 @@ class ConfigTests(unittest.TestCase):
     def test_bool_env_parses_common_true_values(self) -> None:
         with patch.dict(os.environ, {"AUTH_REQUIRED": "yes"}, clear=False):
             self.assertTrue(_bool_env("AUTH_REQUIRED", False))
+
+    def test_database_url_is_read_from_environment(self) -> None:
+        url = "postgresql://user:secret@db.example.com:5432/postgres"
+        with patch.dict(os.environ, {"DATABASE_URL": url}, clear=False):
+            self.assertEqual(get_settings().database_url, url)
 
 
 if __name__ == "__main__":

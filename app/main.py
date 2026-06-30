@@ -18,7 +18,7 @@ from app.services.investigator import Investigator
 
 
 settings = get_settings()
-db = Database(settings.database_path)
+db = Database(settings.database_url or settings.database_path)
 db.init()
 db.mark_stale_runs_failed()
 gemini = GeminiClient(settings, db)
@@ -127,7 +127,8 @@ def health() -> dict[str, Any]:
         "auth_configured": bool(settings.admin_token),
         "screenshots_enabled": settings.screenshots_enabled,
         "screenshot_runtime": investigator.screenshots.runtime_status(),
-        "database": str(settings.database_path),
+        "database": db.label,
+        "database_backend": db.backend,
         "evidence_dir": str(settings.evidence_dir),
         "export_dir": str(settings.export_dir),
         "kz_proxy_configured": bool(settings.kz_proxy_url),

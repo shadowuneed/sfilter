@@ -8,6 +8,14 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import urlsplit, urlunsplit
+
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except ImportError:  # pragma: no cover - exercised only when DATABASE_URL is configured without dependency
+    psycopg = None
+    dict_row = None
 
 
 def utc_now() -> str:
@@ -41,12 +49,14 @@ def redact_secrets(value: Any) -> Any:
 def dumps(value: Any) -> str:
     return json.dumps(redact_secrets(value), ensure_ascii=False, sort_keys=True)
 
-def loads(value: str | None, default: Any = None) -> Any:
+def loads(value: Any, default: Any = None) -> Any:
     if not value:
         return default
+    if isinstance(value, (dict, list)):
+        return value
     try:
         return json.loads(value)
-    except json.JSONDecodeError:
+    except (TypeError, json.JSONDecodeError):
         return default
 
 
@@ -84,29 +94,94 @@ def repair_mojibake(value: Any) -> Any:
     return value
 
 
+POSTGRES_SCHEMES = ("postgres://", "postgresql://")
+
+
+def _is_postgres_source(source: str) -> bool:
+    return source.lower().startswith(POSTGRES_SCHEMES)
+
+
+def _normalize_postgres_url(source: str) -> str:
+    if source.startswith("postgres://"):
+        return "postgresql://" + source.removeprefix("postgres://")
+    return source
+
+
+def _redact_database_url(source: str) -> str:
+    if not _is_postgres_source(source):
+        return source
+    parsed = urlsplit(_normalize_postgres_url(source))
+    host = parsed.hostname or ""
+    port = f":{parsed.port}" if parsed.port else ""
+    database = parsed.path or ""
+    return urlunsplit((parsed.scheme, f"[redacted]@{host}{port}", database, "", ""))
+
+
+class DatabaseConnection:
+    def __init__(self, raw: Any, backend: str):
+        self.raw = raw
+        self.backend = backend
+
+    def execute(self, sql: str, params: Any | None = None) -> Any:
+        query = self._query(sql)
+        values = () if params is None else params
+        return self.raw.execute(query, values)
+
+    def executescript(self, script: str) -> None:
+        if self.backend == "sqlite":
+            self.raw.executescript(script)
+            return
+        for statement in self._split_script(script):
+            self.raw.execute(self._query(statement))
+
+    def _query(self, sql: str) -> str:
+        if self.backend == "postgres":
+            return sql.replace("?", "%s")
+        return sql
+
+    @staticmethod
+    def _split_script(script: str) -> list[str]:
+        return [part.strip() for part in script.split(";") if part.strip()]
+
+
 class Database:
-    def __init__(self, path: Path):
-        self.path = path
+    def __init__(self, source: str | Path):
+        self.source = str(source)
+        self.backend = "postgres" if _is_postgres_source(self.source) else "sqlite"
+        self.dsn = _normalize_postgres_url(self.source) if self.backend == "postgres" else None
+        self.path = Path(self.source) if self.backend == "sqlite" else None
+        self.label = _redact_database_url(self.source) if self.backend == "postgres" else str(self.path)
 
     @contextmanager
-    def connect(self) -> Iterator[sqlite3.Connection]:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.path)
-        conn.row_factory = sqlite3.Row
+    def connect(self) -> Iterator[DatabaseConnection]:
+        if self.backend == "postgres":
+            if psycopg is None:
+                raise RuntimeError("DATABASE_URL is configured, but psycopg is not installed.")
+            conn = psycopg.connect(self.dsn, row_factory=dict_row)
+        else:
+            assert self.path is not None
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(self.path)
+            conn.row_factory = sqlite3.Row
         try:
-            yield conn
+            yield DatabaseConnection(conn, self.backend)
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
     def init(self) -> None:
         with self.connect() as conn:
-            conn.executescript(
-                """
-                PRAGMA journal_mode=WAL;
+            conn.executescript(self._schema_sql())
+            self._backfill_cases(conn)
 
+    def _schema_sql(self) -> str:
+        if self.backend == "postgres":
+            return """
                 CREATE TABLE IF NOT EXISTS runs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id BIGSERIAL PRIMARY KEY,
                     started_at TEXT NOT NULL,
                     finished_at TEXT,
                     status TEXT NOT NULL,
@@ -120,8 +195,8 @@ class Database:
                 );
 
                 CREATE TABLE IF NOT EXISTS findings (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id INTEGER NOT NULL,
+                    id BIGSERIAL PRIMARY KEY,
+                    run_id BIGINT NOT NULL REFERENCES runs(id),
                     url TEXT NOT NULL,
                     final_url TEXT,
                     domain TEXT,
@@ -141,12 +216,11 @@ class Database:
                     evidence_json TEXT,
                     sources_json TEXT,
                     reasons_json TEXT,
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY(run_id) REFERENCES runs(id)
+                    created_at TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS cases (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id BIGSERIAL PRIMARY KEY,
                     normalized_domain TEXT NOT NULL UNIQUE,
                     domain TEXT NOT NULL,
                     first_seen TEXT NOT NULL,
@@ -154,23 +228,21 @@ class Database:
                     status TEXT NOT NULL DEFAULT 'uninvestigated',
                     archived INTEGER NOT NULL DEFAULT 0,
                     saved INTEGER NOT NULL DEFAULT 0,
-                    latest_finding_id INTEGER,
+                    latest_finding_id BIGINT REFERENCES findings(id),
                     best_risk_score INTEGER NOT NULL DEFAULT 0,
                     category TEXT,
                     verdict TEXT,
                     notes TEXT,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY(latest_finding_id) REFERENCES findings(id)
+                    updated_at TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id INTEGER NOT NULL,
+                    id BIGSERIAL PRIMARY KEY,
+                    run_id BIGINT NOT NULL REFERENCES runs(id),
                     timestamp TEXT NOT NULL,
                     level TEXT NOT NULL,
                     message TEXT NOT NULL,
-                    meta_json TEXT,
-                    FOREIGN KEY(run_id) REFERENCES runs(id)
+                    meta_json TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS gemini_usage (
@@ -186,11 +258,95 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_cases_domain ON cases(normalized_domain);
                 CREATE INDEX IF NOT EXISTS idx_cases_status ON cases(status, archived, saved);
                 CREATE INDEX IF NOT EXISTS idx_logs_run ON logs(run_id);
-                """
-            )
-            self._backfill_cases(conn)
+            """
 
-    def _backfill_cases(self, conn: sqlite3.Connection) -> None:
+        return """
+            PRAGMA journal_mode=WAL;
+
+            CREATE TABLE IF NOT EXISTS runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                status TEXT NOT NULL,
+                seed_query TEXT,
+                max_candidates INTEGER NOT NULL,
+                take_screenshots INTEGER NOT NULL,
+                methodology_json TEXT,
+                error TEXT,
+                candidate_count INTEGER DEFAULT 0,
+                finding_count INTEGER DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS findings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                url TEXT NOT NULL,
+                final_url TEXT,
+                domain TEXT,
+                normalized_domain TEXT,
+                title TEXT,
+                category TEXT,
+                verdict TEXT,
+                risk_score INTEGER NOT NULL,
+                active INTEGER NOT NULL,
+                status_code INTEGER,
+                mirror_group TEXT,
+                screenshot_path TEXT,
+                html_path TEXT,
+                html_sha256 TEXT,
+                dns_json TEXT,
+                tls_json TEXT,
+                evidence_json TEXT,
+                sources_json TEXT,
+                reasons_json TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(run_id) REFERENCES runs(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS cases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                normalized_domain TEXT NOT NULL UNIQUE,
+                domain TEXT NOT NULL,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'uninvestigated',
+                archived INTEGER NOT NULL DEFAULT 0,
+                saved INTEGER NOT NULL DEFAULT 0,
+                latest_finding_id INTEGER,
+                best_risk_score INTEGER NOT NULL DEFAULT 0,
+                category TEXT,
+                verdict TEXT,
+                notes TEXT,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(latest_finding_id) REFERENCES findings(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                timestamp TEXT NOT NULL,
+                level TEXT NOT NULL,
+                message TEXT NOT NULL,
+                meta_json TEXT,
+                FOREIGN KEY(run_id) REFERENCES runs(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS gemini_usage (
+                key_hash TEXT PRIMARY KEY,
+                day TEXT NOT NULL,
+                day_count INTEGER NOT NULL,
+                minute_window INTEGER NOT NULL,
+                minute_count INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_findings_run ON findings(run_id);
+            CREATE INDEX IF NOT EXISTS idx_findings_domain ON findings(normalized_domain);
+            CREATE INDEX IF NOT EXISTS idx_cases_domain ON cases(normalized_domain);
+            CREATE INDEX IF NOT EXISTS idx_cases_status ON cases(status, archived, saved);
+            CREATE INDEX IF NOT EXISTS idx_logs_run ON logs(run_id);
+        """
+
+    def _backfill_cases(self, conn: DatabaseConnection) -> None:
         rows = conn.execute("SELECT id FROM findings ORDER BY id ASC").fetchall()
         for row in rows:
             self._upsert_case_for_finding(conn, int(row["id"]))
@@ -208,14 +364,19 @@ class Database:
 
     def create_run(self, seed_query: str | None, max_candidates: int, take_screenshots: bool) -> int:
         with self.connect() as conn:
+            returning = " RETURNING id" if self.backend == "postgres" else ""
             cursor = conn.execute(
-                """
+                f"""
                 INSERT INTO runs (
                     started_at, status, seed_query, max_candidates, take_screenshots
                 ) VALUES (?, ?, ?, ?, ?)
+                {returning}
                 """,
                 (utc_now(), "queued", seed_query, max_candidates, int(take_screenshots)),
             )
+            if self.backend == "postgres":
+                row = cursor.fetchone()
+                return int(row["id"])
             return int(cursor.lastrowid)
 
     def update_run(self, run_id: int, **fields: Any) -> None:
@@ -274,16 +435,21 @@ class Database:
         json_fields = {"dns_json", "tls_json", "evidence_json", "sources_json", "reasons_json"}
         row_values = [dumps(values.get(col)) if col in json_fields else values.get(col) for col in columns]
         placeholders = ", ".join("?" for _ in columns)
+        returning = " RETURNING id" if self.backend == "postgres" else ""
         with self.connect() as conn:
             cursor = conn.execute(
-                f"INSERT INTO findings ({', '.join(columns)}) VALUES ({placeholders})",
+                f"INSERT INTO findings ({', '.join(columns)}) VALUES ({placeholders}){returning}",
                 row_values,
             )
-            finding_id = int(cursor.lastrowid)
+            if self.backend == "postgres":
+                row = cursor.fetchone()
+                finding_id = int(row["id"])
+            else:
+                finding_id = int(cursor.lastrowid)
             self._upsert_case_for_finding(conn, finding_id)
             return finding_id
 
-    def _upsert_case_for_finding(self, conn: sqlite3.Connection, finding_id: int) -> None:
+    def _upsert_case_for_finding(self, conn: DatabaseConnection, finding_id: int) -> None:
         row = conn.execute("SELECT * FROM findings WHERE id=?", (finding_id,)).fetchone()
         if not row or not row["normalized_domain"]:
             return
@@ -424,7 +590,11 @@ class Database:
         where: list[str] = []
         params: list[Any] = []
         if q:
-            where.append("(c.domain LIKE ? OR c.normalized_domain LIKE ? OR f.title LIKE ? OR f.final_url LIKE ?)")
+            like_op = "ILIKE" if self.backend == "postgres" else "LIKE"
+            where.append(
+                f"(c.domain {like_op} ? OR c.normalized_domain {like_op} ? "
+                f"OR f.title {like_op} ? OR f.final_url {like_op} ?)"
+            )
             needle = f"%{q}%"
             params.extend([needle, needle, needle, needle])
         if status:
@@ -520,12 +690,12 @@ class Database:
                 (key_hash, day, day_count, minute_window, minute_count),
             )
 
-    def _run_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+    def _run_to_dict(self, row: Any) -> dict[str, Any]:
         data = dict(row)
         data["take_screenshots"] = bool(data["take_screenshots"])
         data["methodology"] = loads(data.pop("methodology_json"), [])
         return redact_secrets(repair_mojibake(data))
-    def _finding_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+    def _finding_to_dict(self, row: Any) -> dict[str, Any]:
         data = dict(row)
         data["active"] = bool(data["active"])
         data["dns"] = loads(data.pop("dns_json"), {})
@@ -534,7 +704,7 @@ class Database:
         data["sources"] = loads(data.pop("sources_json"), [])
         data["reasons"] = loads(data.pop("reasons_json"), [])
         return redact_secrets(repair_mojibake(data))
-    def _case_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+    def _case_to_dict(self, row: Any) -> dict[str, Any]:
         data = dict(row)
         data["archived"] = bool(data["archived"])
         data["saved"] = bool(data["saved"])
