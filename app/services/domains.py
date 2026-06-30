@@ -40,6 +40,29 @@ SUSPICIOUS_TLDS = {
 
 BLOCKED_HOSTS = {"localhost", "local", "example.com", "example.org", "example.net"}
 
+TECHNICAL_HOSTS = {
+    "accounts.google.com",
+    "cloud.google.com",
+    "developers.google.com",
+    "gemini.google.com",
+    "generativelanguage.googleapis.com",
+    "google.com",
+    "search.google.com",
+    "vertexaisearch.cloud.google.com",
+    "www.google.com",
+}
+
+TECHNICAL_DOMAIN_SUFFIXES = (
+    ".googleapis.com",
+    ".gstatic.com",
+)
+
+TECHNICAL_URL_MARKERS = (
+    "/grounding-api-redirect/",
+    "/search?",
+    "/url?",
+)
+
 
 def normalize_adblock_token(value: str) -> str:
     text = (value or "").strip()
@@ -107,6 +130,36 @@ def is_public_domain(domain: str) -> bool:
         if label.startswith("-") or label.endswith("-"):
             return False
     return True
+
+
+def is_technical_domain(domain: str) -> bool:
+    domain = extract_domain(domain)
+    if not domain:
+        return True
+    if domain in TECHNICAL_HOSTS:
+        return True
+    return any(domain.endswith(suffix) for suffix in TECHNICAL_DOMAIN_SUFFIXES)
+
+
+def is_candidate_domain(domain: str) -> bool:
+    return is_public_domain(domain) and not is_technical_domain(domain)
+
+
+def is_technical_url(value: str) -> bool:
+    if not value:
+        return True
+    normalized = normalize_url(value)
+    domain = extract_domain(normalized)
+    if is_technical_domain(domain):
+        return True
+    parsed = urlparse(normalized)
+    path_and_query = f"{parsed.path}?{parsed.query}".lower()
+    return any(marker in path_and_query for marker in TECHNICAL_URL_MARKERS)
+
+
+def is_candidate_url(value: str) -> bool:
+    domain = extract_domain(value)
+    return is_candidate_domain(domain) and not is_technical_url(value)
 
 
 def registered_domain(domain: str) -> str:

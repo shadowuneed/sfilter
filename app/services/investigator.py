@@ -13,7 +13,9 @@ from app.database import Database, utc_now
 from app.services.domains import (
     extract_domain,
     find_domains,
-    is_public_domain,
+    is_candidate_domain,
+    is_candidate_url,
+    is_technical_url,
     likely_related_domains,
     normalize_url,
     registered_domain,
@@ -86,7 +88,7 @@ class Investigator:
 
         try:
             domain = extract_domain(target)
-            if not is_public_domain(domain):
+            if not is_candidate_domain(domain) or is_technical_url(target):
                 message = "Укажите публичный домен или URL, а не IP, localhost или тестовый адрес."
                 self.db.update_run(run_id, status="failed", finished_at=utc_now(), error=message)
                 self.db.add_log(run_id, "error", "Ручная проверка остановлена", {"reason": message})
@@ -265,6 +267,8 @@ class Investigator:
 
         if seed_query:
             for domain in find_domains(seed_query):
+                if not is_candidate_domain(domain):
+                    continue
                 discovered.append(
                     Candidate(
                         url=normalize_url(domain),
@@ -305,6 +309,7 @@ class Investigator:
 - Фокус: Казахстан. Нужны домены, которые сейчас открываются у пользователей Казахстана, включая рабочие зеркала.
 - Не возвращай домены, которые публично описаны как заблокированные и не имеют рабочего зеркала.
 - НЕ возвращай IP-адреса.
+- НЕ возвращай служебные URL Gemini/Google Search вроде vertexaisearch.cloud.google.com/grounding-api-redirect, google.com/url или google.com/search.
 - НЕ возвращай статьи, новости, форумы, Telegram, YouTube, соцсети, GitHub, каталоги и справочники.
 - Возвращай только прямой домен или URL подозрительного сайта, который можно открыть в браузере и зафиксировать скриншотом.
 - Если уверен только частично, все равно объясни сигнал, но не обвиняй окончательно.
@@ -343,10 +348,20 @@ class Investigator:
         )
 
         candidates: list[Candidate] = []
+        skipped_technical = 0
         for item in raw_items:
             candidate = self._candidate_from_item(item, default_sources=grounding_sources)
             if candidate:
                 candidates.append(candidate)
+            else:
+                skipped_technical += 1
+        if skipped_technical:
+            self.db.add_log(
+                run_id,
+                "warning",
+                "Технические или неподходящие URL от Gemini пропущены",
+                {"count": skipped_technical},
+            )
         return candidates
 
     async def _discover_from_feeds(self, run_id: int, max_candidates: int) -> list[Candidate]:
@@ -373,7 +388,7 @@ class Investigator:
                     if not text or text.startswith("#"):
                         continue
                     domain = extract_domain(text)
-                    if not is_public_domain(domain):
+                    if not is_candidate_domain(domain):
                         skipped += 1
                         continue
                     candidates.append(
@@ -408,7 +423,7 @@ class Investigator:
             self.db.add_log(run_id, "warning", "Поиск зеркал пропущен: Gemini ключ не настроен")
             return groups
 
-        domains = [candidate.domain for candidate in casino_candidates if is_public_domain(candidate.domain)]
+        domains = [candidate.domain for candidate in casino_candidates if is_candidate_domain(candidate.domain)]
         if not domains:
             return groups
 
@@ -442,7 +457,7 @@ class Investigator:
 
         grounding_sources = meta.get("grounding_sources", [])
         for group in data.get("mirror_groups", []) or []:
-            domains = sorted({extract_domain(domain) for domain in group.get("domains", []) if is_public_domain(extract_domain(domain))})
+            domains = sorted({extract_domain(domain) for domain in group.get("domains", []) if is_candidate_domain(extract_domain(domain))})
             if not domains:
                 continue
             groups.append(
@@ -465,10 +480,10 @@ class Investigator:
     ) -> dict[str, Any]:
         evidence = await self.evidence.collect(candidate.url, run_id)
         domain = evidence.domain or candidate.domain
-        if not is_public_domain(domain):
+        if not is_candidate_domain(domain):
             return {
                 "_skip": True,
-                "_skip_reason": "это IP или непубличный домен",
+                "_skip_reason": "это IP, непубличный или технический домен",
                 "url": candidate.url,
                 "domain": domain,
                 "status_code": evidence.status_code,
@@ -607,8 +622,14 @@ class Investigator:
             domains = re.findall(r"(?i)(?:[a-z0-9-]+\.)+[a-z]{2,24}", text_blob)
             url = domains[0] if domains else ""
         domain = extract_domain(item.get("domain") or url)
-        if not is_public_domain(domain):
+        if not is_candidate_domain(domain):
             return None
+        normalized_url = normalize_url(url or domain)
+        if not is_candidate_url(normalized_url):
+            if is_candidate_domain(domain):
+                normalized_url = normalize_url(domain)
+            else:
+                return None
         sources = item.get("source_urls") or []
         if isinstance(sources, str):
             sources = [sources]
@@ -618,14 +639,14 @@ class Investigator:
         if isinstance(mirrors, str):
             mirrors = [mirrors]
         mirror_hints = [extract_domain(str(mirror)) for mirror in mirrors]
-        mirror_hints = [domain for domain in mirror_hints if is_public_domain(domain)]
+        mirror_hints = [domain for domain in mirror_hints if is_candidate_domain(domain)]
         return Candidate(
-            url=normalize_url(url or domain),
+            url=normalized_url,
             domain=domain,
             category=str(item.get("category") or "suspicious").lower(),
             why=str(item.get("why") or ""),
             search_query=str(item.get("search_query") or ""),
-            source_urls=[str(source) for source in sources if source],
+            source_urls=self._clean_sources(sources),
             mirror_hints=mirror_hints,
             brand=str(item.get("brand") or "") or None,
         )
@@ -633,7 +654,7 @@ class Investigator:
     def _dedupe_candidates(self, candidates: list[Candidate], limit: int) -> list[Candidate]:
         by_key: dict[str, Candidate] = {}
         for candidate in candidates:
-            if not is_public_domain(candidate.domain):
+            if not is_candidate_domain(candidate.domain) or not is_candidate_url(candidate.url):
                 continue
             key = candidate.key()
             if not key:
@@ -657,7 +678,7 @@ class Investigator:
         mirror_groups: list[dict[str, Any]],
     ) -> str | None:
         for group in mirror_groups:
-            domains = [domain for domain in group.get("domains", []) if is_public_domain(domain)]
+            domains = [domain for domain in group.get("domains", []) if is_candidate_domain(domain)]
             registered = {registered_domain(domain) for domain in domains}
             if candidate.domain in domains or registered_domain(candidate.domain) in registered:
                 return str(group.get("brand") or candidate.domain)
@@ -677,6 +698,8 @@ class Investigator:
         for source in sources:
             url = str(source).strip()
             if not url or url in cleaned:
+                continue
+            if is_technical_url(url):
                 continue
             if url.startswith("http://") or url.startswith("https://"):
                 cleaned.append(url)

@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import unittest
 
-from app.services.domains import extract_domain, find_domains, registered_domain, suspicious_tld
+from app.services.domains import (
+    extract_domain,
+    find_domains,
+    is_candidate_domain,
+    is_candidate_url,
+    is_public_domain,
+    registered_domain,
+    suspicious_tld,
+)
 
 
 class DomainTests(unittest.TestCase):
@@ -17,6 +25,17 @@ class DomainTests(unittest.TestCase):
 
     def test_suspicious_tld_detects_common_throwaway_zone(self) -> None:
         self.assertTrue(suspicious_tld("mirror-entry.lol"))
+
+    def test_google_grounding_redirect_is_not_candidate(self) -> None:
+        url = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQFQ5a8vLPgWCmaJ1NFNqsqdmXsf0"
+
+        self.assertTrue(is_public_domain("vertexaisearch.cloud.google.com"))
+        self.assertFalse(is_candidate_domain("vertexaisearch.cloud.google.com"))
+        self.assertFalse(is_candidate_url(url))
+
+    def test_regular_suspicious_domain_is_candidate(self) -> None:
+        self.assertTrue(is_candidate_domain("mirror-entry.lol"))
+        self.assertTrue(is_candidate_url("https://mirror-entry.lol/login"))
 
 
 if __name__ == "__main__":
