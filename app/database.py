@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 try:
     import psycopg
@@ -103,8 +103,20 @@ def _is_postgres_source(source: str) -> bool:
 
 def _normalize_postgres_url(source: str) -> str:
     if source.startswith("postgres://"):
-        return "postgresql://" + source.removeprefix("postgres://")
-    return source
+        source = "postgresql://" + source.removeprefix("postgres://")
+    return _with_required_supabase_ssl(source)
+
+
+def _with_required_supabase_ssl(source: str) -> str:
+    parsed = urlsplit(source)
+    hostname = parsed.hostname or ""
+    if not hostname.endswith(".supabase.com"):
+        return source
+    query = parse_qsl(parsed.query, keep_blank_values=True)
+    if any(key.lower() == "sslmode" for key, _ in query):
+        return source
+    query.append(("sslmode", "require"))
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
 
 
 def _redact_database_url(source: str) -> str:

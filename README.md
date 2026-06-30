@@ -68,7 +68,7 @@ Do not commit real API keys. Keys pasted into chat should be treated as sensitiv
 
 `ADMIN_TOKEN` protects all `/api/*` endpoints except `/api/health`. The browser UI asks for this token and sends it as `Authorization: Bearer <token>`, preventing anonymous users from starting runs and spending Gemini quota.
 
-`DATABASE_URL` enables persistent Postgres storage and takes priority over `DATABASE_PATH`. Use the Supabase connection string with SSL enabled. If `DATABASE_URL` is empty, Argus falls back to local SQLite at `DATABASE_PATH`, which is useful only for local development.
+`DATABASE_URL` enables persistent Postgres storage and takes priority over `DATABASE_PATH`. Use the Supabase connection string with SSL enabled. For `*.supabase.com` hosts Argus also adds `sslmode=require` automatically if it is missing. If `DATABASE_URL` is empty, Argus falls back to local SQLite at `DATABASE_PATH`, which is useful only for local development.
 
 ## Docker
 

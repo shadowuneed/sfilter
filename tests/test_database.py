@@ -19,6 +19,17 @@ class DatabaseBackendTests(unittest.TestCase):
         self.assertEqual(db.backend, "sqlite")
         self.assertEqual(db.label, "data\\test.db" if "\\" in db.label else "data/test.db")
 
+    def test_supabase_url_gets_required_sslmode(self) -> None:
+        db = Database("postgresql://user:secret@aws-1.pooler.supabase.com:6543/postgres")
+
+        self.assertIn("sslmode=require", db.dsn)
+        self.assertNotIn("secret", db.label)
+
+    def test_explicit_sslmode_is_preserved(self) -> None:
+        db = Database("postgresql://user:secret@aws-1.pooler.supabase.com:6543/postgres?sslmode=verify-full")
+
+        self.assertIn("sslmode=verify-full", db.dsn)
+
 
 if __name__ == "__main__":
     unittest.main()
