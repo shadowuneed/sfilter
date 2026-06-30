@@ -446,7 +446,8 @@ class Database:
                 f"""
                 SELECT c.*, f.url, f.final_url, f.title, f.screenshot_path, f.html_path,
                        f.html_sha256, f.status_code, f.mirror_group, f.sources_json,
-                       f.reasons_json, f.evidence_json, f.created_at AS finding_created_at,
+                       f.reasons_json, f.evidence_json, f.dns_json, f.tls_json,
+                       f.created_at AS finding_created_at,
                        COALESCE(stats.finding_total, 0) AS finding_total,
                        COALESCE(stats.run_total, 0) AS run_total,
                        stats.first_run_id,
@@ -540,4 +541,6 @@ class Database:
         data["sources"] = loads(data.pop("sources_json"), [])
         data["reasons"] = loads(data.pop("reasons_json"), [])
         data["evidence"] = loads(data.pop("evidence_json"), {})
+        data["dns"] = loads(data.pop("dns_json", None), {})
+        data["tls"] = loads(data.pop("tls_json", None), {})
         return redact_secrets(repair_mojibake(data))

@@ -4,6 +4,7 @@ const state = {
   cases: [],
   filteredCases: [],
   runs: [],
+  activityRunId: null,
   apiToken: localStorage.getItem("argus_api_token") || "",
   authRequired: true,
   authConfigured: false,
@@ -19,6 +20,13 @@ const els = {
   seedQuery: document.getElementById("seedQuery"),
   maxCandidates: document.getElementById("maxCandidates"),
   takeScreenshots: document.getElementById("takeScreenshots"),
+  manualTarget: document.getElementById("manualTarget"),
+  manualCategory: document.getElementById("manualCategory"),
+  manualBtn: document.getElementById("manualBtn"),
+  activityPanel: document.getElementById("activityPanel"),
+  activityHeadline: document.getElementById("activityHeadline"),
+  activitySteps: document.getElementById("activitySteps"),
+  activityText: document.getElementById("activityText"),
   currentRun: document.getElementById("currentRun"),
   runStatus: document.getElementById("runStatus"),
   activeCaseCount: document.getElementById("activeCaseCount"),
@@ -30,6 +38,7 @@ const els = {
   caseMinRisk: document.getElementById("caseMinRisk"),
   caseFilterBtn: document.getElementById("caseFilterBtn"),
   casesList: document.getElementById("casesList"),
+  evidenceCards: document.getElementById("evidenceCards"),
   runsList: document.getElementById("runsList"),
   methodologyList: document.getElementById("methodologyList"),
   logsList: document.getElementById("logsList"),
@@ -67,6 +76,13 @@ const categoryColors = {
   pyramid: "#8b5cf6",
   suspicious: "#3b82f6",
 };
+
+const activityStages = [
+  { key: "search", label: "Поиск", detail: "AI ищет кандидатов" },
+  { key: "open", label: "Открытие", detail: "Проверка доступности" },
+  { key: "evidence", label: "Доказательства", detail: "DNS, SSL, HTML" },
+  { key: "report", label: "Отчет", detail: "Запись в реестр" },
+];
 
 async function api(path, options = {}) {
   const headers = {
@@ -184,6 +200,77 @@ function runningStatus(status) {
   return ["queued", "running", "canceling"].includes(status);
 }
 
+function latestLog(logs = []) {
+  return logs.length ? logs[logs.length - 1] : null;
+}
+
+function activityStageIndex(run = {}, logs = []) {
+  if (run.status === "completed" || run.status === "failed" || run.status === "canceled") {
+    return activityStages.length - 1;
+  }
+  const last = latestLog(logs) || {};
+  const meta = last.meta || {};
+  if (Number(run.finding_count || 0) > 0 || meta.risk_score !== undefined) return 3;
+  if (meta.path || meta.html_sha256) return 2;
+  if (meta.url || meta.domain) return 1;
+  const text = logs.map((log) => `${log.message || ""} ${JSON.stringify(log.meta || {})}`).join(" ").toLowerCase();
+  if (/добавлен|отчет|заверш|report|complete/.test(text)) return 3;
+  if (/скрин|html|sha|dns|tls|ssl|доказ|screenshot|evidence/.test(text)) return 2;
+  if (/открываю|ручного анализа|кандидат|доступ|candidate|opening|url/.test(text)) return 1;
+  return 0;
+}
+
+function showActivity(run = {}, logs = []) {
+  if (!els.activityPanel) return;
+  const active = runningStatus(run.status);
+  const done = ["completed", "failed", "canceled"].includes(run.status);
+  if (active && run.id) state.activityRunId = run.id;
+  if (done && run.id && state.activityRunId !== run.id) {
+    els.activityPanel.hidden = true;
+    return;
+  }
+  if (!active && !done && !logs.length) {
+    els.activityPanel.hidden = true;
+    return;
+  }
+
+  const stageIndex = activityStageIndex(run, logs);
+  const last = latestLog(logs);
+  els.activityPanel.hidden = false;
+  els.activityPanel.classList.toggle("done", done && run.status === "completed");
+  els.activityPanel.classList.toggle("failed", done && run.status !== "completed");
+  els.activityHeadline.textContent = run.id
+    ? `Запуск #${run.id}: ${statusLabel(run.status)}`
+    : "Запуск создан";
+  els.activityText.textContent = last
+    ? `${formatDateTime(last.timestamp)} · ${last.message}${formatMeta(last.meta)}`
+    : "Задача поставлена в очередь, ожидаю первые события анализа.";
+  els.activitySteps.innerHTML = activityStages.map((stage, index) => {
+    const cls = index < stageIndex ? "done" : index === stageIndex ? "active" : "";
+    return `
+      <div class="activity-step ${cls}">
+        <span>${index + 1}</span>
+        <strong>${escapeHtml(stage.label)}</strong>
+        <small>${escapeHtml(stage.detail)}</small>
+      </div>`;
+  }).join("");
+}
+
+function primeActivity(runId, mode = "auto") {
+  state.activityRunId = runId;
+  showActivity(
+    { id: runId, status: "queued", finding_count: 0, candidate_count: 0 },
+    [
+      {
+        timestamp: new Date().toISOString(),
+        level: "info",
+        message: mode === "manual" ? "Ручная проверка поставлена в очередь" : "Поиск поставлен в очередь",
+        meta: {},
+      },
+    ],
+  );
+}
+
 function certDate(value) {
   if (!value) return null;
   const date = new Date(value);
@@ -237,6 +324,10 @@ async function startRun(event) {
   event?.preventDefault();
   els.runBtn.disabled = true;
   els.runBtn.textContent = "Запускаю";
+  showActivity(
+    { status: "queued" },
+    [{ timestamp: new Date().toISOString(), level: "info", message: "Отправляю задачу автоматического поиска", meta: {} }],
+  );
   try {
     const payload = {
       seed_query: els.seedQuery.value.trim() || null,
@@ -245,6 +336,7 @@ async function startRun(event) {
     };
     const result = await api("/api/runs", { method: "POST", body: JSON.stringify(payload) });
     state.selectedRunId = result.run_id;
+    primeActivity(result.run_id, "auto");
     await loadRuns();
     await loadRun(result.run_id);
     startPolling();
@@ -253,6 +345,39 @@ async function startRun(event) {
   } finally {
     els.runBtn.disabled = false;
     els.runBtn.textContent = "Запустить";
+  }
+}
+
+async function startManualCheck() {
+  const target = els.manualTarget?.value.trim() || "";
+  if (!target) {
+    alert("Укажите домен или URL для ручной проверки.");
+    els.manualTarget?.focus();
+    return;
+  }
+  els.manualBtn.disabled = true;
+  els.manualBtn.textContent = "Проверяю";
+  showActivity(
+    { status: "queued" },
+    [{ timestamp: new Date().toISOString(), level: "info", message: "Отправляю задачу ручной проверки", meta: { url: target } }],
+  );
+  try {
+    const payload = {
+      target,
+      category: els.manualCategory?.value || "suspicious",
+      take_screenshots: els.takeScreenshots.checked,
+    };
+    const result = await api("/api/manual-check", { method: "POST", body: JSON.stringify(payload) });
+    state.selectedRunId = result.run_id;
+    primeActivity(result.run_id, "manual");
+    await loadRuns();
+    await loadRun(result.run_id);
+    startPolling();
+  } catch (error) {
+    alert(`Не удалось запустить ручную проверку: ${error.message}`);
+  } finally {
+    els.manualBtn.disabled = false;
+    els.manualBtn.textContent = "Проверить сайт";
   }
 }
 
@@ -280,6 +405,7 @@ async function loadRun(runId) {
   els.runStatus.textContent = `${statusLabel(run.status)} · ${run.finding_count || 0}/${run.candidate_count || 0}`;
   els.stopBtn.disabled = !runningStatus(run.status);
 
+  showActivity(run, data.logs || []);
   renderMethodology(run.methodology || []);
   renderLogs(data.logs || []);
   await loadRuns();
@@ -318,6 +444,7 @@ function renderRuns() {
 }
 
 function renderMethodology(items) {
+  if (!els.methodologyList || els.methodologyList.hidden) return;
   if (!items.length) {
     els.methodologyList.innerHTML = '<div class="empty-state">Методика появится после запуска.</div>';
     return;
@@ -386,12 +513,17 @@ function renderCaseStats(cases) {
 }
 
 function renderCases(cases) {
+  renderEvidenceCards(cases);
   if (!cases.length) {
     els.casesList.innerHTML = '<div class="empty-state">В выбранном фильтре нет рабочих доменов.</div>';
     return;
   }
   els.casesList.innerHTML = cases.map(domainRow).join("");
-  document.querySelectorAll("[data-case-open]").forEach((button) => {
+  bindCaseOpenButtons(els.casesList);
+}
+
+function bindCaseOpenButtons(root = document) {
+  root.querySelectorAll("[data-case-open]").forEach((button) => {
     button.addEventListener("click", () => openCase(Number(button.dataset.caseOpen)).catch(console.error));
   });
 }
@@ -415,6 +547,74 @@ function domainRow(item) {
       <div class="date-cell" role="cell">${escapeHtml(formatDate(item.last_seen || item.finding_created_at))}</div>
       <div class="action-cell" role="cell">
         <button class="analysis-btn" data-case-open="${item.id}" type="button">Анализ</button>
+      </div>
+    </article>`;
+}
+
+function renderEvidenceCards(cases) {
+  if (!els.evidenceCards) return;
+  if (!cases.length) {
+    els.evidenceCards.innerHTML = '<div class="empty-state">Карточки появятся после первой найденной рабочей страницы.</div>';
+    return;
+  }
+  els.evidenceCards.innerHTML = cases.map(siteEvidenceCard).join("");
+  bindCaseOpenButtons(els.evidenceCards);
+}
+
+function shortList(values, limit = 2) {
+  const list = Array.isArray(values) ? values.filter(Boolean) : [];
+  if (!list.length) return "None";
+  const shown = list.slice(0, limit).join(", ");
+  return list.length > limit ? `${shown} +${list.length - limit}` : shown;
+}
+
+function siteEvidenceCard(item) {
+  const evidence = item.evidence || {};
+  const dns = item.dns || {};
+  const tls = item.tls || {};
+  const domainInfo = evidence.domain || {};
+  const risk = Number(item.best_risk_score || 0);
+  const daysLeft = certDaysLeft(tls);
+  const sslText = tls.valid ? "Действителен" : "Недействителен";
+  const sslClass = tls.valid ? "good" : "bad";
+  const mxCount = (dns.mx_records || []).length;
+  return `
+    <article class="site-evidence-card">
+      <div class="site-evidence-head">
+        <div>
+          <button data-case-open="${item.id}" type="button">${escapeHtml(item.domain)}</button>
+          <small>${escapeHtml(item.final_url || item.url || item.title || "Последняя рабочая проверка")}</small>
+        </div>
+        <span class="risk-badge ${riskClass(risk)}">${risk}%</span>
+      </div>
+      <div class="mini-tech-grid">
+        <div class="mini-tech-box">
+          <h3>SSL сертификат</h3>
+          ${techRow("Статус", sslText, sslClass)}
+          ${techRow("Издатель", tls.issuer || "None")}
+          ${techRow("Дней до истечения", daysLeft ?? "None", daysLeft !== null && daysLeft >= 14 ? "good" : "bad")}
+        </div>
+        <div class="mini-tech-box">
+          <h3>DNS</h3>
+          ${techRow("IP адресов", (dns.records || []).length)}
+          ${techRow("IP", shortList(dns.records, 2))}
+          ${techRow("MX записи", mxCount ? "Есть" : "Нет", mxCount ? "good" : "bad")}
+        </div>
+        <div class="mini-tech-box">
+          <h3>Домен</h3>
+          ${techRow("Возраст", domainInfo.age_days === null || domainInfo.age_days === undefined ? "None" : `${domainInfo.age_days} дн.`)}
+          ${techRow("Регистратор", domainInfo.registrar || "None")}
+          ${techRow("Категория", categoryLabel(item.category))}
+        </div>
+        <div class="mini-tech-box">
+          <h3>Производительность</h3>
+          ${techRow("Время ответа", formatResponseTime(evidence.response_time_ms))}
+          ${techRow("Размер страницы", formatBytes(evidence.page_size_bytes))}
+          ${techRow("Редиректов", evidence.redirect_count ?? 0)}
+        </div>
+      </div>
+      <div class="evidence-reasons">
+        ${(item.reasons || []).slice(0, 3).map((reason) => `<span>${escapeHtml(reason)}</span>`).join("") || "<span>Причины появятся после анализа страницы.</span>"}
       </div>
     </article>`;
 }
@@ -727,6 +927,13 @@ function stopPolling() {
 }
 
 els.scanForm.addEventListener("submit", startRun);
+els.manualBtn?.addEventListener("click", startManualCheck);
+els.manualTarget?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    startManualCheck();
+  }
+});
 els.stopBtn.addEventListener("click", stopRun);
 els.caseFilterBtn.addEventListener("click", loadCases);
 els.categoryFilter.addEventListener("change", loadCases);

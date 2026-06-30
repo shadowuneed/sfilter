@@ -49,6 +49,87 @@ class Investigator:
     def run(self, run_id: int, seed_query: str | None, max_candidates: int, take_screenshots: bool, cancel_event: Event | None = None) -> None:
         asyncio.run(self._run(run_id, seed_query, max_candidates, take_screenshots, cancel_event))
 
+    def run_manual(
+        self,
+        run_id: int,
+        target: str,
+        category: str,
+        take_screenshots: bool,
+        cancel_event: Event | None = None,
+    ) -> None:
+        asyncio.run(self._run_manual(run_id, target, category, take_screenshots, cancel_event))
+
+    async def _run_manual(
+        self,
+        run_id: int,
+        target: str,
+        category: str,
+        take_screenshots: bool,
+        cancel_event: Event | None = None,
+    ) -> None:
+        self.db.update_run(run_id, status="running", candidate_count=1)
+        self.db.add_log(run_id, "info", "Ручная проверка запущена", {"target": target, "started_at": utc_now()})
+        methodology = [
+            "Оператор вручную указал домен или URL для проверки.",
+            "Gemini не используется, поэтому квота AI не тратится.",
+            "Сайт открывается через ту же сеть проверки доступности, что и автоматический мониторинг.",
+            "Для сайта собираются HTTP, HTML, SHA-256, DNS, TLS, RDAP, скорость ответа, редиректы и скриншот.",
+        ]
+        self.db.update_run(run_id, methodology_json=methodology)
+
+        try:
+            domain = extract_domain(target)
+            if not is_public_domain(domain):
+                message = "Укажите публичный домен или URL, а не IP, localhost или тестовый адрес."
+                self.db.update_run(run_id, status="failed", finished_at=utc_now(), error=message)
+                self.db.add_log(run_id, "error", "Ручная проверка остановлена", {"reason": message})
+                return
+
+            if cancel_event and cancel_event.is_set():
+                self.db.update_run(run_id, status="canceled", finished_at=utc_now())
+                self.db.add_log(run_id, "warning", "Ручная проверка остановлена до анализа сайта")
+                return
+
+            candidate = Candidate(
+                url=normalize_url(target),
+                domain=domain,
+                category=(category or "suspicious").lower(),
+                why="Домен указан оператором для ручной проверки.",
+                search_query=target,
+            )
+            self.db.add_log(
+                run_id,
+                "info",
+                "Открываю сайт для ручного анализа",
+                {"domain": candidate.domain, "url": candidate.url},
+            )
+            finding = await self._build_finding(run_id, candidate, None, take_screenshots)
+            if finding.get("_skip"):
+                self.db.update_run(run_id, status="completed", finished_at=utc_now(), finding_count=0)
+                self.db.add_log(
+                    run_id,
+                    "warning",
+                    "Сайт не добавлен в отчет",
+                    {
+                        "domain": candidate.domain,
+                        "reason": finding.get("_skip_reason", "не удалось открыть"),
+                        "status_code": finding.get("status_code"),
+                    },
+                )
+                return
+
+            self.db.insert_finding(run_id, finding)
+            self.db.update_run(run_id, status="completed", finished_at=utc_now(), finding_count=1)
+            self.db.add_log(
+                run_id,
+                "info",
+                "Ручная проверка завершена, сайт добавлен в отчет",
+                {"domain": finding.get("domain"), "risk_score": finding.get("risk_score")},
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.db.update_run(run_id, status="failed", finished_at=utc_now(), error=f"{type(exc).__name__}: {exc}")
+            self.db.add_log(run_id, "error", "Ручная проверка завершилась ошибкой", {"error": str(exc)})
+
     async def _run(
         self,
         run_id: int,

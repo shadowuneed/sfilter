@@ -31,6 +31,11 @@ class ApiAuthTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 401)
 
+    def test_manual_check_rejects_missing_token(self) -> None:
+        response = self.client.post("/api/manual-check", json={"target": "example.com"})
+
+        self.assertEqual(response.status_code, 401)
+
     def test_protected_api_accepts_bearer_token(self) -> None:
         response = self.client.get("/api/runs", headers={"Authorization": "Bearer test-secret"})
 

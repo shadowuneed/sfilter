@@ -75,6 +75,12 @@ class RunRequest(BaseModel):
     take_screenshots: bool = True
 
 
+class ManualCheckRequest(BaseModel):
+    target: str = Field(..., min_length=3, max_length=2000)
+    category: str = Field(default="suspicious", max_length=60)
+    take_screenshots: bool = True
+
+
 class CaseUpdate(BaseModel):
     status: str | None = None
     archived: bool | None = None
@@ -144,6 +150,25 @@ def create_run(request: RunRequest) -> dict[str, Any]:
         args=(run_id, request.seed_query, max_candidates, request.take_screenshots, cancel_event),
         daemon=True,
         name=f"argus-run-{run_id}",
+    )
+    thread.start()
+    return {"run_id": run_id, "status": "queued"}
+
+
+@app.post("/api/manual-check")
+def manual_check(request: ManualCheckRequest) -> dict[str, Any]:
+    run_id = db.create_run(
+        seed_query=request.target,
+        max_candidates=1,
+        take_screenshots=request.take_screenshots,
+    )
+    cancel_event = threading.Event()
+    cancel_events[run_id] = cancel_event
+    thread = threading.Thread(
+        target=investigator.run_manual,
+        args=(run_id, request.target, request.category, request.take_screenshots, cancel_event),
+        daemon=True,
+        name=f"argus-manual-{run_id}",
     )
     thread.start()
     return {"run_id": run_id, "status": "queued"}
