@@ -11,6 +11,7 @@ const state = {
   caseDetails: new Map(),
   runDetails: new Map(),
   runStatuses: new Map(),
+  runFindingsExpanded: false,
   chartPoints: [],
   chartHoverIndex: null,
 };
@@ -47,6 +48,7 @@ const els = {
   exportCasesXlsxBtn: document.getElementById("exportCasesXlsxBtn"),
   exportRunCsvBtn: document.getElementById("exportRunCsvBtn"),
   exportRunXlsxBtn: document.getElementById("exportRunXlsxBtn"),
+  toggleRunFindingsBtn: document.getElementById("toggleRunFindingsBtn"),
   casesList: document.getElementById("casesList"),
   runFindingsList: document.getElementById("runFindingsList"),
   runFindingsCount: document.getElementById("runFindingsCount"),
@@ -386,7 +388,9 @@ async function loadHealth() {
       : kzRequired
         ? "KZ proxy обязателен и не настроен, запуск заблокирован"
         : "KZ proxy не задан: запуск разрешен, но доступность из Казахстана не подтверждена";
-    els.healthLine.textContent = `${geminiHint}. ${mlHint}. ${cyberHint}. ${kzHint}. Автозапуск: 50 сайтов.`;
+    const concurrency = health.scan_concurrency || 3;
+    const timeout = health.candidate_timeout_seconds || 45;
+    els.healthLine.textContent = `${geminiHint}. ${mlHint}. ${cyberHint}. ${kzHint}. Автозапуск: 50 сайтов, потоков: ${concurrency}, таймаут сайта: ${timeout} сек.`;
     const actionBlocked = authMissing || !kzReady;
     const actionReason = authMissing
       ? "На сервере не настроен ADMIN_TOKEN"
@@ -423,6 +427,7 @@ async function startRun(event) {
     };
     const result = await api("/api/runs", { method: "POST", body: JSON.stringify(payload) });
     state.selectedRunId = result.run_id;
+    state.runFindingsExpanded = false;
     state.runDetails.delete(result.run_id);
     primeActivity(result.run_id, "auto");
     await loadRuns();
@@ -456,6 +461,7 @@ async function startManualCheck() {
     };
     const result = await api("/api/manual-check", { method: "POST", body: JSON.stringify(payload) });
     state.selectedRunId = result.run_id;
+    state.runFindingsExpanded = false;
     state.runDetails.delete(result.run_id);
     primeActivity(result.run_id, "manual");
     await loadRuns();
@@ -489,8 +495,13 @@ async function loadRun(runId, options = {}) {
   if (!runId) return;
   const cached = state.runDetails.get(runId);
   const canUseCache = cached && !options.force && !runningStatus(cached.run?.status);
-  const data = canUseCache ? cached : await api(`/api/runs/${runId}?include_findings=true`);
-  if (!canUseCache) state.runDetails.set(runId, data);
+  const includeFindings = Boolean(options.includeFindings || state.runFindingsExpanded);
+  const suffix = includeFindings ? "?include_findings=true" : "";
+  const data = canUseCache && (!includeFindings || cached.findings)
+    ? cached
+    : await api(`/api/runs/${runId}${suffix}`);
+  if (!data.findings && cached?.findings) data.findings = cached.findings;
+  if (!canUseCache || includeFindings) state.runDetails.set(runId, data);
   const run = data.run;
   const previousStatus = state.runStatuses.get(run.id);
   state.selectedRunId = run.id;
@@ -503,7 +514,7 @@ async function loadRun(runId, options = {}) {
   showActivity(run, data.logs || []);
   renderMethodology(run.methodology || []);
   renderLogs(data.logs || []);
-  renderRunFindings(data.findings || [], run);
+  renderRunFindings(data.findings || [], run, state.runFindingsExpanded);
   renderRuns();
 
   if (runningStatus(run.status)) {
@@ -540,7 +551,10 @@ function renderRuns() {
       </button>`;
   }).join("");
   document.querySelectorAll("[data-run-id]").forEach((button) => {
-    button.addEventListener("click", () => loadRun(Number(button.dataset.runId)).catch(console.error));
+    button.addEventListener("click", () => {
+      state.runFindingsExpanded = false;
+      loadRun(Number(button.dataset.runId), { force: true }).catch(console.error);
+    });
   });
 }
 
@@ -596,7 +610,20 @@ function renderLogs(logs) {
     els.logsList.innerHTML = '<div class="empty-state">Журнал появится после запуска.</div>';
     return;
   }
-  els.logsList.innerHTML = logs.slice(-80).map((log) => {
+  const recentLogs = logs.slice(-45);
+  const last = recentLogs[recentLogs.length - 1];
+  const summary = `
+    <div class="log-live-summary">
+      <div>
+        <span>Live журнал</span>
+        <strong>${escapeHtml(last?.message || "Ожидаю событие")}</strong>
+      </div>
+      <div>
+        <span>${recentLogs.length}/${logs.length} строк</span>
+        <strong>${warnings} предупреждений</strong>
+      </div>
+    </div>`;
+  els.logsList.innerHTML = summary + recentLogs.map((log) => {
     const cls = log.level === "error" ? "error" : log.level === "warning" ? "warning" : "";
     const meta = formatMetaParts(log.meta);
     return `
@@ -659,14 +686,35 @@ function renderCases(cases) {
   bindCaseOpenButtons(els.casesList);
 }
 
-function renderRunFindings(findings, run) {
+function renderRunFindings(findings, run, expanded = false) {
   if (!els.runFindingsList) return;
-  const count = findings.length;
+  const count = findings.length || Number(run?.finding_count || 0);
   if (els.runFindingsCount) {
     const label = count === 1 ? "1 находка" : `${count} находок`;
     els.runFindingsCount.textContent = run ? `#${run.id} · ${label}` : label;
   }
-  if (!count) {
+  if (els.toggleRunFindingsBtn) {
+    els.toggleRunFindingsBtn.textContent = expanded ? "Скрыть список" : "Показать список";
+    els.toggleRunFindingsBtn.disabled = !run;
+  }
+  if (!expanded) {
+    const status = run ? statusLabel(run.status) : "ожидание";
+    const progress = run ? `${run.finding_count || 0}/${run.candidate_count || AUTO_RUN_CANDIDATES}` : "0/0";
+    els.runFindingsList.innerHTML = `
+      <div class="collapsed-results">
+        <div>
+          <span>Список результатов скрыт</span>
+          <strong>${escapeHtml(count)} найдено · ${escapeHtml(status)} · ${escapeHtml(progress)}</strong>
+          <p>Полные карточки доменов, SSL/DNS/HTTP и причины риска загружаются только по запросу, чтобы старые запуски открывались быстро.</p>
+        </div>
+        <button class="secondary-btn" data-expand-run-findings type="button">Открыть список</button>
+      </div>`;
+    els.runFindingsList.querySelector("[data-expand-run-findings]")?.addEventListener("click", () => {
+      toggleRunFindings().catch(console.error);
+    });
+    return;
+  }
+  if (!findings.length) {
     const status = run ? statusLabel(run.status) : "ожидание";
     els.runFindingsList.innerHTML = `
       <div class="empty-state">
@@ -681,6 +729,15 @@ function renderRunFindings(findings, run) {
       Number(button.dataset.runFindingCase || 0),
     ).catch(console.error));
   });
+}
+
+async function toggleRunFindings() {
+  state.runFindingsExpanded = !state.runFindingsExpanded;
+  const cached = state.selectedRunId ? state.runDetails.get(state.selectedRunId) : null;
+  renderRunFindings(cached?.findings || [], cached?.run || null, state.runFindingsExpanded);
+  if (state.runFindingsExpanded && state.selectedRunId) {
+    await loadRun(state.selectedRunId, { force: true, includeFindings: true });
+  }
 }
 
 function runFindingRow(item) {
@@ -1250,7 +1307,7 @@ function startPolling() {
   stopPolling();
   state.pollTimer = setInterval(() => {
     if (state.selectedRunId) loadRun(state.selectedRunId, { force: true }).catch(console.error);
-  }, 4000);
+  }, 6000);
 }
 
 function stopPolling() {
@@ -1278,6 +1335,7 @@ els.exportCasesCsvBtn?.addEventListener("click", () => exportCurrentCases("csv")
 els.exportCasesXlsxBtn?.addEventListener("click", () => exportCurrentCases("xlsx").catch((error) => alert(`Не удалось скачать Excel: ${error.message}`)));
 els.exportRunCsvBtn?.addEventListener("click", () => exportSelectedRun("csv").catch((error) => alert(`Не удалось скачать CSV запуска: ${error.message}`)));
 els.exportRunXlsxBtn?.addEventListener("click", () => exportSelectedRun("xlsx").catch((error) => alert(`Не удалось скачать Excel запуска: ${error.message}`)));
+els.toggleRunFindingsBtn?.addEventListener("click", () => toggleRunFindings().catch(console.error));
 els.drawerClose.addEventListener("click", closeDrawer);
 els.drawerOverlay.addEventListener("click", (event) => {
   if (event.target === els.drawerOverlay) closeDrawer();

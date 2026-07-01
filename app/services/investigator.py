@@ -276,7 +276,7 @@ class Investigator:
 
         try:
             candidates = await self._discover_candidates(run_id, seed_query, max_candidates)
-            self.db.update_run(run_id, candidate_count=len(candidates))
+            self.db.update_run(run_id, candidate_count=max_candidates)
             self.db.add_log(run_id, "info", "Список сайтов-кандидатов готов", {"count": len(candidates)})
 
             if not candidates:
@@ -293,50 +293,144 @@ class Investigator:
 
             mirror_groups = await self._discover_mirrors(run_id, candidates)
             findings_count = 0
-
-            for index, candidate in enumerate(candidates, start=1):
-                if cancel_event and cancel_event.is_set():
-                    self.db.update_run(run_id, status="canceled", finished_at=utc_now(), finding_count=findings_count)
-                    self.db.add_log(run_id, "warning", "Проверка остановлена пользователем", {"findings": findings_count})
-                    return
-                if findings_count >= max_candidates:
-                    break
-                self.db.add_log(
-                    run_id,
-                    "info",
-                    "Открываю сайт-кандидат",
-                    {"index": index, "domain": candidate.domain, "url": candidate.url},
+            concurrency = max(1, min(self.settings.scan_concurrency, max_candidates, len(candidates) or 1))
+            self.db.add_log(
+                run_id,
+                "info",
+                "Пакетная проверка кандидатов запущена",
+                {"target": max_candidates, "candidates": len(candidates), "concurrency": concurrency},
+            )
+            semaphore = asyncio.Semaphore(concurrency)
+            tasks = [
+                asyncio.create_task(
+                    self._inspect_candidate(
+                        run_id,
+                        index,
+                        len(candidates),
+                        candidate,
+                        candidates,
+                        mirror_groups,
+                        take_screenshots,
+                        semaphore,
+                        cancel_event,
+                    )
                 )
-                mirror_group = self._mirror_group_for(candidate, candidates, mirror_groups)
-                finding = await self._build_finding(run_id, candidate, mirror_group, take_screenshots)
-                if finding.get("_skip"):
+                for index, candidate in enumerate(candidates, start=1)
+            ]
+
+            try:
+                for task in asyncio.as_completed(tasks):
+                    if cancel_event and cancel_event.is_set():
+                        self.db.update_run(run_id, status="canceled", finished_at=utc_now(), finding_count=findings_count)
+                        self.db.add_log(run_id, "warning", "Проверка остановлена пользователем", {"findings": findings_count})
+                        return
+                    if findings_count >= max_candidates:
+                        break
+
+                    finding = await task
+                    if finding.get("_skip"):
+                        self.db.add_log(
+                            run_id,
+                            "warning",
+                            "Сайт пропущен и не показан пользователю",
+                            {
+                                "index": finding.get("_candidate_index"),
+                                "total": finding.get("_candidate_total"),
+                                "domain": finding.get("domain"),
+                                "reason": finding.get("_skip_reason", "не удалось открыть"),
+                                "status_code": finding.get("status_code"),
+                            },
+                        )
+                        continue
+
+                    self.db.insert_finding(run_id, finding)
+                    findings_count += 1
+                    self.db.update_run(run_id, finding_count=findings_count)
                     self.db.add_log(
                         run_id,
-                        "warning",
-                        "Сайт пропущен и не показан пользователю",
+                        "info",
+                        "Сайт добавлен в отчет",
                         {
-                            "domain": candidate.domain,
-                            "reason": finding.get("_skip_reason", "не удалось открыть"),
-                            "status_code": finding.get("status_code"),
+                            "domain": finding.get("domain"),
+                            "risk_score": finding.get("risk_score"),
+                            "findings": findings_count,
+                            "target": max_candidates,
                         },
                     )
-                    continue
-
-                self.db.insert_finding(run_id, finding)
-                findings_count += 1
-                self.db.update_run(run_id, finding_count=findings_count)
-                self.db.add_log(
-                    run_id,
-                    "info",
-                    "Сайт добавлен в отчет",
-                    {"domain": finding.get("domain"), "risk_score": finding.get("risk_score")},
-                )
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
 
             self.db.update_run(run_id, status="completed", finished_at=utc_now(), finding_count=findings_count)
             self.db.add_log(run_id, "info", "Поиск завершен", {"findings": findings_count})
         except Exception as exc:  # noqa: BLE001
             self.db.update_run(run_id, status="failed", finished_at=utc_now(), error=f"{type(exc).__name__}: {exc}")
             self.db.add_log(run_id, "error", "Поиск завершился ошибкой", {"error": str(exc)})
+
+    async def _inspect_candidate(
+        self,
+        run_id: int,
+        index: int,
+        total: int,
+        candidate: Candidate,
+        all_candidates: list[Candidate],
+        mirror_groups: list[dict[str, Any]],
+        take_screenshots: bool,
+        semaphore: asyncio.Semaphore,
+        cancel_event: Event | None = None,
+    ) -> dict[str, Any]:
+        async with semaphore:
+            if cancel_event and cancel_event.is_set():
+                return {
+                    "_skip": True,
+                    "_skip_reason": "проверка остановлена пользователем",
+                    "_candidate_index": index,
+                    "_candidate_total": total,
+                    "url": candidate.url,
+                    "domain": candidate.domain,
+                }
+
+            self.db.add_log(
+                run_id,
+                "info",
+                "Открываю сайт-кандидат",
+                {"index": index, "total": total, "domain": candidate.domain, "url": candidate.url},
+            )
+            mirror_group = self._mirror_group_for(candidate, all_candidates, mirror_groups)
+            try:
+                finding = await asyncio.wait_for(
+                    self._build_finding(run_id, candidate, mirror_group, take_screenshots),
+                    timeout=self.settings.candidate_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                return {
+                    "_skip": True,
+                    "_skip_reason": f"таймаут проверки сайта {self.settings.candidate_timeout_seconds} сек.",
+                    "_candidate_index": index,
+                    "_candidate_total": total,
+                    "url": candidate.url,
+                    "domain": candidate.domain,
+                }
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "_skip": True,
+                    "_skip_reason": f"{type(exc).__name__}: {exc}",
+                    "_candidate_index": index,
+                    "_candidate_total": total,
+                    "url": candidate.url,
+                    "domain": candidate.domain,
+                }
+
+            finding.setdefault("_candidate_index", index)
+            finding.setdefault("_candidate_total", total)
+            finding.setdefault("domain", candidate.domain)
+            finding.setdefault("url", candidate.url)
+            return finding
 
     async def _discover_candidates(
         self,

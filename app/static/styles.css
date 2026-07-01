@@ -821,6 +821,43 @@ select:focus {
   gap: 12px;
 }
 
+.collapsed-results {
+  grid-column: 1 / -1;
+  min-height: 112px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(59, 130, 246, 0.13), rgba(16, 185, 129, 0.08)),
+    #0b0f15;
+  padding: 18px;
+}
+
+.collapsed-results span,
+.log-live-summary span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.collapsed-results strong {
+  display: block;
+  margin-top: 5px;
+  font-size: 22px;
+}
+
+.collapsed-results p {
+  max-width: 760px;
+  margin: 8px 0 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 .run-finding-row {
   min-height: 168px;
   display: grid;
@@ -988,20 +1025,48 @@ select:focus {
 .logs-list {
   display: grid;
   gap: 8px;
-  max-height: 520px;
+  max-height: 560px;
   overflow: auto;
   padding-right: 4px;
 }
 
+.log-live-summary {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  border: 1px solid rgba(59, 130, 246, 0.34);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(59, 130, 246, 0.16), rgba(16, 185, 129, 0.08)),
+    rgba(12, 18, 27, 0.96);
+  padding: 12px;
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.22);
+}
+
+.log-live-summary strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.log-live-summary > div:last-child {
+  text-align: right;
+}
+
 .log-line {
   display: grid;
-  grid-template-columns: 132px 78px minmax(0, 1fr);
+  grid-template-columns: 120px 70px minmax(0, 1fr);
   gap: 12px;
   align-items: start;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(8, 13, 20, 0.78);
-  padding: 12px;
+  padding: 10px 12px;
   color: #dbe3ee;
   font-size: 12px;
 }
@@ -1447,6 +1512,9 @@ a.evidence-link:hover,
   .danger-btn,
   .ghost-btn,
   .analysis-btn { width: 100%; }
+  .collapsed-results,
+  .log-live-summary { grid-template-columns: 1fr; }
+  .log-live-summary > div:last-child { text-align: left; }
   .chart-wrap { padding: 6px; }
   .log-line { grid-template-columns: 1fr; }
   .tech-row { display: grid; grid-template-columns: 1fr; gap: 4px; }

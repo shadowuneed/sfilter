@@ -82,18 +82,21 @@ class ScreenshotService:
                     proxy={"server": self.settings.kz_proxy_url} if self.settings.kz_proxy_url else None,
                 )
                 page = await context.new_page()
-                page.set_default_timeout(15_000)
-                await page.goto(url, wait_until="domcontentloaded", timeout=25_000)
+                timeout_ms = max(4_000, int(self.settings.screenshot_timeout_seconds * 1000))
+                settle_ms = max(0, int(self.settings.screenshot_settle_ms))
+                page.set_default_timeout(timeout_ms)
+                await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms + 3_000)
                 try:
-                    await page.wait_for_load_state("networkidle", timeout=10_000)
+                    await page.wait_for_load_state("networkidle", timeout=min(3_000, timeout_ms))
                 except Exception:
                     pass
-                await page.wait_for_timeout(2_000)
+                if settle_ms:
+                    await page.wait_for_timeout(settle_ms)
                 try:
                     await page.screenshot(
                         path=str(output),
                         full_page=True,
-                        timeout=15_000,
+                        timeout=timeout_ms,
                         animations="disabled",
                         caret="hide",
                     )
@@ -103,7 +106,7 @@ class ScreenshotService:
                         await page.screenshot(
                             path=str(output),
                             full_page=False,
-                            timeout=12_000,
+                            timeout=max(3_000, timeout_ms // 2),
                             animations="disabled",
                             caret="hide",
                         )

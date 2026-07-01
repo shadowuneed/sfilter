@@ -148,6 +148,10 @@ class Settings:
     max_candidates_per_run: int = 50
     max_mirror_checks_per_run: int = 6
     request_timeout_seconds: int = 18
+    scan_concurrency: int = 3
+    candidate_timeout_seconds: int = 45
+    screenshot_timeout_seconds: int = 10
+    screenshot_settle_ms: int = 700
     screenshots_enabled: bool = True
     osint_feeds_enabled: bool = True
     osint_candidate_pool_size: int = 350
@@ -200,6 +204,10 @@ def get_settings() -> Settings:
         max_candidates_per_run=_int_env("MAX_CANDIDATES_PER_RUN", 50),
         max_mirror_checks_per_run=_int_env("MAX_MIRROR_CHECKS_PER_RUN", 6),
         request_timeout_seconds=_int_env("REQUEST_TIMEOUT_SECONDS", 18),
+        scan_concurrency=max(1, min(_int_env("SCAN_CONCURRENCY", 3), 8)),
+        candidate_timeout_seconds=max(10, _int_env("CANDIDATE_TIMEOUT_SECONDS", 45)),
+        screenshot_timeout_seconds=max(4, _int_env("SCREENSHOT_TIMEOUT_SECONDS", 10)),
+        screenshot_settle_ms=max(0, _int_env("SCREENSHOT_SETTLE_MS", 700)),
         screenshots_enabled=_bool_env("SCREENSHOTS_ENABLED", True),
         osint_feeds_enabled=_bool_env("OSINT_FEEDS_ENABLED", True),
         osint_candidate_pool_size=_int_env("OSINT_CANDIDATE_POOL_SIZE", 350),

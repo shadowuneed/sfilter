@@ -57,6 +57,25 @@ class ConfigTests(unittest.TestCase):
             os.environ.pop("REQUIRE_KZ_PROXY", None)
             self.assertFalse(get_settings().require_kz_proxy)
 
+    @patch("app.config._load_dotenv", lambda: None)
+    def test_scan_tuning_is_read_from_environment(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "SCAN_CONCURRENCY": "4",
+                "CANDIDATE_TIMEOUT_SECONDS": "30",
+                "SCREENSHOT_TIMEOUT_SECONDS": "8",
+                "SCREENSHOT_SETTLE_MS": "250",
+            },
+            clear=False,
+        ):
+            settings = get_settings()
+
+        self.assertEqual(settings.scan_concurrency, 4)
+        self.assertEqual(settings.candidate_timeout_seconds, 30)
+        self.assertEqual(settings.screenshot_timeout_seconds, 8)
+        self.assertEqual(settings.screenshot_settle_ms, 250)
+
 
 if __name__ == "__main__":
     unittest.main()
