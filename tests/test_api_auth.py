@@ -58,6 +58,26 @@ class ApiAuthTests(unittest.TestCase):
 
     def test_run_detail_omits_findings_until_requested(self) -> None:
         run_id = main.db.create_run(seed_query="api test", max_candidates=1, take_screenshots=False)
+        main.db.insert_finding(
+            run_id,
+            {
+                "url": "https://example.kz/login",
+                "final_url": "https://example.kz/login",
+                "domain": "example.kz",
+                "normalized_domain": "example.kz",
+                "title": "Example",
+                "category": "phishing",
+                "verdict": "suspicious",
+                "risk_score": 82,
+                "active": True,
+                "status_code": 200,
+                "dns_json": {"records": ["192.0.2.10"]},
+                "tls_json": {"valid": True},
+                "evidence_json": {"response_time_ms": 120},
+                "sources_json": ["unit-test"],
+                "reasons_json": ["unit-test reason"],
+            },
+        )
 
         response = self.client.get(f"/api/runs/{run_id}", headers={"Authorization": "Bearer test-secret"})
         self.assertEqual(response.status_code, 200)
@@ -70,6 +90,9 @@ class ApiAuthTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertIn("findings", response.json())
+        self.assertEqual(len(response.json()["findings"]), 1)
+        self.assertIn("case_id", response.json()["findings"][0])
+        self.assertEqual(response.json()["findings"][0]["normalized_domain"], "example.kz")
 
     def test_missing_server_token_blocks_protected_api(self) -> None:
         set_auth(required=True, token=None)

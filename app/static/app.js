@@ -9,6 +9,8 @@ const state = {
   authRequired: true,
   authConfigured: false,
   caseDetails: new Map(),
+  runDetails: new Map(),
+  runStatuses: new Map(),
 };
 
 const AUTO_RUN_CANDIDATES = 50;
@@ -39,7 +41,8 @@ const els = {
   caseMinRisk: document.getElementById("caseMinRisk"),
   caseFilterBtn: document.getElementById("caseFilterBtn"),
   casesList: document.getElementById("casesList"),
-  evidenceCards: document.getElementById("evidenceCards"),
+  runFindingsList: document.getElementById("runFindingsList"),
+  runFindingsCount: document.getElementById("runFindingsCount"),
   runsList: document.getElementById("runsList"),
   methodologyList: document.getElementById("methodologyList"),
   logsList: document.getElementById("logsList"),
@@ -326,9 +329,11 @@ async function loadHealth() {
     const kzText = health.kz_proxy_configured ? "KZ: proxy" : kzRequired ? "KZ: нет proxy" : "KZ: direct";
     renderPill(els.kzAccessPill, kzText, health.kz_proxy_configured ? "ok" : kzRequired ? "bad" : "warn");
     const keyCount = health.gemini_key_count ?? health.gemini_keys?.length ?? 0;
+    const keyHashes = Array.isArray(health.gemini_key_hashes) ? health.gemini_key_hashes : [];
+    const hashHint = keyHashes.length ? `, hash ${keyHashes.join(", ")}` : "";
     const authMissing = state.authRequired && !state.authConfigured;
     const geminiHint = health.gemini_configured
-      ? `${keyCount} ключ(а), модель ${health.gemini_model}`
+      ? `${keyCount} ключ(а), модель ${health.gemini_model}${hashHint}`
       : "добавьте GEMINI_API_KEYS";
     const mlClasses = Array.isArray(health.ml_classes) && health.ml_classes.length ? ` (${health.ml_classes.join(", ")})` : "";
     const mlHint = health.ml_available
@@ -383,9 +388,10 @@ async function startRun(event) {
     };
     const result = await api("/api/runs", { method: "POST", body: JSON.stringify(payload) });
     state.selectedRunId = result.run_id;
+    state.runDetails.delete(result.run_id);
     primeActivity(result.run_id, "auto");
     await loadRuns();
-    await loadRun(result.run_id);
+    await loadRun(result.run_id, { force: true });
     startPolling();
   } catch (error) {
     alert(`Не удалось запустить проверку: ${error.message}`);
@@ -415,9 +421,10 @@ async function startManualCheck() {
     };
     const result = await api("/api/manual-check", { method: "POST", body: JSON.stringify(payload) });
     state.selectedRunId = result.run_id;
+    state.runDetails.delete(result.run_id);
     primeActivity(result.run_id, "manual");
     await loadRuns();
-    await loadRun(result.run_id);
+    await loadRun(result.run_id, { force: true });
     startPolling();
   } catch (error) {
     alert(`Не удалось запустить ручную проверку: ${error.message}`);
@@ -431,21 +438,28 @@ async function stopRun() {
   if (!state.selectedRunId) return;
   els.stopBtn.disabled = true;
   await api(`/api/runs/${state.selectedRunId}/cancel`, { method: "POST" });
-  await loadRun(state.selectedRunId);
+  state.runDetails.delete(state.selectedRunId);
+  await loadRun(state.selectedRunId, { force: true });
 }
 
 async function loadRuns() {
   const data = await api("/api/runs?limit=40");
   state.runs = data.runs || [];
+  state.runs.forEach((run) => state.runStatuses.set(run.id, run.status));
   if (!state.selectedRunId && state.runs.length) state.selectedRunId = state.runs[0].id;
   renderRuns();
 }
 
-async function loadRun(runId) {
+async function loadRun(runId, options = {}) {
   if (!runId) return;
-  const data = await api(`/api/runs/${runId}`);
+  const cached = state.runDetails.get(runId);
+  const canUseCache = cached && !options.force && !runningStatus(cached.run?.status);
+  const data = canUseCache ? cached : await api(`/api/runs/${runId}?include_findings=true`);
+  if (!canUseCache) state.runDetails.set(runId, data);
   const run = data.run;
+  const previousStatus = state.runStatuses.get(run.id);
   state.selectedRunId = run.id;
+  state.runStatuses.set(run.id, run.status);
 
   els.currentRun.textContent = `#${run.id}`;
   els.runStatus.textContent = `${statusLabel(run.status)} · ${run.finding_count || 0}/${run.candidate_count || 0}`;
@@ -454,12 +468,18 @@ async function loadRun(runId) {
   showActivity(run, data.logs || []);
   renderMethodology(run.methodology || []);
   renderLogs(data.logs || []);
-  await loadRuns();
+  renderRunFindings(data.findings || [], run);
+  renderRuns();
 
-  if (runningStatus(run.status)) startPolling();
+  if (runningStatus(run.status)) {
+    if (!state.pollTimer) startPolling();
+  }
   else {
     stopPolling();
-    await loadCases();
+    if (previousStatus && runningStatus(previousStatus)) {
+      await loadRuns();
+      await loadCases();
+    }
   }
 }
 
@@ -504,7 +524,12 @@ function renderMethodology(items) {
 }
 
 function formatMeta(meta) {
-  if (!meta || !Object.keys(meta).length) return "";
+  const parts = formatMetaParts(meta);
+  return parts.length ? ` · ${parts.join(" · ")}` : "";
+}
+
+function formatMetaParts(meta) {
+  if (!meta || !Object.keys(meta).length) return [];
   const parts = [];
   if (meta.name) parts.push(`источник: ${meta.name}`);
   if (meta.category) parts.push(`категория: ${meta.category}`);
@@ -526,7 +551,7 @@ function formatMeta(meta) {
   if (meta.risk_score !== undefined) parts.push(`риск: ${meta.risk_score}`);
   if (meta.status_code !== undefined && meta.status_code !== null) parts.push(`HTTP: ${meta.status_code}`);
   if (meta.error) parts.push(`ошибка: ${meta.error}`);
-  return parts.length ? ` · ${parts.join(" · ")}` : "";
+  return parts;
 }
 
 function renderLogs(logs) {
@@ -538,11 +563,15 @@ function renderLogs(logs) {
   }
   els.logsList.innerHTML = logs.slice(-80).map((log) => {
     const cls = log.level === "error" ? "error" : log.level === "warning" ? "warning" : "";
+    const meta = formatMetaParts(log.meta);
     return `
       <div class="log-line ${cls}">
-        <span>${escapeHtml(formatDateTime(log.timestamp))}</span>
-        <strong>${escapeHtml(log.level)}</strong>
-        <p>${escapeHtml(log.message)}${escapeHtml(formatMeta(log.meta))}</p>
+        <span class="log-time">${escapeHtml(formatDateTime(log.timestamp))}</span>
+        <strong class="log-level">${escapeHtml(log.level)}</strong>
+        <div class="log-body">
+          <p>${escapeHtml(log.message)}</p>
+          ${meta.length ? `<div class="log-meta">${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
+        </div>
       </div>`;
   }).join("");
   els.logsList.scrollTop = els.logsList.scrollHeight;
@@ -570,13 +599,89 @@ function renderCaseStats(cases) {
 }
 
 function renderCases(cases) {
-  renderEvidenceCards(cases.slice(0, 6));
   if (!cases.length) {
     els.casesList.innerHTML = '<div class="empty-state">В выбранном фильтре нет рабочих доменов.</div>';
     return;
   }
   els.casesList.innerHTML = cases.map(domainRow).join("");
   bindCaseOpenButtons(els.casesList);
+}
+
+function renderRunFindings(findings, run) {
+  if (!els.runFindingsList) return;
+  const count = findings.length;
+  if (els.runFindingsCount) {
+    const label = count === 1 ? "1 находка" : `${count} находок`;
+    els.runFindingsCount.textContent = run ? `#${run.id} · ${label}` : label;
+  }
+  if (!count) {
+    const status = run ? statusLabel(run.status) : "ожидание";
+    els.runFindingsList.innerHTML = `
+      <div class="empty-state">
+        В выбранном запуске пока нет доменов в отчете. Статус: ${escapeHtml(status)}.
+      </div>`;
+    return;
+  }
+  els.runFindingsList.innerHTML = findings.map(runFindingRow).join("");
+  els.runFindingsList.querySelectorAll("[data-run-finding-domain]").forEach((button) => {
+    button.addEventListener("click", () => openCaseForFinding(
+      button.dataset.runFindingDomain,
+      Number(button.dataset.runFindingCase || 0),
+    ).catch(console.error));
+  });
+}
+
+function runFindingRow(item) {
+  const risk = Number(item.risk_score || item.best_risk_score || 0);
+  const category = normalizeCategory(item.category);
+  const evidence = item.evidence || {};
+  const reason = (item.reasons || [])[0] || item.verdict || "Зафиксированы технические признаки риска.";
+  const source = formatSource((item.sources || [])[0]) || evidence.search_source || evidence.access_origin || "OSINT/ML";
+  const domain = item.domain || item.normalized_domain || item.url || "-";
+  return `
+    <article class="run-finding-row">
+      <div class="run-finding-main">
+        <button data-run-finding-domain="${escapeHtml(item.normalized_domain || domain)}" data-run-finding-case="${Number(item.case_id || 0)}" type="button">${escapeHtml(domain)}</button>
+        <small>${escapeHtml(item.final_url || item.url || item.title || "URL не указан")}</small>
+      </div>
+      <div class="run-finding-meta">
+        <span class="category-badge ${category}">${escapeHtml(categoryLabel(item.category))}</span>
+        <span class="risk-badge ${riskClass(risk)}">${risk}%</span>
+        ${item.status_code ? `<span class="mini-pill">HTTP ${escapeHtml(item.status_code)}</span>` : ""}
+        ${evidence.response_time_ms ? `<span class="mini-pill">${escapeHtml(formatResponseTime(evidence.response_time_ms))}</span>` : ""}
+      </div>
+      <p>${escapeHtml(reason)}</p>
+      <small class="run-finding-source">${escapeHtml(String(source))}</small>
+    </article>`;
+}
+
+function formatSource(source) {
+  if (!source) return "";
+  if (typeof source === "string") return source;
+  if (typeof source === "object") return source.title || source.url || source.name || "";
+  return String(source);
+}
+
+async function openCaseForFinding(domain, caseId = 0) {
+  if (caseId) {
+    await openCase(caseId);
+    return;
+  }
+  const normalized = String(domain || "").toLowerCase();
+  let match = state.cases.find((item) => (
+    String(item.normalized_domain || item.domain || "").toLowerCase() === normalized
+    || String(item.domain || "").toLowerCase() === normalized
+  ));
+  if (!match) {
+    await loadCases();
+    match = state.cases.find((item) => (
+      String(item.normalized_domain || item.domain || "").toLowerCase() === normalized
+      || String(item.domain || "").toLowerCase() === normalized
+    ));
+  }
+  if (match) {
+    await openCase(match.id);
+  }
 }
 
 function bindCaseOpenButtons(root = document) {
@@ -1015,7 +1120,7 @@ function closeDrawer() {
 function startPolling() {
   stopPolling();
   state.pollTimer = setInterval(() => {
-    if (state.selectedRunId) loadRun(state.selectedRunId).catch(console.error);
+    if (state.selectedRunId) loadRun(state.selectedRunId, { force: true }).catch(console.error);
   }, 4000);
 }
 

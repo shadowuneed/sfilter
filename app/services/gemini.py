@@ -49,6 +49,10 @@ class GeminiClient:
         return bool(self.settings.gemini_api_keys)
 
     @property
+    def key_hashes(self) -> list[str]:
+        return [self._key_hash(key) for key in self.settings.gemini_api_keys]
+
+    @property
     def key_format_ok(self) -> bool:
         return bool(self.settings.gemini_api_keys) and not self.key_format_warnings
 
@@ -192,7 +196,7 @@ class GeminiClient:
             body = f"{body[:360]}..."
         message = f"Gemini API {status} {reason} (model={self.settings.gemini_model}, key_hash={key_hash})"
         if status in AUTH_STATUS_CODES:
-            message += "; ключ отклонен Google. Проверьте, что этот ключ активен для Gemini API, не обрезан, не вставлен с кавычками/Bearer и не является unrestricted standard key, который Google может отклонять"
+            message += "; ключ отклонен Google. В переменной GEMINI_API_KEYS должен быть API key из Google AI Studio / Generative Language API, без Bearer, кавычек и переносов. Vertex/OAuth/service-account токены здесь не подходят."
             return GeminiAPIError(
                 message,
                 status_code=status,
@@ -229,7 +233,7 @@ class GeminiClient:
             for offset in range(key_count):
                 index = (self._next_key_index + offset) % key_count
                 api_key = self.settings.gemini_api_keys[index]
-                key_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
+                key_hash = self._key_hash(api_key)
                 row = self.db.usage_row(key_hash) or {
                     "day": today,
                     "day_count": 0,
@@ -261,6 +265,10 @@ class GeminiClient:
             time.sleep(best_wait)
             return self._reserve_key()
         raise GeminiQuotaError("Gemini local daily quota exhausted for all configured keys")
+
+    @staticmethod
+    def _key_hash(api_key: str) -> str:
+        return hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
 
     @staticmethod
     def _extract_text(raw: dict[str, Any]) -> str:

@@ -146,6 +146,7 @@ def health() -> dict[str, Any]:
         "gemini_key_warnings": gemini.key_format_warnings,
         "gemini_model": settings.gemini_model,
         "gemini_key_count": len(settings.gemini_api_keys),
+        "gemini_key_hashes": gemini.key_hashes,
         "rpm_limit": settings.gemini_rpm_limit,
         "rpd_limit": settings.gemini_rpd_limit,
         "auth_required": settings.auth_required,

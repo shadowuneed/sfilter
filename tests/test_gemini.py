@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import unittest
 
 from app.config import Settings
@@ -23,6 +24,12 @@ class GeminiConfigTests(unittest.TestCase):
         self.assertFalse(client.key_format_ok)
         self.assertTrue(any("quotes" in warning for warning in client.key_format_warnings))
         self.assertTrue(any("Bearer" in warning for warning in client.key_format_warnings))
+
+    def test_key_hashes_are_safe_and_stable(self) -> None:
+        key = "gsk_live_abcdefghijklmnopqrstuvwxyz1234567890"
+        client = client_for([key])
+
+        self.assertEqual(client.key_hashes, [hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]])
 
 
 if __name__ == "__main__":

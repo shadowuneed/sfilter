@@ -526,7 +526,14 @@ class Database:
                 rows = conn.execute("SELECT * FROM findings ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT * FROM findings WHERE run_id=? ORDER BY risk_score DESC, id ASC LIMIT ?",
+                    """
+                    SELECT f.*, c.id AS case_id, c.status AS case_status, c.saved, c.archived
+                    FROM findings f
+                    LEFT JOIN cases c ON c.normalized_domain=f.normalized_domain
+                    WHERE f.run_id=?
+                    ORDER BY f.risk_score DESC, f.id ASC
+                    LIMIT ?
+                    """,
                     (run_id, limit),
                 ).fetchall()
             return [self._finding_to_dict(row) for row in rows]
@@ -580,7 +587,12 @@ class Database:
     def list_logs(self, run_id: int, limit: int = 300) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM logs WHERE run_id=? ORDER BY id ASC LIMIT ?",
+                """
+                SELECT * FROM (
+                    SELECT * FROM logs WHERE run_id=? ORDER BY id DESC LIMIT ?
+                ) recent
+                ORDER BY id ASC
+                """,
                 (run_id, limit),
             ).fetchall()
             return [

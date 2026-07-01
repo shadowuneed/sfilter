@@ -139,6 +139,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .trend-band,
 .domain-band,
 .evidence-band,
+.run-findings-band,
 .activity-panel,
 .audit-panel {
   background: var(--band);
@@ -395,6 +396,7 @@ select:focus {
 .trend-band,
 .domain-band,
 .evidence-band,
+.run-findings-band,
 .audit-panel {
   padding: 22px;
 }
@@ -743,6 +745,77 @@ select:focus {
   font-weight: 800;
 }
 
+.run-findings-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+}
+
+.run-finding-row {
+  min-height: 168px;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.88), rgba(8, 13, 20, 0.94));
+  padding: 14px;
+}
+
+.run-finding-main {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.run-finding-main button {
+  width: fit-content;
+  max-width: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 900;
+  text-align: left;
+  word-break: break-word;
+}
+
+.run-finding-main button:hover { color: var(--blue); }
+
+.run-finding-main small,
+.run-finding-source {
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.run-finding-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
+}
+
+.run-finding-row p {
+  margin: 0;
+  color: #dbe3ee;
+  line-height: 1.45;
+}
+
+.mini-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.72);
+  color: var(--muted);
+  padding: 5px 9px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .audit-grid {
   display: grid;
   grid-template-columns: minmax(320px, 0.42fr) minmax(0, 1fr);
@@ -838,28 +911,72 @@ select:focus {
 .logs-list {
   display: grid;
   gap: 8px;
-  max-height: 380px;
+  max-height: 520px;
   overflow: auto;
 }
 
 .log-line {
   display: grid;
-  grid-template-columns: 140px 82px minmax(0, 1fr);
-  gap: 10px;
+  grid-template-columns: 132px 78px minmax(0, 1fr);
+  gap: 12px;
   align-items: start;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #0b0f15;
-  padding: 10px;
+  background: rgba(8, 13, 20, 0.92);
+  padding: 12px;
   color: #dbe3ee;
   font-size: 12px;
 }
 
-.log-line span { color: var(--muted); }
-.log-line strong { text-transform: uppercase; }
-.log-line p { margin: 0; line-height: 1.38; word-break: break-word; }
+.log-time {
+  color: #bfdbfe;
+  white-space: nowrap;
+}
+
+.log-level {
+  width: fit-content;
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.14);
+  color: #bfdbfe;
+  padding: 4px 9px;
+  text-transform: uppercase;
+}
+
+.log-body {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.log-body p {
+  margin: 0;
+  line-height: 1.42;
+  word-break: break-word;
+}
+
+.log-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.log-meta span {
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.78);
+  color: var(--muted);
+  padding: 4px 8px;
+  word-break: break-word;
+}
+
 .log-line.warning { border-color: rgba(245, 158, 11, 0.35); background: var(--amber-soft); }
 .log-line.error { border-color: rgba(239, 68, 68, 0.35); background: var(--red-soft); }
+.log-line.warning .log-level { background: rgba(245, 158, 11, 0.16); color: #fcd34d; }
+.log-line.error .log-level { background: rgba(239, 68, 68, 0.18); color: #fecaca; }
 
 .empty-state {
   min-height: 84px;
@@ -1207,6 +1324,7 @@ a.evidence-link:hover,
   .status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .source-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .mini-tech-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .run-findings-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .domain-head { display: none; }
   .domain-row {
     grid-template-columns: 1fr;
@@ -1223,6 +1341,7 @@ a.evidence-link:hover,
   .scan-band,
   .trend-band,
   .domain-band,
+  .run-findings-band,
   .audit-panel,
   .analysis-drawer { padding: 14px; }
   .scan-copy h1 { font-size: 25px; }
@@ -1236,6 +1355,7 @@ a.evidence-link:hover,
   .tech-grid,
   .evidence-grid,
   .mini-tech-grid,
+  .run-findings-list,
   .activity-steps { grid-template-columns: 1fr; }
   .activity-panel {
     width: calc(100% - 24px);
