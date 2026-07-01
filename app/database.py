@@ -368,7 +368,7 @@ class Database:
             SET archived=1, updated_at=?
             WHERE saved=0 AND latest_finding_id IN (
                 SELECT id FROM findings
-                WHERE html_path IS NULL OR html_path='' OR status_code IS NULL OR status_code < 200 OR status_code >= 400
+                WHERE status_code IS NULL OR status_code < 200 OR status_code >= 400
             )
             """,
             (utc_now(),),

@@ -88,6 +88,7 @@ class EvidenceResult:
     page_size_bytes: int | None = None
     redirect_count: int = 0
     redirect_chain: list[dict[str, Any]] = field(default_factory=list)
+    tls_verified_fetch: bool | None = None
     access_origin: str | None = None
     blocked_by_policy: bool = False
     domain_info: dict[str, Any] = field(default_factory=dict)
@@ -107,6 +108,7 @@ class EvidenceResult:
             "page_size_bytes": self.page_size_bytes,
             "redirect_count": self.redirect_count,
             "redirect_chain": self.redirect_chain,
+            "tls_verified_fetch": self.tls_verified_fetch,
             "access_origin": self.access_origin,
             "blocked_by_policy": self.blocked_by_policy,
             "domain": self.domain_info,
@@ -128,38 +130,62 @@ class EvidenceCollector:
         candidates = self._url_candidates(normalized)
         headers = {"User-Agent": self.settings.user_agent}
 
+        client_options = {
+            "follow_redirects": True,
+            "timeout": self.settings.request_timeout_seconds,
+            "headers": headers,
+            "proxy": self.settings.kz_proxy_url,
+        }
+
         async with httpx.AsyncClient(
-            follow_redirects=True,
-            timeout=self.settings.request_timeout_seconds,
-            headers=headers,
+            **client_options,
             verify=True,
-            proxy=self.settings.kz_proxy_url,
-        ) as client:
+        ) as client, httpx.AsyncClient(
+            **client_options,
+            verify=False,
+        ) as insecure_client:
             result.dns.update(await self._resolve_mx(client, result.domain))
             result.domain_info = await self._domain_rdap(client, result.domain)
             for candidate in candidates:
+                response = None
+                verified_fetch = candidate.startswith("https://")
                 try:
                     started = time.perf_counter()
                     response = await client.get(candidate)
-                    result.response_time_ms = int((time.perf_counter() - started) * 1000)
-                    result.status_code = response.status_code
-                    result.final_url = str(response.url)
-                    result.page_size_bytes = len(response.content)
-                    result.redirect_count = len(response.history)
-                    result.redirect_chain = [
-                        {"status_code": item.status_code, "url": str(item.url)}
-                        for item in response.history[:10]
-                    ]
-                    result.active = 200 <= response.status_code < 400
-                    content_type = response.headers.get("content-type", "")
-                    if "text/html" in content_type or response.text:
-                        self._parse_html(result, response.text[:1_500_000], run_id)
-                    if response.status_code == 451 or self._looks_blocked(result):
-                        result.blocked_by_policy = True
-                        result.active = False
-                    break
                 except Exception as exc:  # noqa: BLE001 - keep evidence of network failures.
                     result.errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
+                    try:
+                        started = time.perf_counter()
+                        response = await insecure_client.get(candidate)
+                        verified_fetch = False
+                        result.errors.append(
+                            f"{candidate}: strict TLS/redirect check failed; fetched with certificate verification disabled"
+                        )
+                    except Exception as fallback_exc:  # noqa: BLE001
+                        result.errors.append(
+                            f"{candidate}: fallback without TLS verification failed: "
+                            f"{type(fallback_exc).__name__}: {fallback_exc}"
+                        )
+                        continue
+
+                result.response_time_ms = int((time.perf_counter() - started) * 1000)
+                result.status_code = response.status_code
+                result.final_url = str(response.url)
+                result.page_size_bytes = len(response.content)
+                result.redirect_count = len(response.history)
+                result.redirect_chain = [
+                    {"status_code": item.status_code, "url": str(item.url)}
+                    for item in response.history[:10]
+                ]
+                result.tls_verified_fetch = verified_fetch if str(response.url).startswith("https://") else None
+                result.active = 200 <= response.status_code < 400
+                content_type = response.headers.get("content-type", "")
+                if "text/html" in content_type or response.text:
+                    self._parse_html(result, response.text[:1_500_000], run_id)
+                if response.status_code == 451 or self._looks_blocked(result):
+                    result.blocked_by_policy = True
+                    result.active = False
+                break
 
         return result
 

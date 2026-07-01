@@ -760,8 +760,8 @@ class Investigator:
                 "status_code": evidence.status_code,
             }
         status_code = int(evidence.status_code or 0)
-        if not evidence.active or not evidence.final_url or not evidence.html_path or status_code < 200 or status_code >= 400:
-            skip_reason = "сайт не открылся с нормальным HTTP 2xx/3xx или не дал HTML для фиксации"
+        if not evidence.active or not evidence.final_url or status_code < 200 or status_code >= 400:
+            skip_reason = "сайт не открылся с нормальным HTTP 2xx/3xx"
             if evidence.blocked_by_policy:
                 skip_reason = "страница похожа на блокировку доступа и не считается рабочей из Казахстана"
             return {
@@ -771,6 +771,13 @@ class Investigator:
                 "domain": domain,
                 "status_code": evidence.status_code,
             }
+        if not evidence.html_path:
+            self.db.add_log(
+                run_id,
+                "warning",
+                "HTML не сохранен, но сайт добавлен по HTTP/DNS/TLS данным",
+                {"domain": domain, "status_code": evidence.status_code, "page_size_bytes": evidence.page_size_bytes},
+            )
 
         screenshot_path = None
         screenshot_error = None
@@ -861,6 +868,10 @@ class Investigator:
                 reasons.append(f"Screenshot saved with warning: {screenshot_error}")
             else:
                 reasons.append(f"Screenshot not saved: {screenshot_error}")
+        if not evidence.html_path:
+            reasons.append("HTML не сохранен, но сайт ответил нормальным HTTP-кодом; DNS/TLS/скорость/редиректы зафиксированы.")
+        if evidence.tls and not evidence.tls.get("valid"):
+            reasons.append("SSL/TLS сертификат отсутствует или недействителен; сайт все равно зафиксирован как рабочий по HTTP-доступности.")
 
         return {
             "url": candidate.url,

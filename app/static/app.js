@@ -11,6 +11,8 @@ const state = {
   caseDetails: new Map(),
   runDetails: new Map(),
   runStatuses: new Map(),
+  chartPoints: [],
+  chartHoverIndex: null,
 };
 
 const AUTO_RUN_CANDIDATES = 50;
@@ -36,10 +38,15 @@ const els = {
   highRiskCount: document.getElementById("highRiskCount"),
   evidenceCount: document.getElementById("evidenceCount"),
   trendChart: document.getElementById("trendChart"),
+  chartTooltip: document.getElementById("chartTooltip"),
   caseSearch: document.getElementById("caseSearch"),
   categoryFilter: document.getElementById("categoryFilter"),
   caseMinRisk: document.getElementById("caseMinRisk"),
   caseFilterBtn: document.getElementById("caseFilterBtn"),
+  exportCasesCsvBtn: document.getElementById("exportCasesCsvBtn"),
+  exportCasesXlsxBtn: document.getElementById("exportCasesXlsxBtn"),
+  exportRunCsvBtn: document.getElementById("exportRunCsvBtn"),
+  exportRunXlsxBtn: document.getElementById("exportRunXlsxBtn"),
   casesList: document.getElementById("casesList"),
   runFindingsList: document.getElementById("runFindingsList"),
   runFindingsCount: document.getElementById("runFindingsCount"),
@@ -108,6 +115,34 @@ async function api(path, options = {}) {
     throw new Error(text || response.statusText);
   }
   return response.json();
+}
+
+async function downloadFile(path) {
+  const headers = {};
+  if (state.apiToken) {
+    headers.Authorization = `Bearer ${state.apiToken}`;
+  }
+  const response = await fetch(path, { headers });
+  if (response.status === 401) {
+    const text = await response.text();
+    showAuth(text || response.statusText);
+    throw new Error(text || response.statusText);
+  }
+  if (!response.ok) {
+    throw new Error(await response.text() || response.statusText);
+  }
+  const blob = await response.blob();
+  const disposition = response.headers.get("content-disposition") || "";
+  const match = disposition.match(/filename="?([^"]+)"?/i);
+  const filename = match?.[1] || path.split("/").pop()?.split("?")[0] || "argus-export";
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function normalizeAuthMessage(message) {
@@ -592,6 +627,23 @@ async function loadCases() {
   drawTrend(state.cases);
 }
 
+async function exportCurrentCases(format) {
+  const ids = state.filteredCases.map((item) => item.id).filter(Boolean);
+  if (!ids.length) {
+    alert("В текущем реестре нет доменов для экспорта.");
+    return;
+  }
+  await downloadFile(`/api/cases/export.${format}?ids=${encodeURIComponent(ids.join(","))}`);
+}
+
+async function exportSelectedRun(format) {
+  if (!state.selectedRunId) {
+    alert("Выберите запуск в истории для экспорта.");
+    return;
+  }
+  await downloadFile(`/api/runs/${state.selectedRunId}/export.${format}`);
+}
+
 function renderCaseStats(cases) {
   els.activeCaseCount.textContent = cases.length;
   els.highRiskCount.textContent = cases.filter((item) => Number(item.best_risk_score || 0) >= 70).length;
@@ -832,6 +884,13 @@ function drawTrend(cases) {
   const plot = { left: 54, right: 18, top: 18, bottom: 54 };
   const plotWidth = width - plot.left - plot.right;
   const plotHeight = height - plot.top - plot.bottom;
+  state.chartPoints = days.map((date, index) => {
+    const values = Object.fromEntries(series.map((item) => [item.category, item.values[index]]));
+    const x = plot.left + (plotWidth * index) / Math.max(1, days.length - 1);
+    const maxAtPoint = Math.max(...Object.values(values));
+    const y = plot.top + plotHeight - (plotHeight * maxAtPoint) / axisMax;
+    return { date, index, x, y, values };
+  });
 
   ctx.lineWidth = 1;
   ctx.strokeStyle = "rgba(148, 163, 184, 0.16)";
@@ -878,6 +937,76 @@ function drawTrend(cases) {
       ctx.fill();
     });
   });
+
+  drawChartHover(ctx, plot, plotHeight, axisMax);
+}
+
+function drawChartHover(ctx, plot, plotHeight, axisMax) {
+  const hover = state.chartHoverIndex === null ? null : state.chartPoints[state.chartHoverIndex];
+  if (!hover) {
+    if (els.chartTooltip) els.chartTooltip.hidden = true;
+    return;
+  }
+  const canvas = els.trendChart;
+  const height = 320;
+  ctx.save();
+  ctx.strokeStyle = "rgba(226, 232, 240, 0.28)";
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 5]);
+  ctx.beginPath();
+  ctx.moveTo(hover.x, plot.top);
+  ctx.lineTo(hover.x, height - plot.bottom);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  Object.entries(hover.values).forEach(([category, value]) => {
+    const y = plot.top + plotHeight - (plotHeight * Number(value || 0)) / axisMax;
+    ctx.fillStyle = categoryColors[category];
+    ctx.beginPath();
+    ctx.arc(hover.x, y, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#0b0f15";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  });
+  ctx.restore();
+
+  if (!els.chartTooltip || !canvas) return;
+  const title = hover.date.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" });
+  els.chartTooltip.innerHTML = `
+    <strong>${escapeHtml(title)}</strong>
+    <span><i class="casino"></i>${escapeHtml(categoryLabel("casino"))}: ${hover.values.casino}</span>
+    <span><i class="phishing"></i>${escapeHtml(categoryLabel("phishing"))}: ${hover.values.phishing}</span>
+    <span><i class="pyramid"></i>${escapeHtml(categoryLabel("pyramid"))}: ${hover.values.pyramid}</span>
+  `;
+  els.chartTooltip.hidden = false;
+  const left = Math.min(Math.max(12, hover.x + 12), canvas.getBoundingClientRect().width - 180);
+  const top = Math.max(12, hover.y - 8);
+  els.chartTooltip.style.left = `${left}px`;
+  els.chartTooltip.style.top = `${top}px`;
+}
+
+function handleChartMove(event) {
+  if (!state.chartPoints.length || !els.trendChart) return;
+  const rect = els.trendChart.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  let nearest = 0;
+  let distance = Number.POSITIVE_INFINITY;
+  state.chartPoints.forEach((point, index) => {
+    const nextDistance = Math.abs(point.x - x);
+    if (nextDistance < distance) {
+      nearest = index;
+      distance = nextDistance;
+    }
+  });
+  state.chartHoverIndex = nearest;
+  drawTrend(state.cases);
+}
+
+function clearChartHover() {
+  state.chartHoverIndex = null;
+  if (els.chartTooltip) els.chartTooltip.hidden = true;
+  drawTrend(state.cases);
 }
 
 async function openCase(caseId) {
@@ -1145,6 +1274,10 @@ els.categoryFilter.addEventListener("change", loadCases);
 els.caseSearch.addEventListener("keydown", (event) => {
   if (event.key === "Enter") loadCases();
 });
+els.exportCasesCsvBtn?.addEventListener("click", () => exportCurrentCases("csv").catch((error) => alert(`Не удалось скачать CSV: ${error.message}`)));
+els.exportCasesXlsxBtn?.addEventListener("click", () => exportCurrentCases("xlsx").catch((error) => alert(`Не удалось скачать Excel: ${error.message}`)));
+els.exportRunCsvBtn?.addEventListener("click", () => exportSelectedRun("csv").catch((error) => alert(`Не удалось скачать CSV запуска: ${error.message}`)));
+els.exportRunXlsxBtn?.addEventListener("click", () => exportSelectedRun("xlsx").catch((error) => alert(`Не удалось скачать Excel запуска: ${error.message}`)));
 els.drawerClose.addEventListener("click", closeDrawer);
 els.drawerOverlay.addEventListener("click", (event) => {
   if (event.target === els.drawerOverlay) closeDrawer();
@@ -1153,6 +1286,8 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeDrawer();
 });
 window.addEventListener("resize", () => drawTrend(state.cases));
+els.trendChart?.addEventListener("mousemove", handleChartMove);
+els.trendChart?.addEventListener("mouseleave", clearChartHover);
 
 els.authForm?.addEventListener("submit", async (event) => {
   event.preventDefault();

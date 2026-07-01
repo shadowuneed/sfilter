@@ -131,6 +131,7 @@
         </div>
         <div class="chart-wrap">
           <canvas id="trendChart" width="1200" height="320" aria-label="График динамики обнаружений"></canvas>
+          <div id="chartTooltip" class="chart-tooltip" hidden></div>
         </div>
       </section>
 
@@ -151,6 +152,8 @@
             </select>
             <input id="caseMinRisk" type="number" min="0" max="100" placeholder="Мин. риск">
             <button id="caseFilterBtn" class="secondary-btn" type="button">Фильтр</button>
+            <button id="exportCasesCsvBtn" class="ghost-btn" type="button">CSV</button>
+            <button id="exportCasesXlsxBtn" class="ghost-btn" type="button">Excel</button>
           </div>
         </div>
 
@@ -175,7 +178,11 @@
             <span class="eyebrow">Результаты запуска</span>
             <h2>Домены выбранной проверки</h2>
           </div>
-          <span id="runFindingsCount" class="summary-pill">0 находок</span>
+          <div class="section-actions">
+            <span id="runFindingsCount" class="summary-pill">0 находок</span>
+            <button id="exportRunCsvBtn" class="ghost-btn" type="button">CSV запуска</button>
+            <button id="exportRunXlsxBtn" class="ghost-btn" type="button">Excel запуска</button>
+          </div>
         </div>
         <div id="runFindingsList" class="run-findings-list">
           <div class="empty-state">Выберите запуск в истории, чтобы увидеть найденные в нем домены.</div>

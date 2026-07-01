@@ -80,6 +80,37 @@ class DatabaseBackendTests(unittest.TestCase):
             self.assertEqual(len(history), 2)
             self.assertEqual([item["title"] for item in history], ["Example 2", "Example 1"])
 
+    def test_active_http_finding_without_html_stays_in_registry_after_backfill(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "argus.db"
+            db = Database(path)
+            db.init()
+            run_id = db.create_run(seed_query="no ssl", max_candidates=1, take_screenshots=True)
+            db.insert_finding(
+                run_id,
+                {
+                    "url": "http://no-ssl.example",
+                    "final_url": "http://no-ssl.example",
+                    "domain": "no-ssl.example",
+                    "normalized_domain": "no-ssl.example",
+                    "title": None,
+                    "category": "suspicious",
+                    "verdict": "suspicious",
+                    "risk_score": 72,
+                    "active": True,
+                    "status_code": 200,
+                    "html_path": None,
+                    "screenshot_path": None,
+                },
+            )
+
+            reopened = Database(path)
+            reopened.init()
+            cases = reopened.list_cases(archived=False)
+
+            self.assertEqual(len(cases), 1)
+            self.assertEqual(cases[0]["normalized_domain"], "no-ssl.example")
+
 
 if __name__ == "__main__":
     unittest.main()
