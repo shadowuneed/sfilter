@@ -433,6 +433,7 @@ select:focus {
 
 .activity-panel.done { border-color: rgba(16, 185, 129, 0.42); }
 .activity-panel.failed { border-color: rgba(239, 68, 68, 0.42); }
+.activity-panel.interrupted { border-color: rgba(245, 158, 11, 0.42); }
 
 .activity-title {
   display: grid;
@@ -457,7 +458,8 @@ select:focus {
 }
 
 .activity-panel.done .activity-spinner,
-.activity-panel.failed .activity-spinner {
+.activity-panel.failed .activity-spinner,
+.activity-panel.interrupted .activity-spinner {
   animation: none;
   border-color: var(--line-strong);
   border-top-color: var(--line-strong);
@@ -980,9 +982,11 @@ select:focus {
   color: var(--text);
   padding: 10px;
   text-align: left;
+  cursor: pointer;
 }
 
 .run-item.active { border-color: var(--blue); background: var(--blue-soft); }
+.run-item:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .run-item strong,
 .run-item small { display: block; }
 .run-item small { color: var(--muted); font-size: 12px; margin-top: 3px; }
@@ -996,6 +1000,30 @@ select:focus {
 }
 .run-signal.live { background: var(--blue); }
 .run-signal.bad { background: var(--red); }
+.run-signal.warn { background: var(--amber); }
+
+.run-state > span {
+  display: inline-flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+
+.run-stop-btn {
+  min-height: 28px;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  border-radius: 7px;
+  background: rgba(239, 68, 68, 0.12);
+  color: #fecaca;
+  padding: 4px 9px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.run-stop-btn:hover {
+  border-color: rgba(239, 68, 68, 0.72);
+  background: rgba(239, 68, 68, 0.2);
+}
 
 .summary-pill {
   min-height: 34px;

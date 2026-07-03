@@ -111,6 +111,21 @@ class DatabaseBackendTests(unittest.TestCase):
             self.assertEqual(len(cases), 1)
             self.assertEqual(cases[0]["normalized_domain"], "no-ssl.example")
 
+    def test_stale_running_runs_are_marked_interrupted_not_failed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "argus.db")
+            db.init()
+            run_id = db.create_run(seed_query="test", max_candidates=1, take_screenshots=False)
+            db.update_run(run_id, status="running")
+
+            changed = db.mark_stale_runs_interrupted()
+            run = db.get_run(run_id)
+
+            self.assertEqual(changed, 1)
+            assert run is not None
+            self.assertEqual(run["status"], "interrupted")
+            self.assertIn("прерван", run["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

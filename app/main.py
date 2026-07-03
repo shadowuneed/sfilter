@@ -21,7 +21,7 @@ from app.services.kz_access import check_kz_proxy
 settings = get_settings()
 db = Database(settings.database_url or settings.database_path)
 db.init()
-db.mark_stale_runs_failed()
+db.mark_stale_runs_interrupted()
 gemini = GeminiClient(settings, db)
 investigator = Investigator(settings, db, gemini)
 exporter = Exporter(settings, db)
@@ -66,6 +66,23 @@ def _bearer_token(authorization: str | None) -> str | None:
     if scheme.lower() != "bearer" or not token.strip():
         return None
     return token.strip()
+
+
+def _thread_entry(run_id: int, target: Any, args: tuple[Any, ...]) -> None:
+    try:
+        target(*args)
+    finally:
+        cancel_events.pop(run_id, None)
+
+
+def _start_run_thread(run_id: int, name: str, target: Any, *args: Any) -> None:
+    thread = threading.Thread(
+        target=_thread_entry,
+        args=(run_id, target, args),
+        daemon=True,
+        name=name,
+    )
+    thread.start()
 
 
 @app.middleware("http")
@@ -193,13 +210,16 @@ def create_run(request: RunRequest) -> dict[str, Any]:
     )
     cancel_event = threading.Event()
     cancel_events[run_id] = cancel_event
-    thread = threading.Thread(
-        target=investigator.run,
-        args=(run_id, request.seed_query, max_candidates, request.take_screenshots, cancel_event),
-        daemon=True,
-        name=f"argus-run-{run_id}",
+    _start_run_thread(
+        run_id,
+        f"argus-run-{run_id}",
+        investigator.run,
+        run_id,
+        request.seed_query,
+        max_candidates,
+        request.take_screenshots,
+        cancel_event,
     )
-    thread.start()
     return {"run_id": run_id, "status": "queued"}
 
 
@@ -213,13 +233,16 @@ def manual_check(request: ManualCheckRequest) -> dict[str, Any]:
     )
     cancel_event = threading.Event()
     cancel_events[run_id] = cancel_event
-    thread = threading.Thread(
-        target=investigator.run_manual,
-        args=(run_id, request.target, request.category, request.take_screenshots, cancel_event),
-        daemon=True,
-        name=f"argus-manual-{run_id}",
+    _start_run_thread(
+        run_id,
+        f"argus-manual-{run_id}",
+        investigator.run_manual,
+        run_id,
+        request.target,
+        request.category,
+        request.take_screenshots,
+        cancel_event,
     )
-    thread.start()
     return {"run_id": run_id, "status": "queued"}
 
 

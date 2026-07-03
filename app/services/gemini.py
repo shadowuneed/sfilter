@@ -89,13 +89,15 @@ class GeminiClient:
         use_search: bool = True,
         use_url_context: bool = False,
         temperature: float = 0.2,
+        max_attempts: int | None = None,
+        retry_sleep: bool = True,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         if not self.available:
             raise GeminiQuotaError("GEMINI_API_KEYS is empty")
 
         last_error: Exception | None = None
         key_count = len(self.settings.gemini_api_keys)
-        attempts = max(key_count * 2, 3)
+        attempts = max(1, max_attempts if max_attempts is not None else max(key_count * 2, 3))
         auth_failures = 0
 
         for attempt in range(attempts):
@@ -120,14 +122,14 @@ class GeminiClient:
                     continue
                 if not exc.retryable:
                     raise exc
-                if attempt < attempts - 1:
+                if retry_sleep and attempt < attempts - 1:
                     self._sleep_before_retry(attempt, exc.status_code)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_error = GeminiAPIError(
                     f"Gemini connection error ({type(exc).__name__}): {redact_string(str(exc))}",
                     retryable=True,
                 )
-                if attempt < attempts - 1:
+                if retry_sleep and attempt < attempts - 1:
                     self._sleep_before_retry(attempt, None)
 
         if last_error:
@@ -269,8 +271,7 @@ class GeminiClient:
                 return api_key, key_hash
 
         if best_wait is not None and best_wait <= 65:
-            time.sleep(best_wait)
-            return self._reserve_key()
+            raise GeminiQuotaError(f"Gemini local minute quota exhausted; retry in about {best_wait}s")
         raise GeminiQuotaError("Gemini local daily quota exhausted for all configured keys")
 
     @staticmethod

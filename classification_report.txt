@@ -37,9 +37,9 @@ Data audit
     "limit_per_class": 2500,
     "augment_curated_multiplier": 60,
     "augmented_rows": {
-      "casino": 2820,
-      "pyramid": 1680,
-      "legit": 300
+      "legit": 900,
+      "casino": 3720,
+      "pyramid": 2160
     }
   }
 }
@@ -47,51 +47,51 @@ Data audit
 Class distribution
 ------------------
 {
-  "pyramid": 1358,
+  "casino": 2500,
   "suspicious": 2500,
-  "casino": 2305,
-  "phishing": 2500,
-  "legit": 2500
+  "pyramid": 1764,
+  "legit": 2500,
+  "phishing": 2500
 }
 
 Split
 -----
-train: 7814
-validation: 1674
-test: 1675
+train: 8234
+validation: 1765
+test: 1765
 
 Metrics
 -------
-F1-macro, classes present in this run: 0.8882
-F1-macro, requested 5-class label set: 0.8882
+F1-macro, classes present in this run: 0.8881
+F1-macro, requested 5-class label set: 0.8881
 Per-class recall:
 {
-  "casino": 0.9826589595375722,
-  "legit": 0.8666666666666667,
-  "phishing": 0.8586666666666667,
-  "pyramid": 0.9901960784313726,
-  "suspicious": 0.744
+  "casino": 0.9866666666666667,
+  "legit": 0.8506666666666667,
+  "phishing": 0.8373333333333334,
+  "pyramid": 0.9660377358490566,
+  "suspicious": 0.7946666666666666
 }
 
 Scikit classification report
 ----------------------------
               precision    recall  f1-score   support
 
-       legit       0.84      0.87      0.85       375
-    phishing       0.76      0.86      0.80       375
-      casino       1.00      0.98      0.99       346
-     pyramid       0.98      0.99      0.99       204
-  suspicious       0.88      0.74      0.81       375
+       legit       0.85      0.85      0.85       375
+    phishing       0.79      0.84      0.81       375
+      casino       0.99      0.99      0.99       375
+     pyramid       0.99      0.97      0.98       265
+  suspicious       0.83      0.79      0.81       375
 
-    accuracy                           0.88      1675
-   macro avg       0.89      0.89      0.89      1675
-weighted avg       0.88      0.88      0.88      1675
+    accuracy                           0.88      1765
+   macro avg       0.89      0.89      0.89      1765
+weighted avg       0.88      0.88      0.88      1765
 
 
 Confusion matrix labels order:
 ['legit', 'phishing', 'casino', 'pyramid', 'suspicious']
 Confusion matrix:
-[[325, 30, 0, 0, 20], [35, 322, 0, 1, 17], [0, 3, 340, 3, 0], [0, 1, 1, 202, 0], [26, 70, 0, 0, 279]]
+[[319, 24, 0, 0, 32], [32, 314, 1, 1, 27], [0, 3, 370, 2, 0], [0, 6, 3, 256, 0], [24, 53, 0, 0, 298]]
 
 Interpretability
 -----------------

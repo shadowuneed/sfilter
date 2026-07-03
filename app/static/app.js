@@ -1,6 +1,8 @@
 const state = {
   selectedRunId: null,
   pollTimer: null,
+  pollInFlight: false,
+  pollRunsCounter: 0,
   cases: [],
   filteredCases: [],
   runs: [],
@@ -12,6 +14,7 @@ const state = {
   runDetails: new Map(),
   runStatuses: new Map(),
   runFindingsExpanded: false,
+  lastLiveFindingCount: 0,
   visibleCasesLimit: 8,
   chartPoints: [],
   chartHoverIndex: null,
@@ -20,6 +23,7 @@ const state = {
 const AUTO_RUN_CANDIDATES = 50;
 const CASES_INITIAL_LIMIT = 8;
 const CASES_PAGE_SIZE = 20;
+const POLL_INTERVAL_MS = 3000;
 
 const els = {
   scanForm: document.getElementById("scanForm"),
@@ -75,6 +79,7 @@ const statusLabels = {
   running: "идет поиск",
   canceling: "останавливается",
   canceled: "остановлено",
+  interrupted: "прервано",
   completed: "готово",
   failed: "ошибка",
 };
@@ -301,12 +306,21 @@ function runningStatus(status) {
   return ["queued", "running", "canceling"].includes(status);
 }
 
+function terminalStatus(status) {
+  return ["completed", "failed", "canceled", "interrupted"].includes(status);
+}
+
+function hasRunningRuns() {
+  return state.runs.some((run) => runningStatus(run.status))
+    || Array.from(state.runStatuses.values()).some((status) => runningStatus(status));
+}
+
 function latestLog(logs = []) {
   return logs.length ? logs[logs.length - 1] : null;
 }
 
 function activityStageIndex(run = {}, logs = []) {
-  if (run.status === "completed" || run.status === "failed" || run.status === "canceled") {
+  if (terminalStatus(run.status)) {
     return activityStages.length - 1;
   }
   const last = latestLog(logs) || {};
@@ -324,7 +338,7 @@ function activityStageIndex(run = {}, logs = []) {
 function showActivity(run = {}, logs = []) {
   if (!els.activityPanel) return;
   const active = runningStatus(run.status);
-  const done = ["completed", "failed", "canceled"].includes(run.status);
+  const done = terminalStatus(run.status);
   if (active && run.id) state.activityRunId = run.id;
   if (done && run.id && state.activityRunId !== run.id) {
     els.activityPanel.hidden = true;
@@ -339,9 +353,10 @@ function showActivity(run = {}, logs = []) {
   const last = latestLog(logs);
   els.activityPanel.hidden = false;
   els.activityPanel.classList.toggle("done", done && run.status === "completed");
-  els.activityPanel.classList.toggle("failed", done && run.status !== "completed");
+  els.activityPanel.classList.toggle("failed", done && run.status === "failed");
+  els.activityPanel.classList.toggle("interrupted", done && ["canceled", "interrupted"].includes(run.status));
   els.activityHeadline.textContent = run.id
-    ? `Запуск #${run.id}: ${statusLabel(run.status)}`
+    ? `Запуск #${run.id}: ${runStatusLabel(run)}`
     : "Запуск создан";
   els.activityText.textContent = last
     ? `${formatDateTime(last.timestamp)} · ${last.message}${formatMeta(last.meta)}`
@@ -387,6 +402,15 @@ function certDaysLeft(tls = {}) {
 
 function statusLabel(status) {
   return statusLabels[status] || status || "-";
+}
+
+function runStatusLabel(run) {
+  if (!run) return "-";
+  const error = String(run.error || "");
+  if (run.status === "failed" && /сервер|render|остановлен/i.test(error)) {
+    return "прервано";
+  }
+  return statusLabel(run.status);
 }
 
 function renderPill(el, text, cls) {
@@ -474,6 +498,7 @@ async function startRun(event) {
     const result = await api("/api/runs", { method: "POST", body: JSON.stringify(payload) });
     state.selectedRunId = result.run_id;
     state.runFindingsExpanded = false;
+    state.lastLiveFindingCount = 0;
     state.runDetails.delete(result.run_id);
     primeActivity(result.run_id, "auto");
     await loadRuns();
@@ -508,6 +533,7 @@ async function startManualCheck() {
     const result = await api("/api/manual-check", { method: "POST", body: JSON.stringify(payload) });
     state.selectedRunId = result.run_id;
     state.runFindingsExpanded = false;
+    state.lastLiveFindingCount = 0;
     state.runDetails.delete(result.run_id);
     primeActivity(result.run_id, "manual");
     await loadRuns();
@@ -521,17 +547,27 @@ async function startManualCheck() {
   }
 }
 
-async function stopRun() {
-  if (!state.selectedRunId) return;
-  els.stopBtn.disabled = true;
-  await api(`/api/runs/${state.selectedRunId}/cancel`, { method: "POST" });
-  state.runDetails.delete(state.selectedRunId);
-  await loadRun(state.selectedRunId, { force: true });
+async function stopRun(runId = state.selectedRunId) {
+  if (!runId) return;
+  if (runId === state.selectedRunId) els.stopBtn.disabled = true;
+  const runIndex = state.runs.findIndex((item) => item.id === runId);
+  if (runIndex >= 0) {
+    state.runs[runIndex] = { ...state.runs[runIndex], status: "canceling" };
+    renderRuns();
+  }
+  await api(`/api/runs/${runId}/cancel`, { method: "POST" });
+  state.runDetails.delete(runId);
+  await loadRun(runId, { force: true });
+  await loadRuns();
 }
 
 async function loadRuns() {
   const data = await api("/api/runs?limit=40");
   state.runs = data.runs || [];
+  const runIds = new Set(state.runs.map((run) => run.id));
+  Array.from(state.runStatuses.keys()).forEach((runId) => {
+    if (!runIds.has(runId) && runId !== state.selectedRunId) state.runStatuses.delete(runId);
+  });
   state.runs.forEach((run) => state.runStatuses.set(run.id, run.status));
   if (!state.selectedRunId && state.runs.length) state.selectedRunId = state.runs[0].id;
   renderRuns();
@@ -552,9 +588,16 @@ async function loadRun(runId, options = {}) {
   const previousStatus = state.runStatuses.get(run.id);
   state.selectedRunId = run.id;
   state.runStatuses.set(run.id, run.status);
+  const runIndex = state.runs.findIndex((item) => item.id === run.id);
+  if (runIndex >= 0) {
+    state.runs[runIndex] = { ...state.runs[runIndex], ...run };
+  } else {
+    state.runs.unshift(run);
+  }
 
   els.currentRun.textContent = `#${run.id}`;
-  els.runStatus.textContent = `${statusLabel(run.status)} · ${run.finding_count || 0}/${run.candidate_count || 0}`;
+  const liveFindingCount = Number(run.finding_count || 0);
+  els.runStatus.textContent = `${runStatusLabel(run)} · ${liveFindingCount}/${run.candidate_count || 0}`;
   els.stopBtn.disabled = !runningStatus(run.status);
 
   showActivity(run, data.logs || []);
@@ -563,15 +606,21 @@ async function loadRun(runId, options = {}) {
   renderRunFindings(data.findings || [], run, state.runFindingsExpanded);
   renderRuns();
 
+  if (runningStatus(run.status) && liveFindingCount !== state.lastLiveFindingCount) {
+    state.lastLiveFindingCount = liveFindingCount;
+    await loadCases({ preserveLimit: true });
+  }
+
   if (runningStatus(run.status)) {
     if (!state.pollTimer) startPolling();
   }
   else {
-    stopPolling();
+    if (!hasRunningRuns()) stopPolling();
     if (previousStatus && runningStatus(previousStatus)) {
       await loadRuns();
       await loadCases();
     }
+    if (hasRunningRuns() && !state.pollTimer) startPolling();
   }
 }
 
@@ -582,24 +631,43 @@ function renderRuns() {
   }
   els.runsList.innerHTML = state.runs.map((run) => {
     const active = run.id === state.selectedRunId ? "active" : "";
-    const signal = runningStatus(run.status) ? "live" : run.status === "failed" ? "bad" : "done";
+    const signal = runningStatus(run.status) ? "live" : run.status === "failed" ? "bad" : run.status === "interrupted" ? "warn" : "done";
+    const hint = ["failed", "interrupted"].includes(run.status) && run.error ? run.error : `${run.finding_count || 0} находок`;
+    const stopControl = runningStatus(run.status)
+      ? `<button class="run-stop-btn" data-stop-run-id="${run.id}" type="button">Стоп</button>`
+      : "";
     return `
-      <button class="run-item ${active}" data-run-id="${run.id}" type="button">
+      <div class="run-item ${active}" data-run-id="${run.id}" role="button" tabindex="0">
         <span class="run-signal ${signal}"></span>
         <span>
           <strong>#${run.id}</strong>
           <small>${escapeHtml(formatDateTime(run.started_at))}</small>
         </span>
-        <span>
-          <strong>${escapeHtml(statusLabel(run.status))}</strong>
-          <small>${run.finding_count || 0} находок</small>
+        <span class="run-state">
+          <span>
+            <strong>${escapeHtml(runStatusLabel(run))}</strong>
+            ${stopControl}
+          </span>
+          <small>${escapeHtml(hint)}</small>
         </span>
-      </button>`;
+      </div>`;
   }).join("");
   document.querySelectorAll("[data-run-id]").forEach((button) => {
     button.addEventListener("click", () => {
       state.runFindingsExpanded = false;
       loadRun(Number(button.dataset.runId), { force: true }).catch(console.error);
+    });
+    button.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      state.runFindingsExpanded = false;
+      loadRun(Number(button.dataset.runId), { force: true }).catch(console.error);
+    });
+  });
+  document.querySelectorAll("[data-stop-run-id]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      stopRun(Number(button.dataset.stopRunId)).catch((error) => alert(`Не удалось остановить запуск: ${error.message}`));
     });
   });
 }
@@ -687,12 +755,12 @@ function renderLogs(logs) {
   els.logsList.scrollTop = els.logsList.scrollHeight;
 }
 
-async function loadCases() {
+async function loadCases(options = {}) {
   const params = new URLSearchParams({ archived: "false", limit: "250" });
   if (els.caseSearch.value.trim()) params.set("q", els.caseSearch.value.trim());
   if (els.caseMinRisk.value) params.set("min_risk", els.caseMinRisk.value);
   const data = await api(`/api/cases?${params.toString()}`);
-  state.visibleCasesLimit = CASES_INITIAL_LIMIT;
+  if (!options.preserveLimit) state.visibleCasesLimit = CASES_INITIAL_LIMIT;
   state.cases = data.cases || [];
   const category = els.categoryFilter.value;
   state.filteredCases = category
@@ -1394,16 +1462,37 @@ function closeDrawer() {
 }
 
 function startPolling() {
-  stopPolling();
-  state.pollTimer = setInterval(() => {
-    if (state.selectedRunId) loadRun(state.selectedRunId, { force: true }).catch(console.error);
-  }, 6000);
+  if (state.pollTimer) return;
+  state.pollTimer = setTimeout(pollSelectedRun, POLL_INTERVAL_MS);
 }
 
 function stopPolling() {
   if (state.pollTimer) {
-    clearInterval(state.pollTimer);
+    clearTimeout(state.pollTimer);
     state.pollTimer = null;
+  }
+}
+
+async function pollSelectedRun() {
+  state.pollTimer = null;
+  if (state.pollInFlight) {
+    startPolling();
+    return;
+  }
+  state.pollInFlight = true;
+  try {
+    state.pollRunsCounter += 1;
+    if (state.pollRunsCounter % 2 === 0) {
+      await loadRuns();
+    }
+    if (state.selectedRunId) {
+      await loadRun(state.selectedRunId, { force: true });
+    }
+  } catch (error) {
+    console.error(error);
+  } finally {
+    state.pollInFlight = false;
+    if (hasRunningRuns()) startPolling();
   }
 }
 

@@ -17,6 +17,10 @@ evidence/**/*.png
 evidence/**/*.jpg
 evidence/**/*.jpeg
 data/ml/raw/
+!data/ml/raw/
+data/ml/raw/*
+!data/ml/raw/curated/
+!data/ml/raw/curated/*.csv
 data/ml/processed/
 data/ml/tldextract/
 models/

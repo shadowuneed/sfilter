@@ -400,14 +400,17 @@ class Database:
             conn.execute(f"UPDATE runs SET {assignments} WHERE id=?", [*values, run_id])
 
     def mark_stale_runs_failed(self) -> int:
+        return self.mark_stale_runs_interrupted()
+
+    def mark_stale_runs_interrupted(self) -> int:
         with self.connect() as conn:
             cursor = conn.execute(
                 """
                 UPDATE runs
-                SET status='failed', finished_at=?, error=?
+                SET status='interrupted', finished_at=?, error=?
                 WHERE status IN ('queued', 'running', 'canceling')
                 """,
-                (utc_now(), "Сервер был остановлен до завершения проверки. Запустите новую проверку."),
+                (utc_now(), "Сервер был остановлен до завершения проверки. Запуск прерван, можно начать новый."),
             )
             return int(cursor.rowcount or 0)
 

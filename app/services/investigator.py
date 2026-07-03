@@ -334,10 +334,16 @@ class Investigator:
 
         try:
             candidates = await self._discover_candidates(run_id, seed_query, max_candidates)
-            self.db.update_run(run_id, candidate_count=min(max_candidates, len(candidates)))
-            self.db.add_log(run_id, "info", "Список сайтов-кандидатов готов", {"count": len(candidates)})
+            candidates_to_check = candidates[:max_candidates]
+            self.db.update_run(run_id, candidate_count=len(candidates_to_check))
+            self.db.add_log(
+                run_id,
+                "info",
+                "Список сайтов-кандидатов готов",
+                {"count": len(candidates), "checking": len(candidates_to_check), "limit": max_candidates},
+            )
 
-            if not candidates:
+            if not candidates_to_check:
                 self.db.add_log(
                     run_id,
                     "warning",
@@ -349,14 +355,14 @@ class Investigator:
                 self.db.add_log(run_id, "warning", "Проверка остановлена до анализа сайтов")
                 return
 
-            mirror_groups = await self._discover_mirrors(run_id, candidates)
+            mirror_groups = await self._discover_mirrors(run_id, candidates_to_check)
             findings_count = 0
-            concurrency = max(1, min(self.settings.scan_concurrency, max_candidates, len(candidates) or 1))
+            concurrency = max(1, min(self.settings.scan_concurrency, max_candidates, len(candidates_to_check) or 1))
             self.db.add_log(
                 run_id,
                 "info",
                 "Пакетная проверка кандидатов запущена",
-                {"target": max_candidates, "candidates": len(candidates), "concurrency": concurrency},
+                {"target": max_candidates, "candidates": len(candidates_to_check), "concurrency": concurrency},
             )
             semaphore = asyncio.Semaphore(concurrency)
             tasks = [
@@ -364,16 +370,16 @@ class Investigator:
                     self._inspect_candidate(
                         run_id,
                         index,
-                        len(candidates),
+                        len(candidates_to_check),
                         candidate,
-                        candidates,
+                        candidates_to_check,
                         mirror_groups,
                         take_screenshots,
                         semaphore,
                         cancel_event,
                     )
                 )
-                for index, candidate in enumerate(candidates, start=1)
+                for index, candidate in enumerate(candidates_to_check, start=1)
             ]
 
             try:
@@ -554,6 +560,18 @@ class Investigator:
         candidates = self._dedupe_candidates(discovered, discovery_limit)
         known_domains = self.db.known_domains()
         fresh_candidates, skipped_known = self._exclude_known_candidates(candidates, known_domains)
+        known_rechecked = 0
+        seed_domains = set(find_domains(seed_query or ""))
+        if len(fresh_candidates) < max_candidates and not seed_domains:
+            refill_count = max_candidates - len(fresh_candidates)
+            known_candidates = [
+                candidate
+                for candidate in candidates
+                if candidate.key() in known_domains
+            ][:refill_count]
+            if known_candidates:
+                fresh_candidates.extend(known_candidates)
+                known_rechecked = len(known_candidates)
         self.db.add_log(
             run_id,
             "info",
@@ -562,6 +580,7 @@ class Investigator:
                 "raw": len(discovered),
                 "deduped": len(candidates),
                 "skipped_known": skipped_known,
+                "known_rechecked": known_rechecked,
                 "ready": len(fresh_candidates),
             },
         )
@@ -650,7 +669,13 @@ class Investigator:
 }}
 """
         self.db.add_log(run_id, "info", "Ищу сайты через Gemini Search", {"limit": max_candidates})
-        data, meta = self.gemini.generate_json(prompt, use_search=True, temperature=0.2)
+        data, meta = self.gemini.generate_json(
+            prompt,
+            use_search=True,
+            temperature=0.2,
+            max_attempts=len(self.settings.gemini_api_keys),
+            retry_sleep=False,
+        )
         grounding_sources = meta.get("grounding_sources", [])
         raw_items = data.get("candidates", []) or []
         self.db.add_log(
@@ -877,7 +902,13 @@ class Investigator:
 }}
 """
         try:
-            data, meta = self.gemini.generate_json(prompt, use_search=True, temperature=0.1)
+            data, meta = self.gemini.generate_json(
+                prompt,
+                use_search=True,
+                temperature=0.1,
+                max_attempts=len(self.settings.gemini_api_keys),
+                retry_sleep=False,
+            )
         except GeminiQuotaError as exc:
             self.db.add_log(run_id, "warning", "Лимит Gemini для поиска зеркал исчерпан", {"error": str(exc)})
             return groups
@@ -942,11 +973,25 @@ class Investigator:
         screenshot_error = None
         if take_screenshots and evidence.final_url:
             self.db.add_log(run_id, "info", "Делаю скриншот сайта", {"domain": domain, "url": evidence.final_url})
-            screenshot = await self.screenshots.capture(evidence.final_url, run_id)
+            screenshot = await self.screenshots.capture(
+                evidence.final_url,
+                run_id,
+                title=evidence.title,
+                html_path=evidence.html_path,
+                status_code=evidence.status_code,
+            )
             screenshot_path = screenshot.path
             screenshot_error = screenshot.error
             if screenshot_path:
-                self.db.add_log(run_id, "info", "Скриншот сохранен", {"domain": domain, "path": screenshot_path})
+                if screenshot_error:
+                    self.db.add_log(
+                        run_id,
+                        "warning",
+                        "Скриншот сохранен с предупреждением",
+                        {"domain": domain, "path": screenshot_path, "warning": screenshot_error},
+                    )
+                else:
+                    self.db.add_log(run_id, "info", "Скриншот сохранен", {"domain": domain, "path": screenshot_path})
             elif screenshot_error:
                 self.db.add_log(run_id, "warning", "Скриншот не сохранен", {"domain": domain, "error": screenshot_error})
         elif not take_screenshots:
@@ -1014,6 +1059,7 @@ class Investigator:
         )
         technical_delta, technical_reasons = self._technical_risk_signals(evidence)
         risk = max(0, min(100, risk + technical_delta))
+        risk = min(95, risk)
         verdict = self._verdict_for_risk(risk)
         if candidate.why:
             reasons.insert(0, candidate.why)

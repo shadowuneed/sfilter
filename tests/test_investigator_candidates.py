@@ -119,7 +119,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
                 )
 
         class FakeScreenshots:
-            async def capture(self, url: str, run_id: int) -> ScreenshotResult:
+            async def capture(self, url: str, run_id: int, **kwargs) -> ScreenshotResult:  # noqa: ANN003
                 return ScreenshotResult(path=None, error="browser blocked")
 
         class FakeContentAI:

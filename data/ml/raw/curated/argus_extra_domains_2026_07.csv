@@ -1,0 +1,64 @@
+url,label,confidence,label_source,note
+https://akorda.kz,legit,0.99,curated_legit,kazakhstan official public-service negative seed
+https://adilet.zan.kz,legit,0.99,curated_legit,kazakhstan official legal-information negative seed
+https://stat.gov.kz,legit,0.99,curated_legit,kazakhstan official statistics negative seed
+https://nationalbank.kz,legit,0.99,curated_legit,kazakhstan central bank negative seed
+https://mfa.gov.kz,legit,0.99,curated_legit,kazakhstan official ministry negative seed
+https://edu.gov.kz,legit,0.99,curated_legit,kazakhstan official ministry negative seed
+https://astana.gov.kz,legit,0.99,curated_legit,kazakhstan city government negative seed
+https://almaty.gov.kz,legit,0.99,curated_legit,kazakhstan city government negative seed
+https://enbek.kz,legit,0.99,curated_legit,kazakhstan public service negative seed
+https://pki.gov.kz,legit,0.99,curated_legit,kazakhstan public key infrastructure negative seed
+https://eotinish.kz,legit,0.99,curated_legit,kazakhstan public appeals portal negative seed
+https://polisia.kz,legit,0.99,curated_legit,kazakhstan public safety portal negative seed
+https://hcsbk.kz,legit,0.99,curated_legit,kazakhstan bank negative seed
+https://berekebank.kz,legit,0.99,curated_legit,kazakhstan bank negative seed
+https://nurbank.kz,legit,0.99,curated_legit,kazakhstan bank negative seed
+https://bankffin.kz,legit,0.99,curated_legit,kazakhstan bank negative seed
+https://freedomfinance.kz,legit,0.99,curated_legit,kazakhstan financial service negative seed
+https://kase.kz,legit,0.99,curated_legit,kazakhstan stock exchange negative seed
+https://technodom.kz,legit,0.99,curated_legit,kazakhstan retail negative seed
+https://sulpak.kz,legit,0.99,curated_legit,kazakhstan retail negative seed
+https://mechta.kz,legit,0.99,curated_legit,kazakhstan retail negative seed
+https://shop.kz,legit,0.99,curated_legit,kazakhstan retail negative seed
+https://choco.kz,legit,0.99,curated_legit,kazakhstan marketplace negative seed
+https://flip.kz,legit,0.99,curated_legit,kazakhstan marketplace negative seed
+https://kolesa.kz,legit,0.99,curated_legit,kazakhstan classified marketplace negative seed
+https://krisha.kz,legit,0.99,curated_legit,kazakhstan classified marketplace negative seed
+https://olx.kz,legit,0.99,curated_legit,kazakhstan classified marketplace negative seed
+https://hh.kz,legit,0.99,curated_legit,kazakhstan jobs marketplace negative seed
+https://tengrinews.kz,legit,0.99,curated_legit,kazakhstan media negative seed
+https://informburo.kz,legit,0.99,curated_legit,kazakhstan media negative seed
+https://zakon.kz,legit,0.99,curated_legit,kazakhstan media/legal negative seed
+https://nur.kz,legit,0.99,curated_legit,kazakhstan media negative seed
+https://yandex.kz,legit,0.99,curated_legit,large search service negative seed
+https://google.com,legit,0.99,curated_legit,large global service negative seed
+https://microsoft.com,legit,0.99,curated_legit,large global service negative seed
+https://apple.com,legit,0.99,curated_legit,large global service negative seed
+https://amazon.com,legit,0.99,curated_legit,large global service negative seed
+https://wikipedia.org,legit,0.99,curated_legit,large public knowledge service negative seed
+https://github.com,legit,0.99,curated_legit,large developer platform negative seed
+https://cloudflare.com,legit,0.99,curated_legit,large infrastructure service negative seed
+https://casino-x.com,casino,0.99,curated_public,casino brand seed
+https://riobet.com,casino,0.99,curated_public,casino brand seed
+https://pin-up.casino,casino,0.99,curated_public,casino brand seed
+https://roxcasino.com,casino,0.99,curated_public,casino brand seed
+https://azino777.com,casino,0.99,curated_public,casino brand seed
+https://championcasino.com,casino,0.99,curated_public,casino brand seed
+https://frankcasino.com,casino,0.99,curated_public,casino brand seed
+https://booi.com,casino,0.99,curated_public,casino brand seed
+https://driftcasino.com,casino,0.99,curated_public,casino brand seed
+https://sol.casino,casino,0.99,curated_public,casino brand seed
+https://bitcasino.io,casino,0.99,curated_public,casino brand seed
+https://fortunejack.com,casino,0.99,curated_public,casino brand seed
+https://1xslots.com,casino,0.99,curated_public,casino brand seed
+https://slottica.com,casino,0.99,curated_public,casino brand seed
+https://betmaster.com,casino,0.99,curated_public,betting/casino brand seed
+https://bannersbroker.com,pyramid,0.99,curated_historical,historical investment scheme seed
+https://usitech-int.com,pyramid,0.99,curated_historical,historical crypto investment scheme seed
+https://control-finance.com,pyramid,0.98,curated_historical,historical investment scam seed
+https://double-your-bitcoin.com,pyramid,0.95,weak_seed,crypto doubling scam naming seed
+https://usdt-daily-profit.com,pyramid,0.95,weak_seed,hyip-style naming seed
+https://instant-roi-cloud.com,pyramid,0.95,weak_seed,hyip-style naming seed
+https://passive-income-usdt.net,pyramid,0.95,weak_seed,hyip-style naming seed
+https://guaranteed-crypto-return.com,pyramid,0.95,weak_seed,hyip-style naming seed

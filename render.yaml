@@ -33,8 +33,20 @@ services:
         value: "50"
       - key: MAX_MIRROR_CHECKS_PER_RUN
         value: "6"
+      - key: SCAN_CONCURRENCY
+        value: "2"
+      - key: CANDIDATE_TIMEOUT_SECONDS
+        value: "35"
       - key: SCREENSHOTS_ENABLED
         value: "true"
+      - key: BROWSER_SCREENSHOTS_ENABLED
+        value: "true"
+      - key: SCREENSHOT_FALLBACK_ENABLED
+        value: "true"
+      - key: SCREENSHOT_CONCURRENCY
+        value: "1"
+      - key: SCREENSHOT_TIMEOUT_SECONDS
+        value: "8"
       - key: PLAYWRIGHT_BROWSERS_PATH
         value: /ms-playwright
       - key: OSINT_FEEDS_ENABLED

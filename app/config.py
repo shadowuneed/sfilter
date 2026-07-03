@@ -157,6 +157,9 @@ class Settings:
     screenshot_timeout_seconds: int = 10
     screenshot_settle_ms: int = 700
     screenshots_enabled: bool = True
+    browser_screenshots_enabled: bool = True
+    screenshot_fallback_enabled: bool = True
+    screenshot_concurrency: int = 1
     osint_feeds_enabled: bool = True
     osint_candidate_pool_size: int = 350
     ml_enabled: bool = True
@@ -214,6 +217,12 @@ def get_settings() -> Settings:
         screenshot_timeout_seconds=max(4, _int_env("SCREENSHOT_TIMEOUT_SECONDS", 10)),
         screenshot_settle_ms=max(0, _int_env("SCREENSHOT_SETTLE_MS", 700)),
         screenshots_enabled=_bool_env("SCREENSHOTS_ENABLED", True),
+        browser_screenshots_enabled=_bool_env(
+            "BROWSER_SCREENSHOTS_ENABLED",
+            _bool_env("SCREENSHOT_BROWSER_ENABLED", True),
+        ),
+        screenshot_fallback_enabled=_bool_env("SCREENSHOT_FALLBACK_ENABLED", True),
+        screenshot_concurrency=max(1, min(_int_env("SCREENSHOT_CONCURRENCY", 1), 2)),
         osint_feeds_enabled=_bool_env("OSINT_FEEDS_ENABLED", True),
         osint_candidate_pool_size=_int_env("OSINT_CANDIDATE_POOL_SIZE", 350),
         ml_enabled=_bool_env("ML_ENABLED", True),

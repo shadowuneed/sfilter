@@ -72,6 +72,9 @@ class ConfigTests(unittest.TestCase):
                 "CANDIDATE_TIMEOUT_SECONDS": "30",
                 "SCREENSHOT_TIMEOUT_SECONDS": "8",
                 "SCREENSHOT_SETTLE_MS": "250",
+                "SCREENSHOT_CONCURRENCY": "2",
+                "BROWSER_SCREENSHOTS_ENABLED": "false",
+                "SCREENSHOT_FALLBACK_ENABLED": "true",
             },
             clear=False,
         ):
@@ -81,6 +84,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.candidate_timeout_seconds, 30)
         self.assertEqual(settings.screenshot_timeout_seconds, 8)
         self.assertEqual(settings.screenshot_settle_ms, 250)
+        self.assertEqual(settings.screenshot_concurrency, 2)
+        self.assertFalse(settings.browser_screenshots_enabled)
+        self.assertTrue(settings.screenshot_fallback_enabled)
 
 
 if __name__ == "__main__":

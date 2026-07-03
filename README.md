@@ -74,6 +74,9 @@ REQUIRE_POSTGRES=false
 ML_ENABLED=true
 ML_MODEL_PATH=models/domain_classifier.cbm
 CYBERSCAN_MODEL_PATH=models/cyberscan_model.pkl
+SCAN_CONCURRENCY=2
+SCREENSHOT_CONCURRENCY=1
+SCREENSHOT_FALLBACK_ENABLED=true
 OSINT_FEEDS_ENABLED=true
 OSINT_CANDIDATE_POOL_SIZE=350
 ML_MIN_CONFIDENCE=0.45
@@ -118,7 +121,9 @@ The blueprint still mounts a persistent disk at `/var/data` for file evidence:
 - HTML and screenshots at `/var/data/evidence`
 - exports at `/var/data/exports`
 
-For screenshots, deploy Argus as a Docker service so the Dockerfile runs `python -m playwright install --with-deps chromium`. If you create a non-Docker Python service manually, add this to the Render build command instead:
+For screenshots, deploy Argus as a Docker service so the Dockerfile runs `python -m playwright install --with-deps chromium`. Render starter has limited memory, so the blueprint uses `SCAN_CONCURRENCY=2` and `SCREENSHOT_CONCURRENCY=1`: site checks can still run in parallel, but Chromium screenshots are serialized. If Chromium cannot produce a page image, Argus saves a small fallback PNG evidence file instead of leaving a broken screenshot link.
+
+If you create a non-Docker Python service manually, add this to the Render build command instead:
 
 ```bash
 pip install -r requirements.txt && python -m playwright install chromium
