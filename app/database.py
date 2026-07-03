@@ -666,7 +666,7 @@ class Database:
                     GROUP BY normalized_domain
                 ) stats ON stats.normalized_domain=c.normalized_domain
                 {sql_where}
-                ORDER BY c.saved DESC, c.best_risk_score DESC, c.last_seen DESC
+                ORDER BY c.last_seen DESC, c.updated_at DESC, c.id DESC, c.saved DESC, c.best_risk_score DESC
                 LIMIT ?
                 """,
                 params,

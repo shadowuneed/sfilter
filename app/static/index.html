@@ -60,7 +60,15 @@
           <label for="seedQuery">Фокус поиска</label>
           <textarea id="seedQuery" rows="3" placeholder="Например: казино зеркало Казахстан, фишинг Kaspi, инвестиционная пирамида"></textarea>
           <div class="scan-controls">
-            <span class="fixed-run-size">50 сайтов за запуск</span>
+            <label class="run-size-control" for="runSize">
+              <span>Охват</span>
+              <select id="runSize">
+                <option value="50">50 сайтов</option>
+                <option value="150" selected>150 сайтов</option>
+                <option value="300">300 сайтов</option>
+                <option value="500">500 сайтов</option>
+              </select>
+            </label>
             <label class="toggle-line">
               <input id="takeScreenshots" type="checkbox" checked>
               <span>Скриншоты</span>

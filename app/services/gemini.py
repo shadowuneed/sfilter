@@ -97,15 +97,22 @@ class GeminiClient:
 
         last_error: Exception | None = None
         key_count = len(self.settings.gemini_api_keys)
-        attempts = max(1, max_attempts if max_attempts is not None else max(key_count * 2, 3))
+        model_count = len(self.settings.gemini_models)
+        attempts = max(
+            1,
+            model_count,
+            max_attempts if max_attempts is not None else max(key_count * model_count * 2, 3),
+        )
         auth_failures = 0
 
         for attempt in range(attempts):
             api_key, key_hash = self._reserve_key()
+            model = self.settings.gemini_models[attempt % model_count]
             try:
                 return self._request_json(
                     api_key,
                     key_hash,
+                    model,
                     prompt,
                     use_search=use_search,
                     use_url_context=use_url_context,
@@ -140,6 +147,7 @@ class GeminiClient:
         self,
         api_key: str,
         key_hash: str,
+        model: str,
         prompt: str,
         *,
         use_search: bool,
@@ -148,7 +156,7 @@ class GeminiClient:
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{self.settings.gemini_model}:generateContent"
+            f"{model}:generateContent"
         )
         tools: list[dict[str, Any]] = []
         if use_search:
@@ -169,7 +177,7 @@ class GeminiClient:
             response = client.post(url, params={"key": api_key}, json=payload)
 
         if response.status_code >= 400:
-            raise self._response_error(response, key_hash)
+            raise self._response_error(response, key_hash, model)
 
         try:
             raw = response.json()
@@ -183,20 +191,20 @@ class GeminiClient:
         text = self._extract_text(raw)
         parsed = self._parse_json_text(text)
         meta = {
-            "model": self.settings.gemini_model,
+            "model": model,
             "key_hash": key_hash,
             "grounding_sources": self._extract_grounding_sources(raw),
             "raw_text_length": len(text),
         }
         return parsed, meta
 
-    def _response_error(self, response: httpx.Response, key_hash: str) -> GeminiAPIError:
+    def _response_error(self, response: httpx.Response, key_hash: str, model: str) -> GeminiAPIError:
         status = response.status_code
         reason = response.reason_phrase or "HTTP error"
         body = redact_string(response.text or "").strip().replace("\n", " ")
         if len(body) > 360:
             body = f"{body[:360]}..."
-        message = f"Gemini API {status} {reason} (model={self.settings.gemini_model}, key_hash={key_hash})"
+        message = f"Gemini API {status} {reason} (model={model}, key_hash={key_hash})"
         if status in AUTH_STATUS_CODES:
             message += (
                 "; ключ отклонен Google. В GEMINI_API_KEYS должен быть API key из Google AI Studio "
@@ -213,7 +221,7 @@ class GeminiClient:
                 retryable=False,
             )
         if status == 503:
-            message += "; service is temporarily unavailable, retry will use another key if possible"
+            message += "; service is temporarily unavailable, retry will use another key/model if possible"
         if body:
             message += f": {body}"
         return GeminiAPIError(

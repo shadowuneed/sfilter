@@ -20,7 +20,8 @@ const state = {
   chartHoverIndex: null,
 };
 
-const AUTO_RUN_CANDIDATES = 50;
+const DEFAULT_RUN_CANDIDATES = 150;
+const MAX_RUN_CANDIDATES = 500;
 const CASES_INITIAL_LIMIT = 8;
 const CASES_PAGE_SIZE = 20;
 const POLL_INTERVAL_MS = 3000;
@@ -33,6 +34,7 @@ const els = {
   runBtn: document.getElementById("runBtn"),
   stopBtn: document.getElementById("stopBtn"),
   seedQuery: document.getElementById("seedQuery"),
+  runSize: document.getElementById("runSize"),
   takeScreenshots: document.getElementById("takeScreenshots"),
   manualTarget: document.getElementById("manualTarget"),
   manualBtn: document.getElementById("manualBtn"),
@@ -439,8 +441,11 @@ async function loadHealth() {
     const keyHashes = Array.isArray(health.gemini_key_hashes) ? health.gemini_key_hashes : [];
     const hashHint = keyHashes.length ? `, hash ${keyHashes.join(", ")}` : "";
     const authMissing = state.authRequired && !state.authConfigured;
+    const geminiModels = Array.isArray(health.gemini_models) && health.gemini_models.length
+      ? health.gemini_models.join(" → ")
+      : health.gemini_model;
     const geminiHint = health.gemini_configured
-      ? `${keyCount} ключ(а), модель ${health.gemini_model}${hashHint}`
+      ? `${keyCount} ключ(а), модели ${geminiModels}${hashHint}`
       : "добавьте GEMINI_API_KEYS";
     const mlClasses = Array.isArray(health.ml_classes) && health.ml_classes.length ? ` (${health.ml_classes.join(", ")})` : "";
     const mlHint = health.ml_available
@@ -460,7 +465,8 @@ async function loadHealth() {
         : "KZ proxy не задан: запуск разрешен, но доступность из Казахстана не подтверждена";
     const concurrency = health.scan_concurrency || 3;
     const timeout = health.candidate_timeout_seconds || 45;
-    els.healthLine.textContent = `${geminiHint}. ${mlHint}. ${cyberHint}. ${kzHint}. Автозапуск: 50 сайтов, потоков: ${concurrency}, таймаут сайта: ${timeout} сек.`;
+    const maxRun = Math.min(Number(health.max_candidates_per_run || MAX_RUN_CANDIDATES), MAX_RUN_CANDIDATES);
+    els.healthLine.textContent = `${geminiHint}. ${mlHint}. ${cyberHint}. ${kzHint}. Максимум запуска: ${maxRun} сайтов, потоков: ${concurrency}, таймаут сайта: ${timeout} сек.`;
     const actionBlocked = authMissing || !kzReady;
     const actionReason = authMissing
       ? "На сервере не настроен ADMIN_TOKEN"
@@ -490,9 +496,10 @@ async function startRun(event) {
     [{ timestamp: new Date().toISOString(), level: "info", message: "Отправляю задачу автоматического поиска", meta: {} }],
   );
   try {
+    const requestedCandidates = Number(els.runSize?.value || DEFAULT_RUN_CANDIDATES);
     const payload = {
       seed_query: els.seedQuery.value.trim() || null,
-      max_candidates: AUTO_RUN_CANDIDATES,
+      max_candidates: Math.max(1, Math.min(requestedCandidates, MAX_RUN_CANDIDATES)),
       take_screenshots: els.takeScreenshots.checked,
     };
     const result = await api("/api/runs", { method: "POST", body: JSON.stringify(payload) });
@@ -631,13 +638,15 @@ function renderRuns() {
   }
   els.runsList.innerHTML = state.runs.map((run) => {
     const active = run.id === state.selectedRunId ? "active" : "";
+    const running = runningStatus(run.status);
+    const runningClass = running ? "running" : "";
     const signal = runningStatus(run.status) ? "live" : run.status === "failed" ? "bad" : run.status === "interrupted" ? "warn" : "done";
     const hint = ["failed", "interrupted"].includes(run.status) && run.error ? run.error : `${run.finding_count || 0} находок`;
-    const stopControl = runningStatus(run.status)
-      ? `<button class="run-stop-btn" data-stop-run-id="${run.id}" type="button">Стоп</button>`
+    const stopControl = running
+      ? `<button class="run-stop-btn" data-stop-run-id="${run.id}" type="button">Остановить запуск</button>`
       : "";
     return `
-      <div class="run-item ${active}" data-run-id="${run.id}" role="button" tabindex="0">
+      <div class="run-item ${active} ${runningClass}" data-run-id="${run.id}" role="button" tabindex="0">
         <span class="run-signal ${signal}"></span>
         <span>
           <strong>#${run.id}</strong>
@@ -838,7 +847,7 @@ function renderRunFindings(findings, run, expanded = false) {
   }
   if (!expanded) {
     const status = run ? statusLabel(run.status) : "ожидание";
-    const progress = run ? `${run.finding_count || 0}/${run.candidate_count || AUTO_RUN_CANDIDATES}` : "0/0";
+    const progress = run ? `${run.finding_count || 0}/${run.candidate_count || DEFAULT_RUN_CANDIDATES}` : "0/0";
     els.runFindingsList.innerHTML = `
       <div class="collapsed-results">
         <div>

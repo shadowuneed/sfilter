@@ -67,6 +67,7 @@ Create `.env` from `.env.example` and set keys locally or in Render environment 
 ```env
 GEMINI_API_KEYS=your_primary_key,your_backup_key
 GEMINI_MODEL=gemini-2.5-flash
+GEMINI_FALLBACK_MODELS=gemini-2.0-flash
 ADMIN_TOKEN=use-a-long-random-secret
 AUTH_REQUIRED=true
 DATABASE_URL=postgresql://postgres:password@host:5432/postgres?sslmode=require
@@ -78,7 +79,8 @@ SCAN_CONCURRENCY=2
 SCREENSHOT_CONCURRENCY=1
 SCREENSHOT_FALLBACK_ENABLED=true
 OSINT_FEEDS_ENABLED=true
-OSINT_CANDIDATE_POOL_SIZE=350
+MAX_CANDIDATES_PER_RUN=500
+OSINT_CANDIDATE_POOL_SIZE=1500
 ML_MIN_CONFIDENCE=0.45
 ```
 

@@ -109,7 +109,7 @@ async def api_auth_middleware(request: Request, call_next):
 
 class RunRequest(BaseModel):
     seed_query: str | None = Field(default=None, max_length=2000)
-    max_candidates: int = Field(default=50, ge=1, le=100)
+    max_candidates: int = Field(default=150, ge=1, le=500)
     take_screenshots: bool = True
 
 
@@ -162,6 +162,7 @@ def health() -> dict[str, Any]:
         "gemini_key_format_ok": gemini.key_format_ok,
         "gemini_key_warnings": gemini.key_format_warnings,
         "gemini_model": settings.gemini_model,
+        "gemini_models": settings.gemini_models,
         "gemini_key_count": len(settings.gemini_api_keys),
         "gemini_key_hashes": gemini.key_hashes,
         "rpm_limit": settings.gemini_rpm_limit,
@@ -172,6 +173,8 @@ def health() -> dict[str, Any]:
         "require_postgres": settings.require_postgres,
         "screenshots_enabled": settings.screenshots_enabled,
         "scan_concurrency": settings.scan_concurrency,
+        "max_candidates_per_run": settings.max_candidates_per_run,
+        "osint_candidate_pool_size": settings.osint_candidate_pool_size,
         "candidate_timeout_seconds": settings.candidate_timeout_seconds,
         "screenshot_timeout_seconds": settings.screenshot_timeout_seconds,
         "screenshot_runtime": investigator.screenshots.runtime_status(),

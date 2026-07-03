@@ -281,17 +281,32 @@ select:focus {
   flex-wrap: wrap;
 }
 
-.fixed-run-size {
+.run-size-control {
   min-height: 40px;
   display: inline-flex;
   align-items: center;
+  gap: 8px;
   border: 1px solid rgba(59, 130, 246, 0.35);
   border-radius: 8px;
   background: var(--blue-soft);
   color: #bfdbfe;
-  padding: 8px 12px;
+  padding: 6px 8px 6px 12px;
   font-weight: 900;
   white-space: nowrap;
+}
+
+.run-size-control span {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.run-size-control select {
+  width: 126px;
+  min-height: 30px;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-weight: 900;
 }
 
 .manual-check {
@@ -986,6 +1001,10 @@ select:focus {
 }
 
 .run-item.active { border-color: var(--blue); background: var(--blue-soft); }
+.run-item.running {
+  border-color: rgba(59, 130, 246, 0.62);
+  box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.18);
+}
 .run-item:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .run-item strong,
 .run-item small { display: block; }
@@ -1018,6 +1037,7 @@ select:focus {
   padding: 4px 9px;
   font-weight: 900;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .run-stop-btn:hover {

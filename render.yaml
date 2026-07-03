@@ -13,6 +13,8 @@ services:
         value: "true"
       - key: GEMINI_MODEL
         value: gemini-2.5-flash
+      - key: GEMINI_FALLBACK_MODELS
+        value: gemini-2.0-flash
       - key: GEMINI_RPM_LIMIT
         value: "10"
       - key: GEMINI_RPD_LIMIT
@@ -30,7 +32,7 @@ services:
       - key: EXPORT_DIR
         value: /var/data/exports
       - key: MAX_CANDIDATES_PER_RUN
-        value: "50"
+        value: "500"
       - key: MAX_MIRROR_CHECKS_PER_RUN
         value: "6"
       - key: SCAN_CONCURRENCY
@@ -52,7 +54,7 @@ services:
       - key: OSINT_FEEDS_ENABLED
         value: "true"
       - key: OSINT_CANDIDATE_POOL_SIZE
-        value: "350"
+        value: "1500"
       - key: ML_ENABLED
         value: "true"
       - key: ML_MODEL_PATH

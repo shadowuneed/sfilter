@@ -116,6 +116,39 @@ BOOTSTRAP_CANDIDATES = [
     {"domain": "nationalcasino.com", "category": "casino", "brand": "National Casino", "aliases": ["national casino"]},
 ]
 
+MIRROR_TLDS = [
+    "com",
+    "net",
+    "org",
+    "site",
+    "online",
+    "club",
+    "vip",
+    "live",
+    "pro",
+    "xyz",
+    "bet",
+    "casino",
+    "win",
+    "io",
+    "kz",
+]
+
+MIRROR_MODIFIERS = [
+    "kz",
+    "kaz",
+    "login",
+    "mirror",
+    "zerkalo",
+    "new",
+    "club",
+    "vip",
+    "bonus",
+    "play",
+    "official",
+    "app",
+]
+
 CATEGORY_DISPLAY = {
     "legit": "обычный сайт",
     "casino": "казино или ставки",
@@ -561,7 +594,29 @@ class Investigator:
         known_domains = self.db.known_domains()
         fresh_candidates, skipped_known = self._exclude_known_candidates(candidates, known_domains)
         known_rechecked = 0
+        algorithmic_added = 0
         seed_domains = set(find_domains(seed_query or ""))
+
+        if len(fresh_candidates) < max_candidates and not seed_domains:
+            excluded_domains = known_domains | {candidate.key() for candidate in candidates}
+            algorithmic = self._discover_from_algorithmic_mirrors(
+                seed_query,
+                max_candidates - len(fresh_candidates),
+                excluded_domains,
+            )
+            if algorithmic:
+                fresh_candidates.extend(algorithmic)
+                algorithmic_added = len(algorithmic)
+                self.db.add_log(
+                    run_id,
+                    "warning",
+                    "Algorithmic discovery добавил кандидатов для расширенного прохода",
+                    {
+                        "added": algorithmic_added,
+                        "reason": "Gemini/OSINT дали мало новых доменов",
+                    },
+                )
+
         if len(fresh_candidates) < max_candidates and not seed_domains:
             refill_count = max_candidates - len(fresh_candidates)
             known_candidates = [
@@ -580,6 +635,7 @@ class Investigator:
                 "raw": len(discovered),
                 "deduped": len(candidates),
                 "skipped_known": skipped_known,
+                "algorithmic_added": algorithmic_added,
                 "known_rechecked": known_rechecked,
                 "ready": len(fresh_candidates),
             },
@@ -619,6 +675,77 @@ class Investigator:
             if len(candidates) >= limit:
                 break
         return candidates
+
+    def _discover_from_algorithmic_mirrors(
+        self,
+        seed_query: str | None,
+        limit: int,
+        excluded_domains: set[str],
+    ) -> list[Candidate]:
+        if limit <= 0:
+            return []
+        focus = (seed_query or " ".join(self.settings.seed_queries)).lower()
+        normalized_focus = re.sub(r"[^a-zа-я0-9]+", " ", focus)
+        wants_gambling = bool(re.search(r"(casino|казино|bet|бет|букмекер|ставк|зеркал|mirror)", normalized_focus))
+        use_all = not seed_query or wants_gambling
+        seen = set(excluded_domains)
+        candidates: list[Candidate] = []
+
+        for item in BOOTSTRAP_CANDIDATES:
+            aliases = [str(alias).lower() for alias in item.get("aliases", [])]
+            matched = use_all or any(alias in normalized_focus for alias in aliases)
+            if not matched:
+                continue
+
+            roots = self._brand_roots(item)
+            for root in roots:
+                for domain in self._mirror_domain_variants(root):
+                    key = registered_domain(domain)
+                    if not key or key in seen or not is_candidate_domain(key):
+                        continue
+                    seen.add(key)
+                    candidates.append(
+                        Candidate(
+                            url=normalize_url(key),
+                            domain=key,
+                            category=str(item.get("category") or "suspicious"),
+                            why=(
+                                "Algorithmic-кандидат: домен похож на зеркало или региональную "
+                                "вариацию известного risky-бренда и отправлен на живую проверку."
+                            ),
+                            search_query=seed_query or "algorithmic mirror expansion",
+                            brand=str(item.get("brand") or "") or None,
+                        )
+                    )
+                    if len(candidates) >= limit:
+                        return candidates
+        return candidates
+
+    @staticmethod
+    def _brand_roots(item: dict[str, Any]) -> list[str]:
+        raw_values = [
+            str(item.get("brand") or ""),
+            extract_domain(str(item.get("domain") or "")).split(".", 1)[0],
+            *[str(alias) for alias in item.get("aliases", [])],
+        ]
+        roots: list[str] = []
+        for value in raw_values:
+            clean = re.sub(r"[^a-z0-9]+", "", value.lower())
+            if len(clean) < 3 or clean in roots:
+                continue
+            roots.append(clean)
+        return roots[:4]
+
+    @staticmethod
+    def _mirror_domain_variants(root: str) -> list[str]:
+        domains: list[str] = []
+        for tld in MIRROR_TLDS:
+            domains.append(f"{root}.{tld}")
+            for modifier in MIRROR_MODIFIERS:
+                domains.append(f"{root}-{modifier}.{tld}")
+                domains.append(f"{root}{modifier}.{tld}")
+                domains.append(f"{modifier}-{root}.{tld}")
+        return domains
 
     def _discover_with_gemini(
         self,
@@ -673,7 +800,7 @@ class Investigator:
             prompt,
             use_search=True,
             temperature=0.2,
-            max_attempts=len(self.settings.gemini_api_keys),
+            max_attempts=max(1, len(self.settings.gemini_api_keys) * len(self.settings.gemini_models)),
             retry_sleep=False,
         )
         grounding_sources = meta.get("grounding_sources", [])
@@ -682,7 +809,7 @@ class Investigator:
             run_id,
             "info",
             "Gemini вернул список для проверки",
-            {"items": len(raw_items), "sources": len(grounding_sources)},
+            {"items": len(raw_items), "sources": len(grounding_sources), "model": meta.get("model"), "key_hash": meta.get("key_hash")},
         )
 
         candidates: list[Candidate] = []
@@ -906,7 +1033,7 @@ class Investigator:
                 prompt,
                 use_search=True,
                 temperature=0.1,
-                max_attempts=len(self.settings.gemini_api_keys),
+                max_attempts=max(1, len(self.settings.gemini_api_keys) * len(self.settings.gemini_models)),
                 retry_sleep=False,
             )
         except GeminiQuotaError as exc:
@@ -929,7 +1056,7 @@ class Investigator:
                     "source_urls": group.get("source_urls") or grounding_sources,
                 }
             )
-        self.db.add_log(run_id, "info", "Зеркальные группы проверены", {"count": len(groups)})
+        self.db.add_log(run_id, "info", "Зеркальные группы проверены", {"count": len(groups), "model": meta.get("model")})
         return groups
 
     async def _build_finding(

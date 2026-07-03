@@ -137,6 +137,7 @@ DEFAULT_USER_AGENT = (
 class Settings:
     gemini_api_keys: list[str] = field(default_factory=list)
     gemini_model: str = "gemini-2.5-flash"
+    gemini_fallback_models: list[str] = field(default_factory=list)
     gemini_rpm_limit: int = 10
     gemini_rpd_limit: int = 250
     gemini_timeout_seconds: int = 90
@@ -149,7 +150,7 @@ class Settings:
     evidence_dir: Path = Path("evidence")
     export_dir: Path = Path("exports")
 
-    max_candidates_per_run: int = 50
+    max_candidates_per_run: int = 500
     max_mirror_checks_per_run: int = 6
     request_timeout_seconds: int = 18
     scan_concurrency: int = 3
@@ -161,7 +162,7 @@ class Settings:
     screenshot_fallback_enabled: bool = True
     screenshot_concurrency: int = 1
     osint_feeds_enabled: bool = True
-    osint_candidate_pool_size: int = 350
+    osint_candidate_pool_size: int = 1500
     ml_enabled: bool = True
     ml_model_path: Path = Path("models/domain_classifier.cbm")
     cyberscan_model_path: Path = Path("models/cyberscan_model.pkl")
@@ -178,6 +179,15 @@ class Settings:
     @property
     def screenshots_dir(self) -> Path:
         return self.evidence_dir / "screenshots"
+
+    @property
+    def gemini_models(self) -> list[str]:
+        models: list[str] = []
+        for model in [self.gemini_model, *self.gemini_fallback_models]:
+            clean = str(model or "").strip()
+            if clean and clean not in models:
+                models.append(clean)
+        return models or ["gemini-2.5-flash"]
 
     def masked_keys(self) -> list[str]:
         masked: list[str] = []
@@ -199,6 +209,7 @@ def get_settings() -> Settings:
     settings = Settings(
         gemini_api_keys=_api_keys_from_env(("GEMINI_API_KEYS", "GEMINI_API_KEY", "GOOGLE_API_KEY")),
         gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash",
+        gemini_fallback_models=_split_env("GEMINI_FALLBACK_MODELS"),
         gemini_rpm_limit=_int_env("GEMINI_RPM_LIMIT", _int_env("GEMINI_RPM_PER_KEY", 10)),
         gemini_rpd_limit=_int_env("GEMINI_RPD_LIMIT", _int_env("GEMINI_RPD_PER_KEY", 250)),
         gemini_timeout_seconds=_int_env("GEMINI_TIMEOUT_SECONDS", 90),
@@ -209,7 +220,7 @@ def get_settings() -> Settings:
         require_postgres=_bool_env("REQUIRE_POSTGRES", False),
         evidence_dir=Path(os.getenv("EVIDENCE_DIR", "evidence")),
         export_dir=Path(os.getenv("EXPORT_DIR", "exports")),
-        max_candidates_per_run=_int_env("MAX_CANDIDATES_PER_RUN", 50),
+        max_candidates_per_run=max(1, min(_int_env("MAX_CANDIDATES_PER_RUN", 500), 500)),
         max_mirror_checks_per_run=_int_env("MAX_MIRROR_CHECKS_PER_RUN", 6),
         request_timeout_seconds=_int_env("REQUEST_TIMEOUT_SECONDS", 18),
         scan_concurrency=max(1, min(_int_env("SCAN_CONCURRENCY", 3), 8)),
@@ -224,7 +235,7 @@ def get_settings() -> Settings:
         screenshot_fallback_enabled=_bool_env("SCREENSHOT_FALLBACK_ENABLED", True),
         screenshot_concurrency=max(1, min(_int_env("SCREENSHOT_CONCURRENCY", 1), 2)),
         osint_feeds_enabled=_bool_env("OSINT_FEEDS_ENABLED", True),
-        osint_candidate_pool_size=_int_env("OSINT_CANDIDATE_POOL_SIZE", 350),
+        osint_candidate_pool_size=max(150, min(_int_env("OSINT_CANDIDATE_POOL_SIZE", 1500), 5000)),
         ml_enabled=_bool_env("ML_ENABLED", True),
         ml_model_path=Path(os.getenv("ML_MODEL_PATH", "models/domain_classifier.cbm")),
         cyberscan_model_path=Path(os.getenv("CYBERSCAN_MODEL_PATH", "models/cyberscan_model.pkl")),
