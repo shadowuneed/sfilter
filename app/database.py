@@ -169,7 +169,7 @@ class Database:
         if self.backend == "postgres":
             if psycopg is None:
                 raise RuntimeError("DATABASE_URL is configured, but psycopg is not installed.")
-            conn = psycopg.connect(self.dsn, row_factory=dict_row)
+            conn = psycopg.connect(self.dsn, row_factory=dict_row, prepare_threshold=None)
         else:
             assert self.path is not None
             self.path.parent.mkdir(parents=True, exist_ok=True)

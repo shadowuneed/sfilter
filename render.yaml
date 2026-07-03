@@ -3,7 +3,7 @@ services:
     name: argus-investigator
     runtime: docker
     plan: starter
-    autoDeploy: false
+    autoDeploy: true
     envVars:
       - key: GEMINI_API_KEYS
         sync: false
@@ -21,6 +21,8 @@ services:
         value: "90"
       - key: DATABASE_URL
         sync: false
+      - key: REQUIRE_POSTGRES
+        value: "true"
       - key: DATABASE_PATH
         value: /var/data/data/argus.db
       - key: EVIDENCE_DIR

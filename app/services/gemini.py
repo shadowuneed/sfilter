@@ -196,7 +196,14 @@ class GeminiClient:
             body = f"{body[:360]}..."
         message = f"Gemini API {status} {reason} (model={self.settings.gemini_model}, key_hash={key_hash})"
         if status in AUTH_STATUS_CODES:
-            message += "; ключ отклонен Google. В переменной GEMINI_API_KEYS должен быть API key из Google AI Studio / Generative Language API, без Bearer, кавычек и переносов. Vertex/OAuth/service-account токены здесь не подходят."
+            message += (
+                "; ключ отклонен Google. В GEMINI_API_KEYS должен быть API key из Google AI Studio "
+                "или Generative Language API, без Bearer, кавычек и переносов. Vertex/OAuth/service-account "
+                "токены здесь не подходят. Проверьте, что Generative Language API включен для проекта, "
+                "а ограничения ключа разрешают Gemini API."
+            )
+            if body:
+                message += f": {body}"
             return GeminiAPIError(
                 message,
                 status_code=status,

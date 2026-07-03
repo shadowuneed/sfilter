@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,8 @@ class ScreenshotService:
             "enabled": self.settings.screenshots_enabled,
             "dir": str(self.settings.screenshots_dir),
             "dir_exists": self.settings.screenshots_dir.exists(),
+            "dir_writable": os.access(self.settings.screenshots_dir, os.W_OK),
+            "playwright_browsers_path": os.environ.get("PLAYWRIGHT_BROWSERS_PATH"),
             "playwright_imported": False,
             "chromium_path": None,
             "chromium_exists": False,
@@ -56,6 +59,7 @@ class ScreenshotService:
 
         domain = extract_domain(url) or "unknown"
         safe_domain = re.sub(r"[^a-zA-Z0-9_.-]+", "_", domain)[:80]
+        self.settings.screenshots_dir.mkdir(parents=True, exist_ok=True)
         output = self.settings.screenshots_dir / f"run_{run_id}_{safe_domain}.png"
         rel_path = f"evidence/screenshots/{output.name}"
 

@@ -32,6 +32,7 @@ class DomainMLClassifierTests(unittest.TestCase):
         self.assertTrue(result["available"])
         self.assertEqual(result["feature_count"], 34)
         self.assertIn(result["label"], classifier.status().classes)
+        self.assertEqual(set(classifier.status().classes), {"legit", "phishing", "casino", "pyramid", "suspicious"})
         self.assertGreaterEqual(result["confidence"], 0)
         self.assertIn("probabilities", result)
 

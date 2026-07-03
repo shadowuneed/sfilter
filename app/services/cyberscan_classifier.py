@@ -12,6 +12,43 @@ from sklearn.exceptions import InconsistentVersionWarning
 from app.config import Settings
 
 
+FEATURE_LABELS = {
+    "url_length": "длина адреса",
+    "num_dots": "количество точек в адресе",
+    "num_hyphens": "дефисы в адресе",
+    "num_digits": "цифры в адресе",
+    "has_ip": "IP вместо домена",
+    "subdomain_count": "много уровней в домене",
+    "suspicious_tld": "рискованная доменная зона",
+    "path_length": "длина пути страницы",
+    "num_query_params": "параметры в адресе",
+    "special_chars_count": "служебные символы в адресе",
+    "has_dns": "наличие DNS",
+    "has_mx": "почтовые MX-записи",
+    "num_ip_addresses": "IP-адреса в DNS",
+    "domain_age_days": "возраст домена",
+    "is_private_whois": "скрытый владелец домена",
+    "days_to_expiry": "срок регистрации домена",
+    "ssl_valid": "SSL-сертификат",
+    "ssl_days_until_expiry": "срок SSL-сертификата",
+    "num_forms": "формы на странице",
+    "num_password_forms": "форма ввода пароля",
+    "num_external_scripts": "внешние скрипты",
+    "num_external_resources": "внешние ресурсы",
+    "scam_word_count": "слова риска на странице",
+    "has_brand_impersonation": "упоминание чужого бренда",
+    "num_suspicious_patterns": "подозрительный JavaScript",
+    "num_iframes": "встроенные чужие блоки",
+    "has_meta_refresh": "автоматический редирект",
+    "has_redirect": "редирект",
+    "num_hidden_elements": "скрытые элементы страницы",
+    "num_external_links": "много внешних ссылок",
+    "casino_keywords_count": "слова казино, ставок или бонусов",
+    "has_casino_in_url": "казино или ставки в адресе",
+    "casino_confidence_score": "уверенность по казино-маркерам",
+}
+
+
 @dataclass(frozen=True)
 class CyberScanStatus:
     enabled: bool
@@ -118,7 +155,6 @@ class CyberScanClassifier:
             "has_casino_in_url",
             "suspicious_tld",
             "domain_age_days",
-            "ssl_valid",
             "num_external_links",
             "num_iframes",
             "has_meta_refresh",
@@ -129,18 +165,22 @@ class CyberScanClassifier:
         for name in priority:
             if name not in features:
                 continue
+            if name == "ssl_valid":
+                continue
             value = self._number(features.get(name))
             if value == 0:
                 continue
-            selected.append({"feature": name, "value": value})
+            selected.append({"feature": name, "label": FEATURE_LABELS.get(name, name), "value": value})
         if len(selected) < 6:
             for name in self.structural_features:
+                if name == "ssl_valid":
+                    continue
                 if name in {item["feature"] for item in selected}:
                     continue
                 value = self._number(features.get(name))
                 if value == 0:
                     continue
-                selected.append({"feature": name, "value": value})
+                selected.append({"feature": name, "label": FEATURE_LABELS.get(name, name), "value": value})
                 if len(selected) >= 6:
                     break
         return selected[:6]

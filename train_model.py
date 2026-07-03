@@ -160,11 +160,114 @@ def load_curated_rows(curated_dir: Path, min_confidence: float) -> list[dict[str
                         "url": str(row.get(url_col)),
                         "label": label,
                         "source": path.name,
-                        "label_source": "curated",
+                        "label_source": str(row.get("label_source") or "curated"),
                         "confidence": confidence,
                     }
                 )
     return rows
+
+
+def augment_curated_rows(rows: list[dict[str, Any]], *, multiplier: int, seed: int) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    if multiplier <= 0:
+        return rows, {}
+    rng = random.Random(seed)
+    augmented: list[dict[str, Any]] = []
+    counts: Counter[str] = Counter()
+    for row in rows:
+        label = str(row.get("label") or "")
+        if label not in {"casino", "pyramid", "legit"}:
+            continue
+        if str(row.get("label_source") or "") == "public":
+            continue
+        if not str(row.get("source") or "").lower().endswith(".csv"):
+            continue
+        domain = registered_domain(hostname_from_url(str(row.get("url") or "")))
+        if not domain:
+            continue
+        label_multiplier = multiplier if label in {"casino", "pyramid"} else max(4, multiplier // 4)
+        for url in synthetic_domain_variants(domain, label=label, multiplier=label_multiplier, rng=rng):
+            augmented.append(
+                {
+                    "url": url,
+                    "label": label,
+                    "source": f"augmented:{row.get('source', 'curated')}",
+                    "label_source": "weak_augmented",
+                    "confidence": min(float(row.get("confidence", 0.91) or 0.91), 0.91),
+                    "feature_overrides": technical_feature_profile(label, rng),
+                }
+            )
+            counts[label] += 1
+    return [*rows, *augmented], dict(counts)
+
+
+def synthetic_domain_variants(domain: str, *, label: str, multiplier: int, rng: random.Random) -> list[str]:
+    stem = domain.split(".", 1)[0]
+    base_tld = domain.rsplit(".", 1)[-1] if "." in domain else "com"
+    casino_tokens = ["kz", "play", "club", "vip", "bonus", "mirror", "login", "new", "online", "slot", "win"]
+    pyramid_tokens = ["invest", "income", "profit", "crypto", "capital", "fund", "trust", "club", "global", "roi"]
+    legit_tokens = ["www", "online", "service", "business", "cabinet", "help"]
+    casino_paths = ["kz/login", "bonus", "registration", "slots", "mirror", "app", "promo"]
+    pyramid_paths = ["plans", "invest", "dashboard", "profit", "referral", "staking", "withdraw"]
+    legit_paths = ["", "services", "personal", "business", "support", "news", "login"]
+    tlds = ["com", "net", "org", "online", "site", "club", "vip", "live", "xyz", "pro", base_tld]
+    tokens = casino_tokens if label == "casino" else pyramid_tokens if label == "pyramid" else legit_tokens
+    paths = casino_paths if label == "casino" else pyramid_paths if label == "pyramid" else legit_paths
+    variants: set[str] = set()
+    while len(variants) < multiplier:
+        token = rng.choice(tokens)
+        tld = rng.choice(tlds)
+        number = rng.choice(["", "24", "365", "777", "2026", "01"])
+        host = rng.choice(
+            [
+                f"{stem}{number}.{tld}",
+                f"{token}-{stem}.{tld}",
+                f"{stem}-{token}.{tld}",
+                f"{token}{stem}{number}.{tld}",
+                f"{stem}{token}.{tld}",
+                f"{token}.{stem}.{base_tld}",
+            ]
+        )
+        variants.add(f"https://{host}/{rng.choice(paths)}")
+    return sorted(variants)
+
+
+def technical_feature_profile(label: str, rng: random.Random) -> dict[str, float]:
+    if label == "legit":
+        return {
+            "domain_age_days": float(rng.randint(900, 8000)),
+            "domain_expiry_days": float(rng.randint(120, 1800)),
+            "whois_privacy": 0.0,
+            "whois_available": 1.0,
+            "dns_a_count": float(rng.randint(1, 6)),
+            "dns_mx_count": float(rng.randint(1, 5)),
+            "dns_txt_count": float(rng.randint(1, 8)),
+            "has_spf": 1.0,
+            "has_dmarc": float(rng.choice([0, 1])),
+            "ssl_valid": 1.0,
+            "ssl_days_to_expiry": float(rng.randint(30, 365)),
+            "ssl_self_signed": 0.0,
+            "ssl_issuer_known": 1.0,
+            "response_time_ms": float(rng.randint(80, 1800)),
+            "page_size_bytes": float(rng.randint(8_000, 900_000)),
+        }
+    young_age = rng.randint(1, 180 if label == "pyramid" else 720)
+    return {
+        "domain_age_days": float(young_age),
+        "domain_expiry_days": float(rng.randint(7, 365)),
+        "whois_privacy": float(rng.choice([0, 1, 1])),
+        "whois_available": 1.0,
+        "dns_a_count": float(rng.randint(1, 4)),
+        "dns_mx_count": float(rng.choice([0, 0, 0, 1])),
+        "dns_txt_count": float(rng.choice([0, 0, 1, 2])),
+        "has_spf": float(rng.choice([0, 0, 1])),
+        "has_dmarc": float(rng.choice([0, 0, 0, 1])),
+        "ssl_valid": float(rng.choice([0, 1, 1])),
+        "ssl_days_to_expiry": float(rng.randint(3, 120)),
+        "ssl_self_signed": float(rng.choice([0, 0, 1])),
+        "ssl_issuer_known": float(rng.choice([0, 1, 1])),
+        "response_time_ms": float(rng.randint(120, 3500)),
+        "page_size_bytes": float(rng.randint(1_000, 450_000)),
+    }
 
 
 def dedupe_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -197,6 +300,11 @@ def build_feature_frame(rows: list[dict[str, Any]], *, network: bool, timeout: i
     extracted: list[dict[str, Any]] = []
     for row in tqdm(rows, desc="extracting features"):
         features = extract_features(str(row["url"]), network=network, timeout=timeout, proxy=proxy)
+        overrides = row.get("feature_overrides") or {}
+        if isinstance(overrides, dict):
+            for name, value in overrides.items():
+                if name in FEATURE_COLUMNS:
+                    features[name] = value
         features["label"] = row["label"]
         features["source"] = row.get("source", "")
         features["label_source"] = row.get("label_source", "")
@@ -266,7 +374,7 @@ def write_importance(model: CatBoostClassifier, frame: pd.DataFrame) -> tuple[Pa
     ).to_csv(importance_path, index=False)
 
     shap_path: Path | None = None
-    sample = frame.sample(min(500, len(frame)), random_state=42)
+    sample = frame.sample(min(200, len(frame)), random_state=42)
     try:
         shap_values = model.get_feature_importance(Pool(sample[FEATURE_COLUMNS], sample["label"].astype(str)), type="ShapValues")
         values = np.asarray(shap_values)
@@ -369,6 +477,7 @@ Notes
 - UCI Phishing Websites ARFF files are excluded from training because they do not contain raw URL/domain values.
 - PhiUSIIL precomputed columns are ignored; only URL and label are used, then Argus extracts the shared feature set again.
 - Casino and pyramid classes require curated raw domains from Kazakhstan registry/open reports plus Gemini confidence > 0.9. If those files are absent under data/ml/raw/curated/*.csv, the current run is a baseline and cannot honestly report production quality for those classes.
+- Curated casino/pyramid/legit seeds can be augmented into mirror-like URL variants. Augmented rows are marked weak_augmented and include weak technical priors for WHOIS/DNS/TLS so the model learns to use infrastructure signals. Production predictions still use real evidence values collected by Argus.
 - For full evidence features, rerun with --network. The default offline mode is fast and uses URL/domain-derived features plus unavailable-network sentinel values.
 """
     REPORT_PATH.write_text(textwrap.dedent(report).strip() + "\n", encoding="utf-8")
@@ -380,6 +489,7 @@ def main() -> None:
     parser.add_argument("--limit-per-class", type=int, default=3000)
     parser.add_argument("--curated-dir", type=Path, default=RAW_DIR / "curated")
     parser.add_argument("--min-confidence", type=float, default=0.90)
+    parser.add_argument("--augment-curated-multiplier", type=int, default=20)
     parser.add_argument("--network", action="store_true", help="Enable requests/DNS/WHOIS/SSL/content extraction.")
     parser.add_argument("--proxy", default=None, help="Optional HTTP/SOCKS proxy for network extraction.")
     parser.add_argument("--timeout", type=int, default=8)
@@ -394,6 +504,11 @@ def main() -> None:
         *load_phiusiil_rows(KAGGLE_DATASETS["phiusiil"]["csv"]),
         *load_curated_rows(args.curated_dir, args.min_confidence),
     ]
+    rows, augmentation_counts = augment_curated_rows(
+        rows,
+        multiplier=args.augment_curated_multiplier,
+        seed=args.seed,
+    )
     rows = dedupe_rows(rows)
     rows = sample_by_class(rows, args.limit_per_class, args.seed)
     if len({row["label"] for row in rows}) < 2:
@@ -418,6 +533,8 @@ def main() -> None:
         "model": str(model_path),
         "network_features_enabled": args.network,
         "limit_per_class": args.limit_per_class,
+        "augment_curated_multiplier": args.augment_curated_multiplier,
+        "augmented_rows": augmentation_counts,
     }
     write_report(metrics, audit, missing_classes, importance_path, shap_path, tfidf_path)
     print(f"Wrote {REPORT_PATH}")

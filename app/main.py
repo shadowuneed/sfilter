@@ -152,6 +152,7 @@ def health() -> dict[str, Any]:
         "auth_required": settings.auth_required,
         "auth_configured": bool(settings.admin_token),
         "auth_enforced": bool(settings.auth_required and settings.admin_token),
+        "require_postgres": settings.require_postgres,
         "screenshots_enabled": settings.screenshots_enabled,
         "scan_concurrency": settings.scan_concurrency,
         "candidate_timeout_seconds": settings.candidate_timeout_seconds,

@@ -23,6 +23,38 @@ from feature_extraction import (
 )
 
 
+FEATURE_LABELS = {
+    "url_length": "длина адреса",
+    "hostname_length": "длина домена",
+    "path_length": "длина пути страницы",
+    "dot_count": "количество точек в адресе",
+    "hyphen_count": "дефисы в адресе",
+    "slash_count": "сложность пути",
+    "digit_count": "цифры в адресе",
+    "has_ip_host": "IP вместо домена",
+    "has_at_symbol": "символ @ в адресе",
+    "subdomain_count": "много уровней в домене",
+    "suspicious_tld": "рискованная доменная зона",
+    "domain_age_days": "возраст домена",
+    "domain_expiry_days": "срок регистрации домена",
+    "whois_privacy": "скрытый владелец домена",
+    "dns_a_count": "IP-адреса в DNS",
+    "dns_mx_count": "почтовые MX-записи",
+    "ssl_valid": "SSL-сертификат",
+    "ssl_days_to_expiry": "срок SSL-сертификата",
+    "ssl_self_signed": "самоподписанный SSL",
+    "response_time_ms": "скорость ответа",
+    "page_size_bytes": "размер страницы",
+    "password_form_count": "форма ввода пароля",
+    "iframe_count": "встроенные чужие блоки",
+    "external_link_ratio": "доля внешних ссылок",
+    "popup_or_redirect": "редиректы или всплывающие окна",
+    "casino_keyword_count": "слова казино, ставок или бонусов",
+    "pyramid_keyword_count": "обещания дохода или инвестиций",
+    "phishing_keyword_count": "слова входа, пароля или кошелька",
+}
+
+
 @dataclass(frozen=True)
 class ClassifierStatus:
     enabled: bool
@@ -199,12 +231,20 @@ class DomainMLClassifier:
         except Exception:  # noqa: BLE001
             return []
 
-        indexes = np.argsort(np.abs(row))[::-1][:6]
-        return [
-            {
-                "feature": FEATURE_COLUMNS[int(index)],
-                "value": raw_features.get(FEATURE_COLUMNS[int(index)]),
-                "impact": round(float(row[int(index)]), 4),
-            }
-            for index in indexes
-        ]
+        selected: list[dict[str, Any]] = []
+        for index in np.argsort(np.abs(row))[::-1]:
+            feature = FEATURE_COLUMNS[int(index)]
+            value = raw_features.get(feature)
+            if feature == "ssl_valid" and float(value or 0) == 1:
+                continue
+            selected.append(
+                {
+                    "feature": feature,
+                    "label": FEATURE_LABELS.get(feature, feature),
+                    "value": value,
+                    "impact": round(float(row[int(index)]), 4),
+                }
+            )
+            if len(selected) >= 6:
+                break
+        return selected

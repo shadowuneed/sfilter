@@ -116,6 +116,9 @@ DEFAULT_SEED_QUERIES = [
     'casino mirror new domain bonus',
     'betting mirror casino login',
     'инвестиционный лохотрон отзывы сайт',
+    'казино не выводит деньги жалобы новый домен',
+    'scam complaint withdraw problem casino domain',
+    'фишинг Kaspi жалобы поддельный сайт',
 ]
 
 # Эти фиды выключены по умолчанию. Они часто дают malware/IP и засоряют задачу casino/scam.
@@ -142,6 +145,7 @@ class Settings:
 
     database_url: str | None = None
     database_path: Path = Path("data/argus.db")
+    require_postgres: bool = False
     evidence_dir: Path = Path("evidence")
     export_dir: Path = Path("exports")
 
@@ -199,6 +203,7 @@ def get_settings() -> Settings:
         auth_required=_bool_env("AUTH_REQUIRED", True),
         database_url=_optional_env("DATABASE_URL"),
         database_path=Path(os.getenv("DATABASE_PATH", "data/argus.db")),
+        require_postgres=_bool_env("REQUIRE_POSTGRES", False),
         evidence_dir=Path(os.getenv("EVIDENCE_DIR", "evidence")),
         export_dir=Path(os.getenv("EXPORT_DIR", "exports")),
         max_candidates_per_run=_int_env("MAX_CANDIDATES_PER_RUN", 50),
@@ -228,6 +233,8 @@ def get_settings() -> Settings:
         osint_feeds=osint_feeds,
     )
 
+    if settings.require_postgres and not settings.database_url:
+        raise RuntimeError("REQUIRE_POSTGRES=true, but DATABASE_URL is not configured.")
     if not settings.database_url:
         settings.database_path.parent.mkdir(parents=True, exist_ok=True)
     settings.evidence_dir.mkdir(parents=True, exist_ok=True)

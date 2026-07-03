@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 
 from app.services.evidence import score_finding
+from app.services.evidence import EvidenceResult
+from app.services.investigator import Investigator
 
 
 class ScoringTests(unittest.TestCase):
@@ -35,6 +37,36 @@ class ScoringTests(unittest.TestCase):
         self.assertLess(risk, 40)
         self.assertEqual(verdict, "low_signal")
         self.assertEqual(reasons, [])
+
+    def test_technical_signals_use_ssl_as_risk_metadata_not_legitimacy(self) -> None:
+        evidence = EvidenceResult(
+            requested_url="https://fresh-risk.example",
+            final_url="https://fresh-risk.example",
+            domain="fresh-risk.example",
+            status_code=200,
+            active=True,
+            dns={"records": ["203.0.113.10"], "mx_records": []},
+            tls={"valid": True, "issuer": "Let's Encrypt", "expires_in_days": 90},
+            domain_info={"age_days": 4, "registrar": "Example Privacy Registrar", "privacy": True},
+        )
+
+        delta, reasons = Investigator._technical_risk_signals(evidence)
+
+        self.assertGreater(delta, 0)
+        self.assertTrue(any("молодой" in reason.lower() for reason in reasons))
+        self.assertFalse(any("легитим" in reason.lower() for reason in reasons))
+
+    def test_confident_legit_ml_reduces_risk(self) -> None:
+        self.assertLess(
+            Investigator._ml_risk_delta({"available": True, "label": "legit", "confidence": 0.86}),
+            0,
+        )
+
+    def test_suspicious_ml_increases_risk(self) -> None:
+        self.assertGreater(
+            Investigator._ml_risk_delta({"available": True, "label": "phishing", "confidence": 0.86}),
+            0,
+        )
 
 
 if __name__ == "__main__":

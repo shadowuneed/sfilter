@@ -18,7 +18,14 @@ Argus is a working OSINT investigation platform for suspicious casino, betting, 
 
 ## Evidence Exports
 
-CSV cannot embed images as real worksheet objects; it can only contain screenshot file paths. XLSX export embeds screenshot thumbnails directly into the spreadsheet and also keeps the original screenshot path, HTML path, and HTML SHA-256.
+CSV is a short presentation report: domain, address, risk, category, HTTP, mirror group, title, reasons, sources, screenshot path, and check date. It intentionally does not show internal IDs, archive flags, HTML paths, or SHA hashes.
+
+XLSX has two sheets:
+
+- `Отчет`: the same simplified report plus embedded screenshot thumbnails when the screenshot file exists.
+- `Доказательства`: technical audit fields such as run/finding IDs, saved HTML file, and SHA-256.
+
+How to explain HTML and SHA-256 to non-technical people: Argus saves a copy of the page HTML at the moment of inspection. SHA-256 is a digital fingerprint of that saved HTML file. If the website changes later, the fingerprint helps prove which exact page copy was captured and that the evidence file was not silently changed.
 
 ## Case Workflow
 
@@ -63,6 +70,7 @@ GEMINI_MODEL=gemini-2.5-flash
 ADMIN_TOKEN=use-a-long-random-secret
 AUTH_REQUIRED=true
 DATABASE_URL=postgresql://postgres:password@host:5432/postgres?sslmode=require
+REQUIRE_POSTGRES=false
 ML_ENABLED=true
 ML_MODEL_PATH=models/domain_classifier.cbm
 CYBERSCAN_MODEL_PATH=models/cyberscan_model.pkl
@@ -77,6 +85,8 @@ Do not commit real API keys. Keys pasted into chat should be treated as sensitiv
 Set `ADMIN_TOKEN` in the deployment environment. If it is missing, the UI no longer blocks the whole page with a login modal, but protected API actions cannot run correctly until the variable exists.
 
 `DATABASE_URL` enables persistent Postgres storage and takes priority over `DATABASE_PATH`. Use the Supabase connection string with SSL enabled. For `*.supabase.com` hosts Argus also adds `sslmode=require` automatically if it is missing. If `DATABASE_URL` is empty, Argus falls back to local SQLite at `DATABASE_PATH`, which is useful only for local development.
+
+`REQUIRE_POSTGRES=true` disables silent SQLite fallback. The Render blueprint sets it to `true`, so production fails fast if Supabase `DATABASE_URL` is missing instead of creating a temporary local database.
 
 `ML_MODEL_PATH` points to the trained CatBoost artifact. `CYBERSCAN_MODEL_PATH` points to the bundled CyberScan RandomForest artifact copied from the reference project. Argus collects candidates from OSINT feeds first, optionally enriches the pool with Gemini, opens each reachable site, extracts evidence, and stores CatBoost, CyberScan ML, and content-analysis signals inside each finding's evidence JSON.
 
@@ -101,7 +111,7 @@ The Docker image runs as a non-root `argus` user.
 Persistent disks are available only on paid Render services, so the blueprint uses the `starter` plan instead of `free`.
 For an existing Render service, add `ADMIN_TOKEN` manually in the service's Environment page because `sync: false` variables are prompted only during initial Blueprint creation.
 
-For durable history on any platform, set `DATABASE_URL` to Postgres/Supabase. When `DATABASE_URL` is present, the app creates and uses Postgres tables for runs, findings, cases, logs, and Gemini usage counters.
+For durable history on Render, set `DATABASE_URL` to the Supabase Postgres connection string in the service Environment page. When `DATABASE_URL` is present, the app creates and uses Postgres tables for runs, findings, cases, logs, and Gemini usage counters. The app disables psycopg prepared statements for the Supabase pooler on port `6543`, which avoids transaction-pooler issues.
 
 The blueprint still mounts a persistent disk at `/var/data` for file evidence:
 

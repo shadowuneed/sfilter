@@ -63,7 +63,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
         self.assertIn("casino-mirror.example", hosts_tokens)
         self.assertIn("bonus-slot.example", hosts_tokens)
 
-    def test_known_domains_are_rechecked_not_dropped(self) -> None:
+    def test_known_domains_are_dropped_from_auto_discovery(self) -> None:
         class FakeDb:
             def __init__(self) -> None:
                 self.logs = []
@@ -81,9 +81,12 @@ class InvestigatorCandidateTests(unittest.TestCase):
         self.investigator.db = FakeDb()
         self.investigator.gemini = FakeGemini()
 
-        candidates = asyncio.run(self.investigator._discover_candidates(1, "mycasino.kz", 5))
+        candidates = asyncio.run(self.investigator._discover_candidates(1, "mycasino.kz", 1))
 
-        self.assertTrue(any(candidate.domain == "mycasino.kz" for candidate in candidates))
+        self.assertFalse(any(candidate.domain == "mycasino.kz" for candidate in candidates))
+        self.assertEqual(candidates, [])
+        last_log = self.investigator.db.logs[-1][0]
+        self.assertEqual(last_log[3]["skipped_known"], 1)
 
     def test_bootstrap_adds_verification_candidates_when_discovery_is_empty(self) -> None:
         self.investigator.settings = Settings(seed_queries=["казино зеркало рабочий вход"])

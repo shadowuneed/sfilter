@@ -12,11 +12,14 @@ const state = {
   runDetails: new Map(),
   runStatuses: new Map(),
   runFindingsExpanded: false,
+  visibleCasesLimit: 8,
   chartPoints: [],
   chartHoverIndex: null,
 };
 
 const AUTO_RUN_CANDIDATES = 50;
+const CASES_INITIAL_LIMIT = 8;
+const CASES_PAGE_SIZE = 20;
 
 const els = {
   scanForm: document.getElementById("scanForm"),
@@ -77,6 +80,7 @@ const statusLabels = {
 };
 
 const categoryLabels = {
+  legit: "Низкий риск",
   casino: "Казино",
   phishing: "Фишинг",
   pyramid: "Пирамиды",
@@ -84,10 +88,46 @@ const categoryLabels = {
 };
 
 const categoryColors = {
+  legit: "#10b981",
   casino: "#f59e0b",
   phishing: "#ef4444",
   pyramid: "#8b5cf6",
   suspicious: "#3b82f6",
+};
+
+const modelLabelLabels = {
+  legit: "похож на обычный сайт",
+  casino: "похож на казино/беттинг",
+  phishing: "похож на фишинг",
+  pyramid: "похож на финансовую пирамиду",
+  suspicious: "требует проверки",
+};
+
+const levelLabels = {
+  info: "инфо",
+  warning: "внимание",
+  error: "ошибка",
+};
+
+const featureLabels = {
+  phishing_keyword_count: "слова входа, пароля или кошелька",
+  casino_keyword_count: "слова казино, ставок или бонусов",
+  pyramid_keyword_count: "обещания дохода или инвестиций",
+  subdomain_count: "много уровней в домене",
+  path_length: "длинный путь страницы",
+  digit_count: "цифры в адресе",
+  suspicious_tld: "рискованная доменная зона",
+  domain_age_days: "возраст домена",
+  ssl_valid: "состояние SSL",
+  password_form_count: "форма ввода пароля",
+  num_password_forms: "форма ввода пароля",
+  num_suspicious_patterns: "подозрительный JavaScript",
+  num_hidden_elements: "скрытые элементы страницы",
+  casino_confidence_score: "уверенность по казино-маркерам",
+  has_brand_impersonation: "упоминание чужого бренда",
+  has_casino_in_url: "казино/ставки в адресе",
+  num_external_links: "много внешних ссылок",
+  num_iframes: "встроенные чужие блоки",
 };
 
 const activityStages = [
@@ -234,6 +274,7 @@ function formatPercent(value) {
 
 function normalizeCategory(value) {
   const text = String(value || "").toLowerCase();
+  if (/(legit|benign|trusted|low_signal)/.test(text)) return "legit";
   if (/(casino|gambling|betting|bookmaker)/.test(text)) return "casino";
   if (/(phishing|scam|malware)/.test(text)) return "phishing";
   if (/(pyramid|investment)/.test(text)) return "pyramid";
@@ -242,6 +283,11 @@ function normalizeCategory(value) {
 
 function categoryLabel(value) {
   return categoryLabels[normalizeCategory(value)] || "Подозрительный";
+}
+
+function modelLabel(value) {
+  const key = String(value || "").toLowerCase();
+  return modelLabelLabels[key] || value || "нет вывода";
 }
 
 function riskClass(score) {
@@ -591,7 +637,9 @@ function formatMetaParts(meta) {
   if (meta.skipped !== undefined) parts.push(`пропущено: ${meta.skipped}`);
   if (meta.raw !== undefined) parts.push(`raw: ${meta.raw}`);
   if (meta.deduped !== undefined) parts.push(`после дедупликации: ${meta.deduped}`);
-  if (meta.known_rechecked !== undefined) parts.push(`повторно проверяются: ${meta.known_rechecked}`);
+  if (meta.known_rechecked !== undefined) parts.push(`уже известные: ${meta.known_rechecked}`);
+  if (meta.skipped_known !== undefined) parts.push(`пропущено повторов: ${meta.skipped_known}`);
+  if (meta.ready !== undefined) parts.push(`готово к проверке: ${meta.ready}`);
   if (meta.items !== undefined) parts.push(`items: ${meta.items}`);
   if (meta.sources !== undefined) parts.push(`sources: ${meta.sources}`);
   if (meta.limit !== undefined) parts.push(`лимит: ${meta.limit}`);
@@ -629,7 +677,7 @@ function renderLogs(logs) {
     return `
       <div class="log-line ${cls}">
         <span class="log-time">${escapeHtml(formatDateTime(log.timestamp))}</span>
-        <strong class="log-level">${escapeHtml(log.level)}</strong>
+        <strong class="log-level">${escapeHtml(levelLabels[log.level] || log.level)}</strong>
         <div class="log-body">
           <p>${escapeHtml(log.message)}</p>
           ${meta.length ? `<div class="log-meta">${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
@@ -644,6 +692,7 @@ async function loadCases() {
   if (els.caseSearch.value.trim()) params.set("q", els.caseSearch.value.trim());
   if (els.caseMinRisk.value) params.set("min_risk", els.caseMinRisk.value);
   const data = await api(`/api/cases?${params.toString()}`);
+  state.visibleCasesLimit = CASES_INITIAL_LIMIT;
   state.cases = data.cases || [];
   const category = els.categoryFilter.value;
   state.filteredCases = category
@@ -682,8 +731,30 @@ function renderCases(cases) {
     els.casesList.innerHTML = '<div class="empty-state">В выбранном фильтре нет рабочих доменов.</div>';
     return;
   }
-  els.casesList.innerHTML = cases.map(domainRow).join("");
+  const visibleLimit = Math.max(CASES_INITIAL_LIMIT, state.visibleCasesLimit);
+  const visibleCases = cases.slice(0, visibleLimit);
+  const hiddenCount = Math.max(0, cases.length - visibleCases.length);
+  const controls = hiddenCount || visibleCases.length > CASES_INITIAL_LIMIT
+    ? `
+      <div class="case-list-controls">
+        <span>Показано ${visibleCases.length} из ${cases.length}</span>
+        <div>
+          ${hiddenCount ? `<button class="secondary-btn" data-cases-show-more type="button">Показать ещё ${Math.min(CASES_PAGE_SIZE, hiddenCount)}</button>` : ""}
+          ${visibleCases.length > CASES_INITIAL_LIMIT ? '<button class="ghost-btn" data-cases-collapse type="button">Свернуть</button>' : ""}
+        </div>
+      </div>`
+    : "";
+  els.casesList.innerHTML = visibleCases.map(domainRow).join("") + controls;
   bindCaseOpenButtons(els.casesList);
+  els.casesList.querySelector("[data-cases-show-more]")?.addEventListener("click", () => {
+    state.visibleCasesLimit += CASES_PAGE_SIZE;
+    renderCases(state.filteredCases);
+  });
+  els.casesList.querySelector("[data-cases-collapse]")?.addEventListener("click", () => {
+    state.visibleCasesLimit = CASES_INITIAL_LIMIT;
+    renderCases(state.filteredCases);
+    document.getElementById("domainsPanel")?.scrollIntoView({ block: "start", behavior: "smooth" });
+  });
 }
 
 function renderRunFindings(findings, run, expanded = false) {
@@ -847,7 +918,7 @@ function siteEvidenceCard(item) {
   const risk = Number(item.best_risk_score || 0);
   const daysLeft = certDaysLeft(tls);
   const sslText = tls.valid ? "Действителен" : "Недействителен";
-  const sslClass = tls.valid ? "good" : "bad";
+  const sslClass = tls.valid ? "neutral" : "bad";
   const mxCount = (dns.mx_records || []).length;
   return `
     <article class="site-evidence-card">
@@ -863,7 +934,7 @@ function siteEvidenceCard(item) {
           <h3>SSL сертификат</h3>
           ${techRow("Статус", sslText, sslClass)}
           ${techRow("Издатель", tls.issuer || "None")}
-          ${techRow("Дней до истечения", daysLeft ?? "None", daysLeft !== null && daysLeft >= 14 ? "good" : "bad")}
+          ${techRow("Дней до истечения", daysLeft ?? "None", daysLeft !== null && daysLeft < 14 ? "bad" : "neutral")}
         </div>
         <div class="mini-tech-box">
           <h3>DNS</h3>
@@ -1084,6 +1155,19 @@ function latestFinding(item, findings) {
   return findings[0] || item || {};
 }
 
+function compactSignals(items, limit = 12) {
+  const seen = new Set();
+  const result = [];
+  (items || []).forEach((item) => {
+    const text = String(item || "").trim();
+    const key = text.toLowerCase().replace(/\s+/g, " ");
+    if (!text || seen.has(key)) return;
+    seen.add(key);
+    result.push(text);
+  });
+  return result.slice(0, limit);
+}
+
 function positiveSignals(finding) {
   const evidence = finding.evidence || {};
   const ml = evidence.ml || {};
@@ -1092,7 +1176,9 @@ function positiveSignals(finding) {
   const dns = finding.dns || {};
   const signals = [];
   if (finding.status_code >= 200 && finding.status_code < 400) signals.push(`Сайт отвечает HTTP ${finding.status_code}`);
-  if (tls.valid) signals.push(`SSL сертификат действителен${tls.issuer ? `, издатель ${tls.issuer}` : ""}`);
+  if (tls.issuer || tls.not_after || tls.expires_in_days !== undefined) {
+    signals.push(`TLS зафиксирован как метаданные${tls.issuer ? `: ${tls.issuer}` : ""}`);
+  }
   if ((dns.records || []).length) signals.push(`DNS возвращает ${(dns.records || []).length} IP адрес(ов)`);
   if (finding.html_sha256) signals.push("HTML сохранен с SHA-256 отпечатком");
   if (finding.screenshot_path) signals.push("Скриншот страницы сохранен");
@@ -1100,7 +1186,7 @@ function positiveSignals(finding) {
   if (evidence.access_origin) signals.push(`Проверено через: ${evidence.access_origin}`);
   if (ml.available && ml.label === "legit") signals.push(`ML CatBoost считает сайт легитимным: ${formatPercent(ml.confidence)}`);
   if (cyber.available && cyber.label === "legit") signals.push(`CyberScan ML не видит сильных подозрительных признаков: ${formatPercent(cyber.confidence)}`);
-  return signals.length ? signals : ["Положительные технические признаки не выделены"];
+  return signals.length ? compactSignals(signals, 8) : ["Положительные технические признаки не выделены"];
 }
 
 function negativeSignals(finding) {
@@ -1123,13 +1209,13 @@ function negativeSignals(finding) {
   if (ml.available && ml.label && ml.label !== "legit") signals.push(`ML CatBoost: ${ml.label}, уверенность ${formatPercent(ml.confidence)}`);
   if (cyber.available && cyber.label === "suspicious") signals.push(`CyberScan ML: подозрительность ${formatPercent(cyber.suspicious_probability)}`);
   if (Array.isArray(contentAi.signals)) signals.push(...contentAi.signals.slice(0, 6));
-  return signals.length ? signals : ["Явные негативные признаки не найдены"];
+  return signals.length ? compactSignals(signals, 12) : ["Явные негативные признаки не найдены"];
 }
 
 function renderSignalList(items, type) {
   return `
     <div class="signal-box ${type}">
-      <h3>${type === "positive" ? "Позитивные признаки" : "Подозрительные признаки"}</h3>
+      <h3>${type === "positive" ? "Подтвержденные факты" : "Подозрительные признаки"}</h3>
       <ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
     </div>`;
 }
@@ -1144,7 +1230,10 @@ function techCard(title, rows) {
 
 function mlFeatureText(ml) {
   const features = Array.isArray(ml?.top_features) ? ml.top_features : [];
-  return features.slice(0, 4).map((item) => item.feature).filter(Boolean).join(", ") || "None";
+  return features.slice(0, 4)
+    .map((item) => item.label || featureLabels[item.feature] || item.feature)
+    .filter(Boolean)
+    .join(", ") || "Нет";
 }
 
 function renderCaseDetail(item, findings) {
@@ -1198,7 +1287,7 @@ function renderCaseDetail(item, findings) {
     <section class="tab-panel active" data-panel="technical">
       <div class="tech-grid">
         ${techCard("SSL сертификат", [
-          techRow("Статус", tls.valid ? "Действителен" : "Недействителен", tls.valid ? "good" : "bad"),
+          techRow("Статус", tls.valid ? "Действителен" : "Недействителен", tls.valid ? "neutral" : "bad"),
           techRow("Издатель", tls.issuer || "None"),
           techRow("Истекает", tls.not_after || "None"),
           techRow("Дней до истечения", daysLeft ?? "None", daysLeft !== null && daysLeft >= 14 ? "good" : "bad"),
@@ -1223,13 +1312,13 @@ function renderCaseDetail(item, findings) {
         ])}
         ${techCard("ML модель", [
           techRow("Статус", ml.available ? "CatBoost готов" : (ml.error || "Недоступна"), ml.available ? "good" : "bad"),
-          techRow("Класс", ml.label || "None"),
+          techRow("Класс", modelLabel(ml.label)),
           techRow("Уверенность", formatPercent(ml.confidence), ml.label && ml.label !== "legit" ? "bad" : "good"),
           techRow("Топ признаки", mlFeatureText(ml)),
         ])}
         ${techCard("CyberScan ML", [
           techRow("Статус", cyber.available ? "RandomForest готов" : (cyber.error || "Недоступна"), cyber.available ? "good" : "bad"),
-          techRow("Вердикт", cyber.label || "None"),
+          techRow("Вердикт", modelLabel(cyber.label)),
           techRow("Подозрительность", formatPercent(cyber.suspicious_probability), cyber.label === "suspicious" ? "bad" : "good"),
           techRow("Признаки", mlFeatureText(cyber)),
         ])}
@@ -1259,6 +1348,7 @@ function renderCaseDetail(item, findings) {
     </section>
 
     <section class="tab-panel" data-panel="evidence">
+      ${screenshot ? `<a class="screenshot-preview" href="/${escapeHtml(screenshot)}" target="_blank" rel="noreferrer"><img src="/${escapeHtml(screenshot)}" alt="Скриншот ${escapeHtml(item.domain)}" loading="lazy"></a>` : ""}
       <div class="evidence-grid">
         ${screenshot ? `<a class="evidence-link" href="/${escapeHtml(screenshot)}" target="_blank" rel="noreferrer"><span>Скриншот</span><strong>${escapeHtml(screenshot)}</strong></a>` : ""}
         ${html ? `<a class="evidence-link" href="/${escapeHtml(html)}" target="_blank" rel="noreferrer"><span>HTML</span><strong>${escapeHtml(html)}</strong></a>` : ""}

@@ -44,6 +44,12 @@ class ConfigTests(unittest.TestCase):
         with patch.dict(os.environ, {"DATABASE_URL": url}, clear=False):
             self.assertEqual(get_settings().database_url, url)
 
+    @patch("app.config._load_dotenv", lambda: None)
+    def test_require_postgres_blocks_sqlite_fallback(self) -> None:
+        with patch.dict(os.environ, {"REQUIRE_POSTGRES": "true"}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "DATABASE_URL"):
+                get_settings()
+
     def test_kz_proxy_alias_is_read(self) -> None:
         with patch.dict(os.environ, {"KZ_HTTP_PROXY": "socks5://proxy.kz:1080"}, clear=False):
             name, value = _first_env(("KZ_PROXY_URL", "KZ_HTTP_PROXY", "KZ_HTTPS_PROXY", "KZ_PROXY"))

@@ -116,6 +116,64 @@ BOOTSTRAP_CANDIDATES = [
     {"domain": "nationalcasino.com", "category": "casino", "brand": "National Casino", "aliases": ["national casino"]},
 ]
 
+CATEGORY_DISPLAY = {
+    "legit": "обычный сайт",
+    "casino": "казино или ставки",
+    "gambling": "казино или ставки",
+    "betting": "казино или ставки",
+    "phishing": "фишинг",
+    "scam": "скам",
+    "pyramid": "финансовая пирамида",
+    "suspicious": "подозрительный сайт",
+}
+
+FEATURE_DISPLAY = {
+    "url_length": "длина адреса",
+    "hostname_length": "длина домена",
+    "path_length": "длина пути страницы",
+    "dot_count": "количество точек в адресе",
+    "hyphen_count": "дефисы в адресе",
+    "slash_count": "сложность пути",
+    "digit_count": "цифры в адресе",
+    "has_ip_host": "IP вместо домена",
+    "has_at_symbol": "символ @ в адресе",
+    "subdomain_count": "много уровней в домене",
+    "suspicious_tld": "рискованная доменная зона",
+    "domain_age_days": "возраст домена",
+    "domain_expiry_days": "срок регистрации домена",
+    "whois_privacy": "скрытый владелец домена",
+    "registrar_country_kz": "регистратор в Казахстане",
+    "whois_available": "наличие WHOIS/RDAP",
+    "dns_a_count": "IP-адреса в DNS",
+    "dns_mx_count": "почтовые MX-записи",
+    "dns_txt_count": "TXT-записи DNS",
+    "has_spf": "SPF для почты",
+    "has_dmarc": "DMARC для почты",
+    "ssl_valid": "SSL-сертификат",
+    "ssl_days_to_expiry": "срок SSL-сертификата",
+    "ssl_self_signed": "самоподписанный SSL",
+    "ssl_issuer_known": "известный издатель SSL",
+    "response_time_ms": "скорость ответа",
+    "page_size_bytes": "размер страницы",
+    "password_form_count": "форма ввода пароля",
+    "iframe_count": "встроенные чужие блоки",
+    "external_link_ratio": "доля внешних ссылок",
+    "popup_or_redirect": "редиректы или всплывающие окна",
+    "casino_keyword_count": "слова казино, ставок или бонусов",
+    "pyramid_keyword_count": "обещания дохода или инвестиций",
+    "phishing_keyword_count": "слова входа, пароля или кошелька",
+    "casino_confidence_score": "уверенность по казино-маркерам",
+    "casino_keywords_count": "слова казино, ставок или бонусов",
+    "num_password_forms": "форма ввода пароля",
+    "has_brand_impersonation": "упоминание чужого бренда",
+    "num_suspicious_patterns": "подозрительный JavaScript",
+    "has_casino_in_url": "казино или ставки в адресе",
+    "num_external_links": "много внешних ссылок",
+    "num_iframes": "встроенные чужие блоки",
+    "has_meta_refresh": "автоматический редирект",
+    "num_hidden_elements": "скрытые элементы страницы",
+}
+
 
 @dataclass
 class Candidate:
@@ -276,7 +334,7 @@ class Investigator:
 
         try:
             candidates = await self._discover_candidates(run_id, seed_query, max_candidates)
-            self.db.update_run(run_id, candidate_count=max_candidates)
+            self.db.update_run(run_id, candidate_count=min(max_candidates, len(candidates)))
             self.db.add_log(run_id, "info", "Список сайтов-кандидатов готов", {"count": len(candidates)})
 
             if not candidates:
@@ -495,14 +553,19 @@ class Investigator:
 
         candidates = self._dedupe_candidates(discovered, discovery_limit)
         known_domains = self.db.known_domains()
-        known_rechecked = sum(1 for candidate in candidates if candidate.key() in known_domains)
+        fresh_candidates, skipped_known = self._exclude_known_candidates(candidates, known_domains)
         self.db.add_log(
             run_id,
             "info",
             "Discovery candidates deduplicated",
-            {"raw": len(discovered), "deduped": len(candidates), "known_rechecked": known_rechecked},
+            {
+                "raw": len(discovered),
+                "deduped": len(candidates),
+                "skipped_known": skipped_known,
+                "ready": len(fresh_candidates),
+            },
         )
-        return candidates[:discovery_limit]
+        return fresh_candidates[:discovery_limit]
 
     def _discover_from_bootstrap(self, seed_query: str | None, limit: int) -> list[Candidate]:
         if limit <= 0:
@@ -548,6 +611,8 @@ class Investigator:
         prompt = f"""
 Ты OSINT-следователь. Найди публичные подозрительные сайты. Учитывай, что сайт может выглядеть как обычный домен, но внутри содержать casino, betting, фишинг или финансовый скам. Найди сайты, которые похожи на:
 Используй Google Search grounding как браузерный поиск. Обязательно проверяй жалобы пользователей, форумы, отзывы, публичные обсуждения, blacklist reports и страницы с complaints.
+Ищи не только по названию бренда, но и по шаблонам "site scam", "withdraw problem", "не выводят деньги", "жалоба", "отзывы", "обман", "blacklist", "complaint", "report".
+Полезные источники для расширения пула: публичные страницы жалоб, ScamAdviser/Trustpilot-style обзоры, форумы пострадавших, открытые blacklist reports, обсуждения возврата денег и проблем с выводом средств.
 Важно: форум, новость, Telegram, YouTube, соцсеть или каталог не является кандидатом. Из таких страниц извлекай прямой домен подозрительного сайта и сохраняй страницу жалобы в source_urls.
 1) онлайн-казино/беттинг без очевидной лицензии,
 2) рабочие зеркала казино/беттинга,
@@ -944,11 +1009,16 @@ class Investigator:
             100,
             risk
             + int(content_ai.get("risk_delta") or 0)
+            + self._ml_risk_delta(ml_result)
             + self._cyberscan_risk_delta(cyberscan_result),
         )
+        technical_delta, technical_reasons = self._technical_risk_signals(evidence)
+        risk = max(0, min(100, risk + technical_delta))
         verdict = self._verdict_for_risk(risk)
         if candidate.why:
             reasons.insert(0, candidate.why)
+        for signal in reversed(technical_reasons):
+            reasons.insert(1 if candidate.why else 0, signal)
         for signal in reversed(content_ai.get("signals") or []):
             reasons.insert(1 if candidate.why else 0, str(signal))
         cyberscan_reason = self._cyberscan_reason(cyberscan_result)
@@ -966,6 +1036,7 @@ class Investigator:
             reasons.append("HTML не сохранен, но сайт ответил нормальным HTTP-кодом; DNS/TLS/скорость/редиректы зафиксированы.")
         if evidence.tls and not evidence.tls.get("valid"):
             reasons.append("SSL/TLS сертификат отсутствует или недействителен; сайт все равно зафиксирован как рабочий по HTTP-доступности.")
+        reasons = self._compact_reasons(reasons)
 
         return {
             "url": candidate.url,
@@ -998,6 +1069,62 @@ class Investigator:
             "reasons_json": reasons,
         }
 
+    @staticmethod
+    def _technical_risk_signals(evidence: Any) -> tuple[int, list[str]]:
+        delta = 0
+        reasons: list[str] = []
+        domain_info = evidence.domain_info or {}
+        dns = evidence.dns or {}
+        tls = evidence.tls or {}
+
+        age = domain_info.get("age_days")
+        try:
+            age_days = int(age) if age is not None else None
+        except (TypeError, ValueError):
+            age_days = None
+        if age_days is not None:
+            if age_days >= 0 and age_days <= 30:
+                delta += 15
+                reasons.append(f"Домен очень молодой: {age_days} дн.; это сильный признак одноразовой инфраструктуры.")
+            elif age_days <= 180:
+                delta += 8
+                reasons.append(f"Домен зарегистрирован недавно: {age_days} дн.; требуется повышенная проверка.")
+
+        registrar = str(domain_info.get("registrar") or "")
+        privacy_text = " ".join(
+            str(domain_info.get(key) or "")
+            for key in ("privacy", "is_private", "registrant", "org", "organization")
+        ).lower()
+        if any(token in privacy_text for token in ("privacy", "redacted", "private", "whoisguard")):
+            delta += 5
+            reasons.append("WHOIS выглядит скрытым или редактированным; владелец домена не прозрачен.")
+        if registrar:
+            reasons.append(f"WHOIS registrar: {registrar}.")
+
+        mx_records = dns.get("mx_records") or []
+        if not mx_records:
+            delta += 3
+            reasons.append("MX-записи не найдены; для одноразовых доменов это частый технический паттерн.")
+
+        if tls:
+            issuer = str(tls.get("issuer") or "").lower()
+            subject = str(tls.get("subject") or "").lower()
+            if not tls.get("valid"):
+                delta += 8
+                reasons.append("SSL/TLS не подтвержден или отсутствует; это не доказывает фишинг, но усиливает технический риск.")
+            if issuer and subject and issuer == subject:
+                delta += 10
+                reasons.append("SSL/TLS самоподписанный; это сильный технический сигнал риска.")
+            try:
+                days_left = int(tls.get("expires_in_days"))
+            except (TypeError, ValueError):
+                days_left = None
+            if days_left is not None and 0 <= days_left <= 7:
+                delta += 4
+                reasons.append(f"SSL/TLS истекает очень скоро: {days_left} дн.; фиксируется как технический риск.")
+
+        return delta, reasons
+
     def _category_with_ai(
         self,
         category: str,
@@ -1009,6 +1136,11 @@ class Investigator:
         content_confidence = str(content_ai.get("category_confidence") or "low").lower()
         if content_label in {"casino", "pyramid", "phishing", "suspicious"} and content_confidence in {"medium", "high"}:
             return content_label
+
+        ml_label = str(ml_result.get("label") or "").lower()
+        ml_confidence = float(ml_result.get("confidence") or 0)
+        if ml_label == "legit" and ml_confidence >= 0.75 and content_confidence == "low":
+            return "legit"
 
         ml_category = self._category_with_ml(category, ml_result)
         if ml_category != category:
@@ -1032,10 +1164,38 @@ class Investigator:
         return category
 
     @staticmethod
+    def _ml_risk_delta(ml_result: dict[str, Any]) -> int:
+        if not ml_result.get("available"):
+            return 0
+        label = str(ml_result.get("label") or "").lower()
+        confidence = float(ml_result.get("confidence") or 0)
+        if label == "legit":
+            if confidence >= 0.85:
+                return -24
+            if confidence >= 0.70:
+                return -16
+            if confidence >= 0.58:
+                return -8
+            return 0
+        if label in {"phishing", "casino", "pyramid"}:
+            if confidence >= 0.85:
+                return 16
+            if confidence >= 0.68:
+                return 10
+            if confidence >= 0.55:
+                return 5
+        if label == "suspicious" and confidence >= 0.70:
+            return 8
+        return 0
+
+    @staticmethod
     def _cyberscan_risk_delta(cyberscan_result: dict[str, Any]) -> int:
         if not cyberscan_result.get("available"):
             return 0
+        label = str(cyberscan_result.get("label") or "").lower()
         probability = float(cyberscan_result.get("suspicious_probability") or 0)
+        if label == "legit" or probability <= 0.30:
+            return -8 if probability <= 0.22 else -4
         if probability >= 0.85:
             return 18
         if probability >= 0.68:
@@ -1044,18 +1204,17 @@ class Investigator:
             return 6
         return 0
 
-    @staticmethod
-    def _cyberscan_reason(cyberscan_result: dict[str, Any]) -> str | None:
+    @classmethod
+    def _cyberscan_reason(cls, cyberscan_result: dict[str, Any]) -> str | None:
         if not cyberscan_result.get("available"):
             return None
+        label = str(cyberscan_result.get("label") or "").lower()
         probability = float(cyberscan_result.get("suspicious_probability") or 0)
-        top = [
-            str(item.get("feature"))
-            for item in cyberscan_result.get("top_features", [])
-            if item.get("feature")
-        ][:5]
-        details = f"; признаки: {', '.join(top)}" if top else ""
-        return f"CyberScan ML оценил вероятность подозрительности как {probability:.0%}{details}."
+        top = cls._readable_feature_list(cyberscan_result.get("top_features", []), limit=4)
+        details = f"; главные сигналы: {', '.join(top)}" if top else ""
+        if label == "legit" or probability <= 0.30:
+            return f"CyberScan ML не видит сильных признаков мошенничества: подозрительность {probability:.0%}{details}."
+        return f"CyberScan ML оценил подозрительность сайта как {probability:.0%}{details}."
 
     @staticmethod
     def _verdict_for_risk(risk: int) -> str:
@@ -1067,19 +1226,51 @@ class Investigator:
             return "needs_review"
         return "low_signal"
 
-    @staticmethod
-    def _ml_reason(ml_result: dict[str, Any]) -> str | None:
+    @classmethod
+    def _ml_reason(cls, ml_result: dict[str, Any]) -> str | None:
         if not ml_result.get("available"):
             return None
         label = str(ml_result.get("label") or "unknown")
         confidence = float(ml_result.get("confidence") or 0)
-        top = [
-            str(item.get("feature"))
-            for item in ml_result.get("top_features", [])
-            if item.get("feature")
-        ][:4]
-        details = f"; признаки: {', '.join(top)}" if top else ""
-        return f"ML CatBoost классифицировал сайт как {label} с уверенностью {confidence:.0%}{details}."
+        display_label = CATEGORY_DISPLAY.get(label.lower(), label)
+        top = cls._readable_feature_list(ml_result.get("top_features", []), limit=4)
+        details = f"; главные сигналы: {', '.join(top)}" if top else ""
+        if label.lower() == "legit":
+            return f"CatBoost считает сайт похожим на обычный: уверенность {confidence:.0%}{details}."
+        return f"CatBoost относит сайт к категории «{display_label}»: уверенность {confidence:.0%}{details}."
+
+    @staticmethod
+    def _readable_feature_list(features: Any, *, limit: int = 4) -> list[str]:
+        if not isinstance(features, list):
+            return []
+        readable: list[str] = []
+        for item in features:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("label") or FEATURE_DISPLAY.get(str(item.get("feature") or ""), item.get("feature") or ""))
+            if not name or name in readable:
+                continue
+            readable.append(name)
+            if len(readable) >= limit:
+                break
+        return readable
+
+    @staticmethod
+    def _compact_reasons(reasons: list[Any], *, limit: int = 14) -> list[str]:
+        compact: list[str] = []
+        seen: set[str] = set()
+        for reason in reasons:
+            text = str(reason or "").strip()
+            if not text:
+                continue
+            key = re.sub(r"\s+", " ", text).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            compact.append(text)
+            if len(compact) >= limit:
+                break
+        return compact
 
     def _candidate_from_item(
         self,
@@ -1140,6 +1331,23 @@ class Investigator:
             if existing.category == "suspicious" and candidate.category != "suspicious":
                 existing.category = candidate.category
         return list(by_key.values())[:limit]
+
+    @staticmethod
+    def _exclude_known_candidates(
+        candidates: list[Candidate],
+        known_domains: set[str],
+    ) -> tuple[list[Candidate], int]:
+        if not known_domains:
+            return candidates, 0
+        fresh: list[Candidate] = []
+        skipped = 0
+        for candidate in candidates:
+            key = candidate.key()
+            if key in known_domains:
+                skipped += 1
+                continue
+            fresh.append(candidate)
+        return fresh, skipped
 
     def _mirror_group_for(
         self,

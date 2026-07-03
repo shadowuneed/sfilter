@@ -9,22 +9,30 @@ from app.database import Database
 
 
 EXPORT_COLUMNS = [
-    "case_id",
-    "run_id",
-    "finding_id",
     "domain",
     "final_url",
     "risk_score",
-    "verdict",
     "category",
-    "case_status",
-    "saved",
-    "archived",
     "status_code",
     "mirror_group",
     "title",
     "reasons",
     "sources",
+    "screenshot_file",
+    "created_at",
+]
+
+TECHNICAL_EXPORT_COLUMNS = [
+    "case_id",
+    "run_id",
+    "finding_id",
+    "domain",
+    "final_url",
+    "verdict",
+    "case_status",
+    "saved",
+    "archived",
+    "status_code",
     "screenshot_file",
     "html_file",
     "html_sha256",
@@ -36,22 +44,40 @@ EXPORT_HEADERS = {
     "run_id": "ID запуска",
     "finding_id": "ID находки",
     "domain": "Домен",
-    "final_url": "Финальный URL",
+    "final_url": "Адрес сайта",
     "risk_score": "Риск",
-    "verdict": "Вердикт",
+    "verdict": "Технический вердикт",
     "category": "Категория",
     "case_status": "Статус расследования",
     "saved": "Сохранено",
     "archived": "Архив",
     "status_code": "HTTP",
-    "mirror_group": "Зеркальная группа",
+    "mirror_group": "Группа зеркал",
     "title": "Заголовок",
-    "reasons": "Причины",
+    "reasons": "Почему отмечен",
     "sources": "Источники",
-    "screenshot_file": "Файл скриншота",
+    "screenshot_file": "Скриншот",
     "html_file": "Файл HTML",
     "html_sha256": "SHA-256 HTML",
-    "created_at": "Дата фиксации",
+    "created_at": "Дата проверки",
+}
+
+CATEGORY_LABELS = {
+    "legit": "Низкий риск",
+    "casino": "Казино / ставки",
+    "gambling": "Казино / ставки",
+    "betting": "Казино / ставки",
+    "phishing": "Фишинг",
+    "pyramid": "Финансовая пирамида",
+    "scam": "Скам",
+    "suspicious": "Подозрительный",
+}
+
+VERDICT_LABELS = {
+    "suspected_fraud_or_illegal": "Высокий риск",
+    "suspicious": "Нужна проверка",
+    "needs_review": "Проверить вручную",
+    "low_signal": "Низкий сигнал",
 }
 
 
@@ -101,22 +127,20 @@ class Exporter:
 
         workbook = Workbook()
         sheet = workbook.active
-        sheet.title = "Argus Report"
+        sheet.title = "Отчет"
         headers = [EXPORT_HEADERS[col] for col in EXPORT_COLUMNS]
-        headers.insert(16, "Скриншот")
+        screenshot_col = EXPORT_COLUMNS.index("screenshot_file") + 1
+        headers.insert(screenshot_col - 1, "Снимок")
         sheet.append(headers)
 
         header_fill = PatternFill("solid", fgColor="182432")
         header_font = Font(color="FFFFFF", bold=True)
-        for cell in sheet[1]:
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.alignment = Alignment(wrap_text=True, vertical="top")
+        self._style_header(sheet, header_fill, header_font, Alignment)
 
         for index, finding in enumerate(findings, start=2):
             row = self._row(finding)
             values = [row[col] for col in EXPORT_COLUMNS]
-            values.insert(16, "")
+            values.insert(screenshot_col - 1, "")
             sheet.append(values)
             sheet.row_dimensions[index].height = 92
             screenshot = self._local_path(row["screenshot_file"])
@@ -125,19 +149,34 @@ class Exporter:
                     image = Image(str(screenshot))
                     image.width = 150
                     image.height = 85
-                    sheet.add_image(image, f"Q{index}")
+                    sheet.add_image(image, f"{self._excel_column(screenshot_col)}{index}")
                 except Exception:
-                    sheet.cell(index, 17).value = row["screenshot_file"]
+                    sheet.cell(index, screenshot_col).value = row["screenshot_file"]
 
         widths = {
-            "A": 10, "B": 10, "C": 12, "D": 24, "E": 38, "F": 10,
-            "G": 18, "H": 16, "I": 18, "J": 12, "K": 10, "L": 10,
-            "M": 22, "N": 34, "O": 60, "P": 44, "Q": 24, "R": 34,
-            "S": 34, "T": 42, "U": 20,
+            "A": 26, "B": 42, "C": 10, "D": 18, "E": 10, "F": 22,
+            "G": 34, "H": 64, "I": 44, "J": 24, "K": 20,
         }
         for column, width in widths.items():
             sheet.column_dimensions[column].width = width
         for row in sheet.iter_rows():
+            for cell in row:
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+        tech_sheet = workbook.create_sheet("Доказательства")
+        tech_sheet.append([EXPORT_HEADERS[col] for col in TECHNICAL_EXPORT_COLUMNS])
+        self._style_header(tech_sheet, header_fill, header_font, Alignment)
+        for finding in findings:
+            row = self._row(finding)
+            tech_sheet.append([row[col] for col in TECHNICAL_EXPORT_COLUMNS])
+        tech_widths = {
+            "A": 10, "B": 10, "C": 12, "D": 26, "E": 42, "F": 22,
+            "G": 20, "H": 12, "I": 10, "J": 10, "K": 34, "L": 38,
+            "M": 48, "N": 20,
+        }
+        for column, width in tech_widths.items():
+            tech_sheet.column_dimensions[column].width = width
+        for row in tech_sheet.iter_rows():
             for cell in row:
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
 
@@ -147,6 +186,8 @@ class Exporter:
     def _row(self, finding: dict[str, Any]) -> dict[str, Any]:
         sources = finding.get("sources") or []
         reasons = finding.get("reasons") or []
+        category = str(finding.get("category") or "")
+        verdict = str(finding.get("verdict") or "")
         return {
             "case_id": finding.get("case_id") or "",
             "run_id": finding.get("run_id"),
@@ -154,15 +195,15 @@ class Exporter:
             "domain": finding.get("domain"),
             "final_url": finding.get("final_url") or finding.get("url"),
             "risk_score": finding.get("risk_score"),
-            "verdict": finding.get("verdict"),
-            "category": finding.get("category"),
+            "verdict": VERDICT_LABELS.get(verdict, verdict),
+            "category": CATEGORY_LABELS.get(category.lower(), category),
             "case_status": finding.get("case_status") or "",
             "saved": self._yes_no(finding.get("saved")),
             "archived": self._yes_no(finding.get("archived")),
             "status_code": finding.get("status_code"),
             "mirror_group": finding.get("mirror_group") or "",
             "title": finding.get("title") or "",
-            "reasons": "\n".join(str(item) for item in reasons),
+            "reasons": "\n".join(str(item) for item in reasons[:8]),
             "sources": "\n".join(str(item.get("url") or item) for item in sources),
             "screenshot_file": finding.get("screenshot_path") or "",
             "html_file": finding.get("html_path") or "",
@@ -176,7 +217,26 @@ class Exporter:
         path = Path(value)
         if path.is_absolute():
             return path
+        normalized = str(value).replace("\\", "/")
+        if normalized == "evidence" or normalized.startswith("evidence/"):
+            relative = normalized.removeprefix("evidence").lstrip("/")
+            return self.settings.evidence_dir / relative
         return Path.cwd() / path
+
+    @staticmethod
+    def _style_header(sheet: Any, fill: Any, font: Any, alignment_cls: Any) -> None:
+        for cell in sheet[1]:
+            cell.fill = fill
+            cell.font = font
+            cell.alignment = alignment_cls(wrap_text=True, vertical="top")
+
+    @staticmethod
+    def _excel_column(index: int) -> str:
+        letters = ""
+        while index:
+            index, remainder = divmod(index - 1, 26)
+            letters = chr(65 + remainder) + letters
+        return letters
 
     @staticmethod
     def _yes_no(value: Any) -> str:
