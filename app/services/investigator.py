@@ -225,6 +225,8 @@ SEARCH_MODE_LABELS = {
 }
 
 CASINO_SEARCH_QUERIES = [
+    "site:.kz онлайн казино играть на деньги",
+    "site:.kz казино регистрация бонус",
     "онлайн казино играть на деньги Казахстан",
     "казино онлайн регистрация бонус Казахстан",
     "слоты на деньги играть Казахстан",
@@ -284,6 +286,36 @@ BETTING_ONLY_RE = re.compile(
     r"bookmaker|sportsbook|sports\s+betting|betting|коэффициент|линия\s+ставок|тотализатор)",
     re.IGNORECASE,
 )
+
+KZ_RELEVANCE_RE = re.compile(
+    r"(казахстан|қазақстан|kazakhstan|kazakstan|\.kz\b|(?:^|[/.?=&_-])kz(?:$|[/.?=&_-]))",
+    re.IGNORECASE,
+)
+
+FOREIGN_LOCALE_PATH_RE = re.compile(
+    r"(?i)/(?:bg|ro|pl|de|cz|sk|hu|ua|by|ru|tr|gr|it|fr|es|pt|br|uk|en-gb)(?:/|$)"
+)
+
+FOREIGN_COUNTRY_TLDS = {
+    "bg",
+    "ro",
+    "pl",
+    "de",
+    "cz",
+    "sk",
+    "hu",
+    "ua",
+    "by",
+    "ru",
+    "tr",
+    "gr",
+    "it",
+    "fr",
+    "es",
+    "pt",
+    "br",
+    "uk",
+}
 
 INFORMATIONAL_SEARCH_URL_RE = re.compile(
     r"(?i)(?:^|[/.?=&_-])(?:news|novosti|journal|blog|wiki|article|articles|guide|guides|"
@@ -996,6 +1028,8 @@ class Investigator:
                 continue
             source_context = f"{title} {snippet} {target_url}"
             query_context = f"{query} {source_context}"
+            if search_mode == "casino" and self._is_wrong_geo_casino_result(target_url, source_context):
+                continue
             if self._is_informational_search_result(target_url, query_context, search_mode):
                 continue
             category = self._category_from_search_result(source_context)
@@ -1119,6 +1153,29 @@ class Investigator:
             re.fullmatch(r"[a-z]{2,12}\d{1,4}", label) for label in sub_labels
         )
 
+    @staticmethod
+    def _casino_kz_relevance_score(url: str, context: str) -> int:
+        domain = extract_domain(url)
+        registered = registered_domain(domain)
+        text = f"{url} {context}"
+        score = 0
+        if registered.endswith(".kz"):
+            score += 120
+        if Investigator._looks_like_kz_search_landing(domain):
+            score += 60
+        if KZ_RELEVANCE_RE.search(text):
+            score += 60
+        if FOREIGN_LOCALE_PATH_RE.search(url or ""):
+            score -= 140
+        tld = registered.rsplit(".", 1)[-1] if "." in registered else ""
+        if tld in FOREIGN_COUNTRY_TLDS:
+            score -= 140
+        return score
+
+    @staticmethod
+    def _is_wrong_geo_casino_result(url: str, context: str) -> bool:
+        return Investigator._casino_kz_relevance_score(url, context) < 0
+
     def _sort_candidates_for_search_mode(self, candidates: list[Candidate], search_mode: str | None) -> list[Candidate]:
         effective_mode = self.normalize_search_mode(search_mode)
         if effective_mode == "auto":
@@ -1137,6 +1194,7 @@ class Investigator:
         category_tokens = set(re.split(r"[^a-z_]+", candidate.category.lower()))
         if search_mode == "casino":
             score = 0
+            score += Investigator._casino_kz_relevance_score(candidate.url, context)
             if category_tokens & {"casino", "online_casino"}:
                 score += 120
             if has_casino_context(context):
@@ -1171,6 +1229,8 @@ class Investigator:
         )
         category_tokens = set(re.split(r"[^a-z_]+", candidate.category.lower()))
         if effective_mode == "casino":
+            if Investigator._is_wrong_geo_casino_result(candidate.url, candidate_context):
+                return False
             if category_tokens & {"casino", "online_casino"}:
                 return True
             if has_casino_context(candidate_context):
@@ -1423,6 +1483,8 @@ Critical local-search behavior:
             if not candidate:
                 continue
             if self._is_informational_search_result(candidate.url, f"{focus} {source_context}", search_mode):
+                continue
+            if search_mode == "casino" and self._is_wrong_geo_casino_result(candidate.url, source_context):
                 continue
             if not gambling_domain_signals(candidate.domain, f"{focus} {source_context}") and candidate.category in {"casino", "gambling"}:
                 candidate.category = "suspicious"
@@ -1900,6 +1962,18 @@ Critical local-search behavior:
         if quality.get("is_empty_or_parked") and (quality.get("markers") or not has_domain_signals):
             return "страница пустая, parking/placeholder или не содержит полезного контента"
         if search_mode == "casino":
+            final_url = str(getattr(evidence, "final_url", "") or "")
+            geo_context = " ".join(
+                [
+                    final_url,
+                    candidate.url if candidate else "",
+                    candidate.domain if candidate else "",
+                    candidate.search_query if candidate else "",
+                    candidate.why if candidate else "",
+                ]
+            )
+            if candidate and Investigator._is_wrong_geo_casino_result(final_url or candidate.url, geo_context):
+                return "режим casino: сайт не похож на результат для Казахстана, найдена чужая география или локаль"
             content_label = str(content_ai.get("category_hint") or "").lower()
             casino_hits = content_ai.get("casino_keywords") or []
             betting_hits = content_ai.get("betting_keywords") or []
