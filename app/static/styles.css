@@ -309,6 +309,10 @@ select:focus {
   font-weight: 900;
 }
 
+.run-mode-control select {
+  width: 118px;
+}
+
 .manual-check {
   margin-top: 6px;
   padding-top: 14px;

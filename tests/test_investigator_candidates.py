@@ -206,6 +206,27 @@ class InvestigatorCandidateTests(unittest.TestCase):
         self.assertEqual(candidates[0].domain, "top.45minut.kz")
         self.assertEqual(candidates[0].category, "casino")
 
+    def test_search_html_keeps_short_kz_landing_from_casino_query(self) -> None:
+        html = """
+        <html><body>
+          <div class="result">
+            <a href="https://pinco4.aktif.kz/">pinco4.aktif.kz</a>
+          </div>
+        </body></html>
+        """
+
+        candidates = self.investigator._candidates_from_search_html(
+            query="онлайн казино",
+            html=html,
+            source_url="https://www.google.com/search?q=онлайн+казино",
+            engine="google",
+            limit=10,
+            search_mode="casino",
+        )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].domain, "pinco4.aktif.kz")
+
     def test_search_html_rejects_casino_top_list_article(self) -> None:
         html = """
         <html><body>
@@ -294,7 +315,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
         def fail_algorithmic(*args, **kwargs):  # noqa: ANN002, ANN003
             raise AssertionError("Algorithmic mirrors must not be mixed into user-search discovery")
 
-        def fake_user_search(run_id, seed_query, discovery_limit, max_candidates):  # noqa: ANN001
+        def fake_user_search(run_id, seed_query, discovery_limit, max_candidates, search_mode="auto"):  # noqa: ANN001
             return [
                 Candidate(
                     url="https://live-casino.example",
@@ -329,6 +350,57 @@ class InvestigatorCandidateTests(unittest.TestCase):
 
         self.assertFalse(Investigator._candidate_matches_user_search(candidate, "онлайн казино"))
 
+    def test_casino_mode_queries_do_not_include_easy_money(self) -> None:
+        queries = Investigator._user_search_queries("онлайн казино", "casino")
+
+        joined = " ".join(queries).lower()
+        self.assertIn("онлайн казино", joined)
+        self.assertNotIn("легкие деньги", joined)
+        self.assertNotIn("usdt", joined)
+
+    def test_casino_mode_rejects_betting_only_candidate(self) -> None:
+        candidate = Candidate(
+            url="https://bookmaker.example/sports",
+            domain="bookmaker.example",
+            category="betting",
+            why="Спортивные ставки и букмекерская линия",
+            search_query="онлайн казино",
+        )
+
+        self.assertFalse(Investigator._candidate_matches_user_search(candidate, "онлайн казино", "casino"))
+
+    def test_casino_mode_keeps_casino_path_candidate(self) -> None:
+        candidate = Candidate(
+            url="https://8888.bg/casino",
+            domain="8888.bg",
+            category="casino",
+            why="Casino page from search result",
+            search_query="онлайн казино",
+        )
+
+        self.assertTrue(Investigator._candidate_matches_user_search(candidate, "онлайн казино", "casino"))
+
+    def test_casino_mode_content_skip_rejects_betting_only_page(self) -> None:
+        class FakeEvidence:
+            final_url = "https://bookmaker.example/sports"
+
+        candidate = Candidate(
+            url="https://bookmaker.example/sports",
+            domain="bookmaker.example",
+            category="betting",
+            why="Спортивные ставки",
+        )
+        content_ai = {
+            "site_quality": {"quality": "usable"},
+            "category_hint": "sports_betting_review",
+            "casino_keywords": [],
+            "betting_keywords": ["ставки на спорт"],
+        }
+
+        reason = Investigator._content_skip_reason(content_ai, FakeEvidence(), candidate, "casino")
+
+        self.assertIn("режим casino", reason or "")
+
     def test_user_search_uses_search_pages_without_gemini_by_default(self) -> None:
         class FakeDb:
             def __init__(self) -> None:
@@ -337,7 +409,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
             def add_log(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
                 self.logs.append((args, kwargs))
 
-        def fake_search_pages(run_id, query, limit):  # noqa: ANN001
+        def fake_search_pages(run_id, query, limit, search_mode="auto"):  # noqa: ANN001
             return [
                 Candidate(
                     url="https://play-slots.example",

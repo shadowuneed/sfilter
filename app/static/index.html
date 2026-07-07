@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DOFilter Monitor</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260703-usability">
+  <link rel="stylesheet" href="/static/styles.css?v=20260707-search-mode">
 </head>
 <body>
   <div class="app-shell">
@@ -60,6 +60,15 @@
           <label for="seedQuery">Фокус поиска</label>
           <textarea id="seedQuery" rows="3" placeholder="Например: казино зеркало Казахстан, фишинг Kaspi, инвестиционная пирамида"></textarea>
           <div class="scan-controls">
+            <label class="run-size-control run-mode-control" for="searchMode">
+              <span>Цель</span>
+              <select id="searchMode">
+                <option value="casino" selected>Казино</option>
+                <option value="phishing">Фишинг</option>
+                <option value="scam">Скам</option>
+                <option value="auto">Авто</option>
+              </select>
+            </label>
             <label class="run-size-control" for="runSize">
               <span>Охват</span>
               <select id="runSize">
@@ -252,6 +261,6 @@
     </form>
   </div>
 
-  <script src="/static/app.js?v=20260703-usability"></script>
+  <script src="/static/app.js?v=20260707-search-mode"></script>
 </body>
 </html>

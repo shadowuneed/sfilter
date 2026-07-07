@@ -214,7 +214,17 @@ USER_SEARCH_ENGINES = [
     },
 ]
 
-USER_SEARCH_QUERIES = [
+SEARCH_MODES = {"auto", "casino", "phishing", "scam", "all"}
+
+SEARCH_MODE_LABELS = {
+    "auto": "авто",
+    "casino": "казино",
+    "phishing": "фишинг",
+    "scam": "скам/легкие деньги",
+    "all": "все категории",
+}
+
+CASINO_SEARCH_QUERIES = [
     "онлайн казино играть на деньги Казахстан",
     "казино онлайн регистрация бонус Казахстан",
     "слоты на деньги играть Казахстан",
@@ -222,10 +232,24 @@ USER_SEARCH_QUERIES = [
     "казино зеркало рабочий вход Казахстан",
     "онлайн казино депозит Казахстан",
     "казино бонус регистрация Казахстан",
+    "онлайн казино без блокировки Казахстан",
+]
+
+SCAM_SEARCH_QUERIES = [
     "легкие деньги регистрация онлайн Казахстан",
     "быстрый заработок USDT регистрация Казахстан",
     "инвестиции быстрый доход личный кабинет Казахстан",
 ]
+
+PHISHING_SEARCH_QUERIES = [
+    "Kaspi фишинг вход Казахстан",
+    "Kaspi получить деньги вход карта",
+    "Kaspi подтвердить карту вход",
+    "Halyk Bank фишинг вход Казахстан",
+    "egov фишинг вход Казахстан",
+]
+
+USER_SEARCH_QUERIES = [*CASINO_SEARCH_QUERIES, *SCAM_SEARCH_QUERIES, *PHISHING_SEARCH_QUERIES]
 
 DIRECT_USER_TARGET_RE = re.compile(
     r"(онлайн\s+казино|казино\s+(?:онлайн|играть|регистрац|вход|бонус|депозит)|"
@@ -240,6 +264,24 @@ STRONG_DIRECT_USER_TARGET_RE = re.compile(
     r"(регистрац|вход|личн(?:ый|ого)\s+кабинет|депозит|пополнить|вывод\s+средств|"
     r"бонус|промокод|играть\s+на\s+деньг|слот(?:ы|ов)?\s+на\s+деньг|"
     r"рабоч(?:ее|ий)\s+зеркал|login|register|sign\s*up|deposit|withdraw|bonus|promo|play\s+now)",
+    re.IGNORECASE,
+)
+
+PHISHING_SEARCH_RE = re.compile(
+    r"(phishing|фишинг|login|password|парол|kaspi|halyk|egov|карта|кошелек|wallet|verify|подтверд)",
+    re.IGNORECASE,
+)
+
+SCAM_SEARCH_RE = re.compile(
+    r"(легк(?:ие|их|ими)?\s+деньг|л[её]гк(?:ие|их|ими)?\s+деньг|"
+    r"быстр(?:ый|ого|ые|ых)\s+(?:заработ|доход)|инвестиц|пассивн(?:ый|ого)\s+доход|"
+    r"доход\s+без\s+влож|usdt|crypto|крипт|hyip|roi|гарантированн(?:ый|ая)\s+(?:доход|прибыл))",
+    re.IGNORECASE,
+)
+
+BETTING_ONLY_RE = re.compile(
+    r"(ставк(?:и|а)?\s+на\s+спорт|спортивн(?:ые|ая)\s+ставк|букмекер|букмекерск|"
+    r"bookmaker|sportsbook|sports\s+betting|betting|коэффициент|линия\s+ставок|тотализатор)",
     re.IGNORECASE,
 )
 
@@ -351,8 +393,16 @@ class Investigator:
         self.content_ai = ContentIntelligence(settings)
         self.cyberscan = CyberScanClassifier(settings)
 
-    def run(self, run_id: int, seed_query: str | None, max_candidates: int, take_screenshots: bool, cancel_event: Event | None = None) -> None:
-        asyncio.run(self._run(run_id, seed_query, max_candidates, take_screenshots, cancel_event))
+    def run(
+        self,
+        run_id: int,
+        seed_query: str | None,
+        max_candidates: int,
+        take_screenshots: bool,
+        cancel_event: Event | None = None,
+        search_mode: str = "auto",
+    ) -> None:
+        asyncio.run(self._run(run_id, seed_query, max_candidates, take_screenshots, cancel_event, search_mode))
 
     def run_manual(
         self,
@@ -447,9 +497,16 @@ class Investigator:
         max_candidates: int,
         take_screenshots: bool,
         cancel_event: Event | None = None,
+        search_mode: str = "auto",
     ) -> None:
+        search_mode = self.normalize_search_mode(search_mode)
         self.db.update_run(run_id, status="running")
-        self.db.add_log(run_id, "info", "Поиск запущен", {"started_at": utc_now()})
+        self.db.add_log(
+            run_id,
+            "info",
+            "Поиск запущен",
+            {"started_at": utc_now(), "search_mode": search_mode, "search_mode_label": SEARCH_MODE_LABELS[search_mode]},
+        )
         if self.settings.require_kz_proxy and not self.settings.kz_proxy_url:
             message = "KZ proxy is required: set KZ_PROXY_URL, KZ_HTTP_PROXY, KZ_HTTPS_PROXY, or KZ_PROXY to a Kazakhstan HTTP/SOCKS proxy."
             self.db.update_run(run_id, status="failed", finished_at=utc_now(), error=message)
@@ -471,6 +528,7 @@ class Investigator:
             )
 
         methodology = [
+            f"Режим поиска: {SEARCH_MODE_LABELS[search_mode]}.",
             "Ищем подозрительные casino/scam сайты через поисковую выдачу DuckDuckGo/Google/Bing; Gemini используется только как опциональный fallback.",
             "В поисковых запросах берем живые домены, рабочие зеркала и страницы, доступные для пользователей Казахстана.",
             "Открытие кандидатов проверяем через KZ_PROXY_URL; если прокси не задан, фиксируем прямую сеть сервера как ограничение доказательства.",
@@ -483,7 +541,7 @@ class Investigator:
         self.db.update_run(run_id, methodology_json=methodology)
 
         try:
-            candidates = await self._discover_candidates(run_id, seed_query, max_candidates)
+            candidates = await self._discover_candidates(run_id, seed_query, max_candidates, search_mode)
             candidates_to_check = candidates[:max_candidates]
             self.db.update_run(run_id, candidate_count=len(candidates_to_check))
             self.db.add_log(
@@ -527,6 +585,7 @@ class Investigator:
                         take_screenshots,
                         semaphore,
                         cancel_event,
+                        search_mode,
                     )
                 )
                 for index, candidate in enumerate(candidates_to_check, start=1)
@@ -595,6 +654,7 @@ class Investigator:
         take_screenshots: bool,
         semaphore: asyncio.Semaphore,
         cancel_event: Event | None = None,
+        search_mode: str = "auto",
     ) -> dict[str, Any]:
         async with semaphore:
             if cancel_event and cancel_event.is_set():
@@ -616,7 +676,7 @@ class Investigator:
             mirror_group = self._mirror_group_for(candidate, all_candidates, mirror_groups)
             try:
                 finding = await asyncio.wait_for(
-                    self._build_finding(run_id, candidate, mirror_group, take_screenshots),
+                    self._build_finding(run_id, candidate, mirror_group, take_screenshots, search_mode),
                     timeout=self.settings.candidate_timeout_seconds,
                 )
             except asyncio.TimeoutError:
@@ -651,17 +711,19 @@ class Investigator:
         run_id: int,
         seed_query: str | None,
         max_candidates: int,
+        search_mode: str = "auto",
     ) -> list[Candidate]:
+        search_mode = self._effective_search_mode(seed_query, search_mode)
         discovery_limit = min(
             max(max_candidates * 7, 150),
             max(max_candidates, self.settings.osint_candidate_pool_size),
         )
         discovered: list[Candidate] = []
-        user_search_mode = self._user_search_mode(seed_query)
+        user_search_mode = self._user_search_mode(seed_query, search_mode)
 
         if user_search_mode:
             try:
-                discovered.extend(self._discover_with_user_search(run_id, seed_query, discovery_limit, max_candidates))
+                discovered.extend(self._discover_with_user_search(run_id, seed_query, discovery_limit, max_candidates, search_mode))
             except GeminiAPIError as exc:
                 level = "warning" if exc.status_code in {401, 403} else "error"
                 self.db.add_log(
@@ -680,7 +742,7 @@ class Investigator:
             if self.gemini.available:
                 try:
                     gemini_limit = min(discovery_limit, max(max_candidates * 2, 50))
-                    discovered.extend(self._discover_with_gemini(run_id, seed_query, gemini_limit))
+                    discovered.extend(self._discover_with_gemini(run_id, seed_query, gemini_limit, search_mode))
                 except GeminiAPIError as exc:
                     level = "warning" if exc.status_code in {401, 403} else "error"
                     self.db.add_log(
@@ -725,7 +787,10 @@ class Investigator:
                     {"added": len(bootstrap), "reason": "Gemini/OSINT дали мало доменов"},
                 )
 
-        candidates = self._dedupe_candidates(discovered, discovery_limit)
+        candidates = self._sort_candidates_for_search_mode(
+            self._dedupe_candidates(discovered, discovery_limit),
+            search_mode,
+        )
         known_domains = self.db.known_domains()
         fresh_candidates, skipped_known = self._exclude_known_candidates(candidates, known_domains)
         known_rechecked = 0
@@ -775,7 +840,7 @@ class Investigator:
                 "ready": len(fresh_candidates),
             },
         )
-        return fresh_candidates[:discovery_limit]
+        return self._sort_candidates_for_search_mode(fresh_candidates, search_mode)[:discovery_limit]
 
     def _discover_with_user_search(
         self,
@@ -783,8 +848,10 @@ class Investigator:
         seed_query: str | None,
         discovery_limit: int,
         max_candidates: int,
+        search_mode: str = "auto",
     ) -> list[Candidate]:
-        queries = self._user_search_queries(seed_query)
+        search_mode = self._effective_search_mode(seed_query, search_mode)
+        queries = self._user_search_queries(seed_query, search_mode)
         per_query_limit = max(12, min(40, max_candidates))
         candidates: list[Candidate] = []
         seen: set[str] = set()
@@ -795,6 +862,7 @@ class Investigator:
             {
                 "queries": queries,
                 "mode": "search-page-user-results",
+                "search_mode": search_mode,
                 "search_pages_enabled": self.settings.search_pages_enabled,
                 "gemini_fallback": self.settings.gemini_user_search_fallback,
             },
@@ -804,7 +872,7 @@ class Investigator:
                 break
             batch: list[Candidate] = []
             if self.settings.search_pages_enabled:
-                batch.extend(self._discover_from_search_pages(run_id, query, per_query_limit))
+                batch.extend(self._discover_from_search_pages(run_id, query, per_query_limit, search_mode))
             if len(batch) < max(3, min(per_query_limit, max_candidates)) and self.settings.gemini_user_search_fallback:
                 self.db.add_log(
                     run_id,
@@ -813,7 +881,7 @@ class Investigator:
                     {"query": query, "search_page_candidates": len(batch)},
                 )
                 try:
-                    batch.extend(self._discover_with_gemini(run_id, query, per_query_limit))
+                    batch.extend(self._discover_with_gemini(run_id, query, per_query_limit, search_mode))
                 except GeminiQuotaError:
                     raise
                 except GeminiAPIError:
@@ -822,7 +890,7 @@ class Investigator:
                 key = candidate.key()
                 if not key or key in seen:
                     continue
-                if not self._candidate_matches_user_search(candidate, query):
+                if not self._candidate_matches_user_search(candidate, query, search_mode):
                     continue
                 seen.add(key)
                 if not candidate.search_query:
@@ -836,9 +904,9 @@ class Investigator:
             "User-search discovery finished",
             {"queries": len(queries), "candidates": len(candidates)},
         )
-        return candidates
+        return self._sort_candidates_for_search_mode(candidates, search_mode)
 
-    def _discover_from_search_pages(self, run_id: int, query: str, limit: int) -> list[Candidate]:
+    def _discover_from_search_pages(self, run_id: int, query: str, limit: int, search_mode: str = "auto") -> list[Candidate]:
         if limit <= 0:
             return []
         timeout = min(max(self.settings.request_timeout_seconds, 8), 18)
@@ -876,6 +944,7 @@ class Investigator:
                     source_url=str(response.url),
                     engine=str(engine["name"]),
                     limit=limit - len(candidates),
+                    search_mode=search_mode,
                 )
                 added = 0
                 for candidate in parsed:
@@ -908,7 +977,9 @@ class Investigator:
         source_url: str,
         engine: str,
         limit: int,
+        search_mode: str = "auto",
     ) -> list[Candidate]:
+        search_mode = self._effective_search_mode(query, search_mode)
         candidates: list[Candidate] = []
         soup = BeautifulSoup(html or "", "html.parser")
         for anchor in soup.find_all("a", href=True):
@@ -924,10 +995,19 @@ class Investigator:
             if not title and not target_url:
                 continue
             source_context = f"{title} {snippet} {target_url}"
-            if self._is_informational_search_result(target_url, source_context):
+            query_context = f"{query} {source_context}"
+            if self._is_informational_search_result(target_url, query_context, search_mode):
                 continue
             category = self._category_from_search_result(source_context)
-            if category == "suspicious" and not gambling_domain_signals(target_url, source_context):
+            if (
+                search_mode == "casino"
+                and category == "suspicious"
+                and self._looks_like_kz_search_landing(extract_domain(target_url))
+                and has_casino_context(query)
+            ):
+                category = "casino"
+            domain_signals = gambling_domain_signals(target_url, query_context if search_mode == "casino" else source_context)
+            if category == "suspicious" and not domain_signals:
                 continue
             candidate = self._candidate_from_item(
                 {
@@ -941,15 +1021,16 @@ class Investigator:
                 },
                 default_sources=[],
             )
-            if not candidate or not self._candidate_matches_user_search(candidate, query):
+            if not candidate or not self._candidate_matches_user_search(candidate, query, search_mode):
                 continue
             candidates.append(candidate)
-        return self._dedupe_candidates(candidates, limit)
+        return self._sort_candidates_for_search_mode(self._dedupe_candidates(candidates, limit), search_mode)
 
-    def _is_informational_search_result(self, url: str, context: str) -> bool:
+    def _is_informational_search_result(self, url: str, context: str, search_mode: str = "auto") -> bool:
         domain = extract_domain(url)
         if self._is_non_target_source_domain(domain):
             return True
+        search_mode = self.normalize_search_mode(search_mode)
         direct_target = self._has_direct_user_target_signal(url, context)
         strong_direct_target = self._has_strong_direct_user_target_signal(url, context)
         stem = registered_domain(domain).split(".", 1)[0]
@@ -960,7 +1041,9 @@ class Investigator:
         text = f"{url} {context}"
         if INFORMATIONAL_SEARCH_URL_RE.search(url or "") or INFORMATIONAL_SEARCH_CONTEXT_RE.search(text):
             return not strong_direct_target
-        return not direct_target
+        if search_mode == "casino":
+            return not direct_target
+        return False
 
     @staticmethod
     def _has_direct_user_target_signal(url: str, context: str) -> bool:
@@ -980,25 +1063,104 @@ class Investigator:
         return "suspicious"
 
     @staticmethod
-    def _user_search_mode(seed_query: str | None) -> bool:
-        return has_user_risk_search_context(seed_query or " ".join(USER_SEARCH_QUERIES))
+    def normalize_search_mode(search_mode: str | None) -> str:
+        normalized = re.sub(r"[^a-z_]+", "", (search_mode or "auto").strip().lower())
+        return normalized if normalized in SEARCH_MODES else "auto"
 
     @staticmethod
-    def _user_search_queries(seed_query: str | None) -> list[str]:
+    def _effective_search_mode(seed_query: str | None, search_mode: str | None = "auto") -> str:
+        normalized = Investigator.normalize_search_mode(search_mode)
+        if normalized != "auto":
+            return normalized
+        text = seed_query or ""
+        if PHISHING_SEARCH_RE.search(text):
+            return "phishing"
+        if SCAM_SEARCH_RE.search(text) and not has_casino_context(text):
+            return "scam"
+        if has_casino_context(text):
+            return "casino"
+        return "auto"
+
+    @staticmethod
+    def _user_search_mode(seed_query: str | None, search_mode: str | None = "auto") -> bool:
+        effective_mode = Investigator._effective_search_mode(seed_query, search_mode)
+        return effective_mode in {"casino", "phishing", "scam", "all"} or has_user_risk_search_context(seed_query or "")
+
+    @staticmethod
+    def _user_search_queries(seed_query: str | None, search_mode: str | None = "auto") -> list[str]:
+        effective_mode = Investigator._effective_search_mode(seed_query, search_mode)
         queries: list[str] = []
         if seed_query and seed_query.strip():
             queries.append(seed_query.strip())
-        if not seed_query or has_user_risk_search_context(seed_query):
+        if effective_mode == "casino":
+            queries.extend(CASINO_SEARCH_QUERIES)
+        elif effective_mode == "phishing":
+            queries.extend(PHISHING_SEARCH_QUERIES)
+        elif effective_mode == "scam":
+            queries.extend(SCAM_SEARCH_QUERIES)
+        elif effective_mode == "all" or not seed_query or has_user_risk_search_context(seed_query):
             queries.extend(USER_SEARCH_QUERIES)
         clean: list[str] = []
         for query in queries:
             normalized = re.sub(r"\s+", " ", query).strip()
             if normalized and normalized not in clean:
                 clean.append(normalized)
-        return clean[:8]
+        return clean[:10]
 
     @staticmethod
-    def _candidate_matches_user_search(candidate: Candidate, query: str) -> bool:
+    def _looks_like_kz_search_landing(domain: str) -> bool:
+        domain = extract_domain(domain)
+        if not domain or not registered_domain(domain).endswith(".kz"):
+            return False
+        labels = [re.sub(r"[^a-z0-9]+", "", label.lower()) for label in domain.split(".") if label]
+        registered_labels = registered_domain(domain).split(".")
+        sub_labels = labels[: max(0, len(labels) - len(registered_labels))]
+        return any(label in {"top", "go", "play", "app", "start", "lk", "m", "win", "vip", "club", "bonus", "online"} for label in sub_labels) or any(
+            re.fullmatch(r"[a-z]{2,12}\d{1,4}", label) for label in sub_labels
+        )
+
+    def _sort_candidates_for_search_mode(self, candidates: list[Candidate], search_mode: str | None) -> list[Candidate]:
+        effective_mode = self.normalize_search_mode(search_mode)
+        if effective_mode == "auto":
+            return candidates
+        return sorted(
+            candidates,
+            key=lambda candidate: (
+                -self._candidate_search_rank(candidate, effective_mode),
+                candidate.key(),
+            ),
+        )
+
+    @staticmethod
+    def _candidate_search_rank(candidate: Candidate, search_mode: str) -> int:
+        context = " ".join([candidate.domain, candidate.url, candidate.category, candidate.why])
+        category_tokens = set(re.split(r"[^a-z_]+", candidate.category.lower()))
+        if search_mode == "casino":
+            score = 0
+            if category_tokens & {"casino", "online_casino"}:
+                score += 120
+            if has_casino_context(context):
+                score += 90
+            if re.search(r"(?i)(/casino|casino|slots?|slot|roulette|blackjack|jackpot|vulkan|joycasino|pinco|pin[-_]?up)", candidate.url):
+                score += 70
+            if Investigator._looks_like_kz_search_landing(candidate.domain):
+                score += 45
+            if category_tokens & {"betting", "gambling"} and not has_casino_context(context):
+                score -= 80
+            if BETTING_ONLY_RE.search(context) and not has_casino_context(context):
+                score -= 60
+            if category_tokens & {"phishing", "scam", "pyramid", "investment_pyramid"}:
+                score -= 100
+            return score
+        if search_mode == "phishing":
+            return (120 if "phishing" in category_tokens else 0) + (60 if PHISHING_SEARCH_RE.search(context) else 0)
+        if search_mode == "scam":
+            return (120 if category_tokens & {"scam", "pyramid", "investment_pyramid"} else 0) + (60 if SCAM_SEARCH_RE.search(context) else 0)
+        return 0
+
+    @staticmethod
+    def _candidate_matches_user_search(candidate: Candidate, query: str, search_mode: str | None = "auto") -> bool:
+        effective_mode = Investigator._effective_search_mode(query, search_mode)
         candidate_context = " ".join(
             [
                 candidate.domain,
@@ -1008,6 +1170,21 @@ class Investigator:
             ]
         )
         category_tokens = set(re.split(r"[^a-z_]+", candidate.category.lower()))
+        if effective_mode == "casino":
+            if category_tokens & {"casino", "online_casino"}:
+                return True
+            if has_casino_context(candidate_context):
+                return True
+            if Investigator._looks_like_kz_search_landing(candidate.domain) and has_casino_context(query):
+                return True
+            return False
+        if effective_mode == "phishing":
+            return bool(category_tokens & {"phishing"} or PHISHING_SEARCH_RE.search(candidate_context))
+        if effective_mode == "scam":
+            return bool(
+                category_tokens & {"scam", "pyramid", "investment_pyramid"}
+                or (SCAM_SEARCH_RE.search(candidate_context) and not has_casino_context(candidate_context))
+            )
         if category_tokens & {"casino", "gambling", "betting", "online_casino", "pyramid", "investment_pyramid", "scam"}:
             return True
         return bool(
@@ -1125,6 +1302,7 @@ class Investigator:
         run_id: int,
         seed_query: str | None,
         max_candidates: int,
+        search_mode: str = "auto",
     ) -> list[Candidate]:
         focus = seed_query.strip() if seed_query else " ; ".join(self.settings.seed_queries)
         prompt = f"""
@@ -1203,7 +1381,7 @@ Critical local-search behavior:
                 candidates.append(candidate)
             else:
                 skipped_technical += 1
-        candidates.extend(self._candidates_from_grounding_sources(grounding_sources, focus))
+        candidates.extend(self._candidates_from_grounding_sources(grounding_sources, focus, search_mode))
         if skipped_technical:
             self.db.add_log(
                 run_id,
@@ -1217,6 +1395,7 @@ Critical local-search behavior:
         self,
         grounding_sources: list[dict[str, str]],
         focus: str,
+        search_mode: str = "auto",
     ) -> list[Candidate]:
         candidates: list[Candidate] = []
         context = f"{focus} " + " ".join(
@@ -1224,6 +1403,7 @@ Critical local-search behavior:
         )
         if not has_user_risk_search_context(context):
             return candidates
+        search_mode = self._effective_search_mode(focus, search_mode)
         for source in grounding_sources:
             url = str(source.get("url") or "")
             title = str(source.get("title") or "")
@@ -1242,12 +1422,14 @@ Critical local-search behavior:
             )
             if not candidate:
                 continue
-            if self._is_informational_search_result(candidate.url, source_context):
+            if self._is_informational_search_result(candidate.url, f"{focus} {source_context}", search_mode):
                 continue
             if not gambling_domain_signals(candidate.domain, f"{focus} {source_context}") and candidate.category in {"casino", "gambling"}:
                 candidate.category = "suspicious"
+            if not self._candidate_matches_user_search(candidate, focus, search_mode):
+                continue
             candidates.append(candidate)
-        return candidates
+        return self._sort_candidates_for_search_mode(candidates, search_mode)
 
     async def _discover_from_plain_feeds_legacy(self, run_id: int, max_candidates: int) -> list[Candidate]:
         candidates: list[Candidate] = []
@@ -1489,6 +1671,7 @@ Critical local-search behavior:
         candidate: Candidate,
         mirror_group: str | None,
         take_screenshots: bool,
+        search_mode: str = "auto",
     ) -> dict[str, Any]:
         evidence = await self.evidence.collect(candidate.url, run_id)
         domain = evidence.domain or candidate.domain
@@ -1522,7 +1705,7 @@ Critical local-search behavior:
 
         source_urls = self._clean_sources(candidate.source_urls)
         content_ai = self.content_ai.analyze(candidate.url, evidence)
-        content_skip = self._content_skip_reason(content_ai, evidence, candidate)
+        content_skip = self._content_skip_reason(content_ai, evidence, candidate, search_mode)
         if content_skip:
             self.db.add_log(
                 run_id,
@@ -1684,7 +1867,13 @@ Critical local-search behavior:
         }
 
     @staticmethod
-    def _content_skip_reason(content_ai: dict[str, Any], evidence: Any, candidate: Candidate | None = None) -> str | None:
+    def _content_skip_reason(
+        content_ai: dict[str, Any],
+        evidence: Any,
+        candidate: Candidate | None = None,
+        search_mode: str | None = "auto",
+    ) -> str | None:
+        search_mode = Investigator.normalize_search_mode(search_mode)
         quality = content_ai.get("site_quality") or {}
         has_domain_signals = bool(
             content_ai.get("casino_keywords")
@@ -1710,6 +1899,28 @@ Critical local-search behavior:
         )
         if quality.get("is_empty_or_parked") and (quality.get("markers") or not has_domain_signals):
             return "страница пустая, parking/placeholder или не содержит полезного контента"
+        if search_mode == "casino":
+            content_label = str(content_ai.get("category_hint") or "").lower()
+            casino_hits = content_ai.get("casino_keywords") or []
+            betting_hits = content_ai.get("betting_keywords") or []
+            casino_context = " ".join(
+                [
+                    candidate.url if candidate else "",
+                    candidate.domain if candidate else "",
+                    str(getattr(evidence, "final_url", "") or ""),
+                    " ".join(str(hit) for hit in casino_hits),
+                ]
+            )
+            has_casino_product = bool(
+                content_label == "online_casino"
+                or casino_hits
+                or has_casino_context(casino_context)
+                or (candidate and set(re.split(r"[^a-z_]+", candidate_category)) & {"casino", "online_casino"})
+            )
+            if not has_casino_product and (content_label == "sports_betting_review" or betting_hits):
+                return "режим casino: букмекерская/ставочная страница без признаков онлайн-казино"
+            if not has_casino_product and candidate and candidate.category in {"betting", "gambling"}:
+                return "режим casino: кандидат похож на betting, но не на casino/slots"
         if source_supports_gambling:
             return None
         if quality.get("quality") == "thin_content" and not has_domain_signals:
@@ -1954,6 +2165,8 @@ Critical local-search behavior:
         default_sources: list[dict[str, str]],
     ) -> Candidate | None:
         text_blob = self._item_text_blob(item, default_sources)
+        category_item = {key: value for key, value in item.items() if key != "search_query"}
+        category_text_blob = self._item_text_blob(category_item, default_sources)
         url = unwrap_known_redirect_url(str(item.get("url") or item.get("domain") or "").strip())
         domain = extract_domain(item.get("domain") or url)
         domain_candidates = self._candidate_domains_from_text(text_blob)
@@ -1985,9 +2198,9 @@ Critical local-search behavior:
         mirror_hints = [extract_domain(str(mirror)) for mirror in mirrors]
         mirror_hints = [domain for domain in [*mirror_hints, *domain_candidates] if is_candidate_domain(domain)]
         mirror_hints = sorted({hint for hint in mirror_hints if hint != domain})
-        category = self._category_from_domain_context(domain, text_blob, str(item.get("category") or "suspicious").lower())
+        category = self._category_from_domain_context(domain, category_text_blob, str(item.get("category") or "suspicious").lower())
         why = str(item.get("why") or "")
-        domain_signals = gambling_domain_signals(domain, text_blob)
+        domain_signals = gambling_domain_signals(domain, category_text_blob)
         if domain_signals and not why:
             why = "Домен похож на casino/mirror результат поисковой выдачи: " + "; ".join(domain_signals[:3])
         return Candidate(
@@ -2039,7 +2252,7 @@ Critical local-search behavior:
             return fallback
         if not gambling_domain_signals(domain, context):
             return fallback or "suspicious"
-        return "casino" if has_casino_context(context) or has_gambling_context(context) else "gambling"
+        return "casino" if has_casino_context(context) else "gambling"
 
     @staticmethod
     def _is_non_target_source_domain(domain: str) -> bool:

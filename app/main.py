@@ -109,6 +109,7 @@ async def api_auth_middleware(request: Request, call_next):
 
 class RunRequest(BaseModel):
     seed_query: str | None = Field(default=None, max_length=2000)
+    search_mode: str = Field(default="casino", max_length=30)
     max_candidates: int = Field(default=150, ge=1, le=1000)
     take_screenshots: bool = True
 
@@ -208,6 +209,7 @@ def health() -> dict[str, Any]:
 def create_run(request: RunRequest) -> dict[str, Any]:
     _ensure_kz_proxy_ready()
     max_candidates = min(request.max_candidates, settings.max_candidates_per_run)
+    search_mode = investigator.normalize_search_mode(request.search_mode)
     run_id = db.create_run(
         seed_query=request.seed_query,
         max_candidates=max_candidates,
@@ -224,6 +226,7 @@ def create_run(request: RunRequest) -> dict[str, Any]:
         max_candidates,
         request.take_screenshots,
         cancel_event,
+        search_mode,
     )
     return {"run_id": run_id, "status": "queued"}
 

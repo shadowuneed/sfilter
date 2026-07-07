@@ -34,6 +34,7 @@ const els = {
   runBtn: document.getElementById("runBtn"),
   stopBtn: document.getElementById("stopBtn"),
   seedQuery: document.getElementById("seedQuery"),
+  searchMode: document.getElementById("searchMode"),
   runSize: document.getElementById("runSize"),
   takeScreenshots: document.getElementById("takeScreenshots"),
   manualTarget: document.getElementById("manualTarget"),
@@ -516,6 +517,7 @@ async function startRun(event) {
     const requestedCandidates = Number(els.runSize?.value || DEFAULT_RUN_CANDIDATES);
     const payload = {
       seed_query: els.seedQuery.value.trim() || null,
+      search_mode: els.searchMode?.value || "casino",
       max_candidates: Math.max(1, Math.min(requestedCandidates, MAX_RUN_CANDIDATES)),
       take_screenshots: els.takeScreenshots.checked,
     };
