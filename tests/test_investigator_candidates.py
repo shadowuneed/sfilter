@@ -95,6 +95,19 @@ class InvestigatorCandidateTests(unittest.TestCase):
         self.assertEqual(candidates[0].domain, "fast-money.example")
         self.assertEqual(candidates[0].category, "scam")
 
+    def test_grounding_source_rejects_informational_money_article(self) -> None:
+        candidates = self.investigator._candidates_from_grounding_sources(
+            [
+                {
+                    "url": "https://sky.pro/wiki/money/7-proverennyh-sposobov-kak-zarabatyvat-na-usdt-polnoe-rukovodstvo/",
+                    "title": "7 проверенных способов как зарабатывать на USDT",
+                }
+            ],
+            "легкие деньги",
+        )
+
+        self.assertEqual(candidates, [])
+
     def test_search_html_extracts_duckduckgo_redirect_target(self) -> None:
         html = """
         <html><body>
@@ -133,6 +146,81 @@ class InvestigatorCandidateTests(unittest.TestCase):
             query="онлайн казино",
             html=html,
             source_url="https://www.google.com/search?q=online+casino",
+            engine="google",
+            limit=10,
+        )
+
+        self.assertEqual(candidates, [])
+
+    def test_search_html_rejects_informational_money_articles(self) -> None:
+        html = """
+        <html><body>
+          <div class="result">
+            <a href="https://www.bcc.kz/bcc-journal/investments_in_kazakhstan/">
+              Куда инвестировать в Казахстане
+            </a>
+          </div>
+          <div class="result">
+            <a href="https://sky.pro/wiki/money/7-proverennyh-sposobov-kak-zarabatyvat-na-usdt-polnoe-rukovodstvo/">
+              7 проверенных способов как зарабатывать на USDT
+            </a>
+          </div>
+          <div class="result">
+            <a href="https://finance.kz/news/legkie-dengi-i-bystryy-dohod/">
+              Легкие деньги и быстрый доход: обзор новостей
+            </a>
+          </div>
+        </body></html>
+        """
+
+        candidates = self.investigator._candidates_from_search_html(
+            query="легкие деньги",
+            html=html,
+            source_url="https://www.google.com/search?q=легкие+деньги",
+            engine="google",
+            limit=10,
+        )
+
+        self.assertEqual(candidates, [])
+
+    def test_search_html_keeps_direct_kz_casino_landing(self) -> None:
+        html = """
+        <html><body>
+          <div class="result">
+            <a href="https://top.45minut.kz/">
+              Онлайн казино играть на деньги, регистрация и бонус
+            </a>
+          </div>
+        </body></html>
+        """
+
+        candidates = self.investigator._candidates_from_search_html(
+            query="онлайн казино",
+            html=html,
+            source_url="https://www.google.com/search?q=онлайн+казино",
+            engine="google",
+            limit=10,
+        )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].domain, "top.45minut.kz")
+        self.assertEqual(candidates[0].category, "casino")
+
+    def test_search_html_rejects_casino_top_list_article(self) -> None:
+        html = """
+        <html><body>
+          <div class="result">
+            <a href="https://casino-rating.example/top-10-online-casino-kazakhstan">
+              Топ 10 онлайн казино Казахстана: обзор и рейтинг
+            </a>
+          </div>
+        </body></html>
+        """
+
+        candidates = self.investigator._candidates_from_search_html(
+            query="онлайн казино",
+            html=html,
+            source_url="https://www.google.com/search?q=онлайн+казино",
             engine="google",
             limit=10,
         )

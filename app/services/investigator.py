@@ -162,24 +162,38 @@ MIRROR_MODIFIERS = [
 
 NON_TARGET_REGISTERED_DOMAINS = {
     "askgamblers.com",
+    "banki.ru",
+    "bcc.kz",
     "casino.guru",
     "bing.com",
     "duckduckgo.com",
+    "finance.kz",
     "facebook.com",
+    "forbes.kz",
     "github.com",
     "google.com",
+    "informburo.kz",
     "instagram.com",
+    "kapital.kz",
+    "kursiv.media",
     "linkedin.com",
+    "nur.kz",
     "ok.ru",
+    "ranking.kz",
     "scamadviser.com",
+    "sky.pro",
     "telegram.org",
     "t.me",
+    "tengrinews.kz",
+    "the-steppe.com",
     "trustpilot.com",
     "twitter.com",
+    "vc.ru",
     "vk.com",
     "x.com",
     "youtube.com",
     "youtu.be",
+    "zakon.kz",
 }
 
 USER_SEARCH_ENGINES = [
@@ -201,15 +215,52 @@ USER_SEARCH_ENGINES = [
 ]
 
 USER_SEARCH_QUERIES = [
-    "онлайн казино Казахстан",
-    "казино онлайн играть Казахстан",
-    "слоты на деньги Казахстан",
+    "онлайн казино играть на деньги Казахстан",
+    "казино онлайн регистрация бонус Казахстан",
+    "слоты на деньги играть Казахстан",
+    "рабочее зеркало казино вход Казахстан",
+    "казино зеркало рабочий вход Казахстан",
+    "онлайн казино депозит Казахстан",
     "казино бонус регистрация Казахстан",
-    "рабочее зеркало казино Казахстан",
-    "легкие деньги Казахстан",
-    "быстрый заработок Казахстан",
-    "инвестиции быстрый доход USDT Казахстан",
+    "легкие деньги регистрация онлайн Казахстан",
+    "быстрый заработок USDT регистрация Казахстан",
+    "инвестиции быстрый доход личный кабинет Казахстан",
 ]
+
+DIRECT_USER_TARGET_RE = re.compile(
+    r"(онлайн\s+казино|казино\s+(?:онлайн|играть|регистрац|вход|бонус|депозит)|"
+    r"слот(?:ы|ов)?\s+на\s+деньг|играть\s+на\s+деньг|рабоч(?:ее|ий)\s+зеркал|"
+    r"зеркал(?:о|а)?\s+(?:казино|вход)|официальн(?:ый|ое)\s+сайт|регистрац|"
+    r"личн(?:ый|ого)\s+кабинет|депозит|пополнить|вывод\s+средств|бонус|промокод|"
+    r"login|register|sign\s*up|deposit|withdraw|bonus|promo|play\s+now|casino|slots?|betting|bookmaker)",
+    re.IGNORECASE,
+)
+
+STRONG_DIRECT_USER_TARGET_RE = re.compile(
+    r"(регистрац|вход|личн(?:ый|ого)\s+кабинет|депозит|пополнить|вывод\s+средств|"
+    r"бонус|промокод|играть\s+на\s+деньг|слот(?:ы|ов)?\s+на\s+деньг|"
+    r"рабоч(?:ее|ий)\s+зеркал|login|register|sign\s*up|deposit|withdraw|bonus|promo|play\s+now)",
+    re.IGNORECASE,
+)
+
+INFORMATIONAL_SEARCH_URL_RE = re.compile(
+    r"(?i)(?:^|[/.?=&_-])(?:news|novosti|journal|blog|wiki|article|articles|guide|guides|"
+    r"learn|academy|media|press|story|stories|review|reviews|rating|ratings|obzor|otzyvy)"
+    r"(?:$|[/.?=&_-])"
+)
+
+INFORMATIONAL_SEARCH_CONTEXT_RE = re.compile(
+    r"(новост|журнал|стать[ьяи]|блог|вики|wiki|руководств|гайд|обзор|отзыв|рейтинг|"
+    r"топ\s*\d|как\s+(?:заработ|играть|выбрать|получить)|способ(?:ов|ы)|"
+    r"проверенн(?:ых|ые)\s+способ|что\s+такое|инструкц|совет|учеб|курс|банк|"
+    r"инвестиции\s+в\s+казахстан|куда\s+инвестировать|финансов(?:ый|ые)\s+совет)",
+    re.IGNORECASE,
+)
+
+INFORMATIONAL_DOMAIN_LABEL_RE = re.compile(
+    r"(news|finance|bank|media|journal|academy|wiki|learn|kurs|edu|press|review|rating|guide|blog)",
+    re.IGNORECASE,
+)
 
 CATEGORY_DISPLAY = {
     "legit": "обычный сайт",
@@ -873,6 +924,8 @@ class Investigator:
             if not title and not target_url:
                 continue
             source_context = f"{title} {snippet} {target_url}"
+            if self._is_informational_search_result(target_url, source_context):
+                continue
             category = self._category_from_search_result(source_context)
             if category == "suspicious" and not gambling_domain_signals(target_url, source_context):
                 continue
@@ -892,6 +945,31 @@ class Investigator:
                 continue
             candidates.append(candidate)
         return self._dedupe_candidates(candidates, limit)
+
+    def _is_informational_search_result(self, url: str, context: str) -> bool:
+        domain = extract_domain(url)
+        if self._is_non_target_source_domain(domain):
+            return True
+        direct_target = self._has_direct_user_target_signal(url, context)
+        strong_direct_target = self._has_strong_direct_user_target_signal(url, context)
+        stem = registered_domain(domain).split(".", 1)[0]
+        if INFORMATIONAL_DOMAIN_LABEL_RE.search(stem) and not strong_direct_target:
+            return True
+        if gambling_domain_signals(domain, context):
+            return False
+        text = f"{url} {context}"
+        if INFORMATIONAL_SEARCH_URL_RE.search(url or "") or INFORMATIONAL_SEARCH_CONTEXT_RE.search(text):
+            return not strong_direct_target
+        return not direct_target
+
+    @staticmethod
+    def _has_direct_user_target_signal(url: str, context: str) -> bool:
+        text = f"{url} {context}"
+        return bool(DIRECT_USER_TARGET_RE.search(text) or gambling_domain_signals(extract_domain(url), text))
+
+    @staticmethod
+    def _has_strong_direct_user_target_signal(url: str, context: str) -> bool:
+        return bool(STRONG_DIRECT_USER_TARGET_RE.search(f"{url} {context}"))
 
     @staticmethod
     def _category_from_search_result(text: str) -> str:
@@ -1163,6 +1241,8 @@ Critical local-search behavior:
                 default_sources=[],
             )
             if not candidate:
+                continue
+            if self._is_informational_search_result(candidate.url, source_context):
                 continue
             if not gambling_domain_signals(candidate.domain, f"{focus} {source_context}") and candidate.category in {"casino", "gambling"}:
                 candidate.category = "suspicious"
