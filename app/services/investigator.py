@@ -887,6 +887,7 @@ class Investigator:
         per_query_limit = max(12, min(40, max_candidates))
         candidates: list[Candidate] = []
         seen: set[str] = set()
+        disabled_search_engines: set[str] = set()
         self.db.add_log(
             run_id,
             "info",
@@ -904,7 +905,15 @@ class Investigator:
                 break
             batch: list[Candidate] = []
             if self.settings.search_pages_enabled:
-                batch.extend(self._discover_from_search_pages(run_id, query, per_query_limit, search_mode))
+                batch.extend(
+                    self._discover_from_search_pages(
+                        run_id,
+                        query,
+                        per_query_limit,
+                        search_mode,
+                        disabled_search_engines,
+                    )
+                )
             if len(batch) < max(3, min(per_query_limit, max_candidates)) and self.settings.gemini_user_search_fallback:
                 self.db.add_log(
                     run_id,
@@ -938,10 +947,17 @@ class Investigator:
         )
         return self._sort_candidates_for_search_mode(candidates, search_mode)
 
-    def _discover_from_search_pages(self, run_id: int, query: str, limit: int, search_mode: str = "auto") -> list[Candidate]:
+    def _discover_from_search_pages(
+        self,
+        run_id: int,
+        query: str,
+        limit: int,
+        search_mode: str = "auto",
+        disabled_engines: set[str] | None = None,
+    ) -> list[Candidate]:
         if limit <= 0:
             return []
-        timeout = min(max(self.settings.request_timeout_seconds, 8), 18)
+        timeout = min(max(self.settings.request_timeout_seconds, 6), 10)
         headers = {
             "User-Agent": self.settings.user_agent,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -949,6 +965,9 @@ class Investigator:
         }
         candidates: list[Candidate] = []
         seen: set[str] = set()
+        disabled_engines = disabled_engines if disabled_engines is not None else set()
+        failures: list[dict[str, Any]] = []
+        processed_engines = 0
         with httpx.Client(
             timeout=timeout,
             headers=headers,
@@ -956,6 +975,9 @@ class Investigator:
             proxy=self.settings.kz_proxy_url,
         ) as client:
             for engine in USER_SEARCH_ENGINES:
+                engine_name = str(engine["name"])
+                if engine_name in disabled_engines:
+                    continue
                 if len(candidates) >= limit:
                     break
                 url = self._search_engine_url(engine, query)
@@ -963,18 +985,26 @@ class Investigator:
                     response = client.get(url)
                     response.raise_for_status()
                 except Exception as exc:  # noqa: BLE001
-                    self.db.add_log(
-                        run_id,
-                        "warning",
-                        "Search page unavailable",
-                        {"engine": engine["name"], "query": query, "error": str(exc)},
-                    )
+                    error, status_code = self._search_error_summary(exc)
+                    failure: dict[str, Any] = {"engine": engine_name, "error": error}
+                    if status_code is not None:
+                        failure["status_code"] = status_code
+                    failures.append(failure)
+                    if status_code == 429 and engine_name not in disabled_engines:
+                        disabled_engines.add(engine_name)
+                        self.db.add_log(
+                            run_id,
+                            "warning",
+                            "Search engine temporarily disabled",
+                            {"engine": engine_name, "query": query, "error": error},
+                        )
                     continue
+                processed_engines += 1
                 parsed = self._candidates_from_search_html(
                     query=query,
                     html=response.text,
                     source_url=str(response.url),
-                    engine=str(engine["name"]),
+                    engine=engine_name,
                     limit=limit - len(candidates),
                     search_mode=search_mode,
                 )
@@ -988,18 +1018,45 @@ class Investigator:
                     added += 1
                     if len(candidates) >= limit:
                         break
-                self.db.add_log(
-                    run_id,
-                    "info",
-                    "Search page processed",
-                    {"engine": engine["name"], "query": query, "added": added},
-                )
+                if added:
+                    self.db.add_log(
+                        run_id,
+                        "info",
+                        "Search page processed",
+                        {"engine": engine_name, "query": query, "added": added},
+                    )
+        if failures:
+            self.db.add_log(
+                run_id,
+                "warning" if processed_engines == 0 else "info",
+                "Search pages unavailable",
+                {
+                    "query": query,
+                    "failures": failures[:3],
+                    "processed_engines": processed_engines,
+                },
+            )
         return candidates
 
     @staticmethod
     def _search_engine_url(engine: dict[str, Any], query: str) -> str:
         params = {**dict(engine.get("params") or {}), "q": query}
         return f"{engine['url']}?{urlencode(params)}"
+
+    @staticmethod
+    def _search_error_summary(exc: Exception) -> tuple[str, int | None]:
+        if isinstance(exc, httpx.HTTPStatusError):
+            response = exc.response
+            status_code = response.status_code
+            if status_code == 429:
+                return "HTTP 429 Too Many Requests", status_code
+            reason = response.reason_phrase or "HTTP error"
+            return f"HTTP {status_code} {reason}", status_code
+        if isinstance(exc, httpx.TimeoutException):
+            return "timed out", None
+        if isinstance(exc, httpx.RequestError):
+            return exc.__class__.__name__, None
+        return exc.__class__.__name__, None
 
     def _candidates_from_search_html(
         self,
@@ -1139,6 +1196,10 @@ class Investigator:
             normalized = re.sub(r"\s+", " ", query).strip()
             if normalized and normalized not in clean:
                 clean.append(normalized)
+        if effective_mode == "casino":
+            return clean[:6]
+        if effective_mode in {"phishing", "scam"}:
+            return clean[:8]
         return clean[:10]
 
     @staticmethod

@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import unittest
 
+import httpx
+
 from app.config import Settings
+from app.services import investigator as investigator_module
 from app.services.evidence import EvidenceResult
 from app.services.investigator import Candidate, Investigator
 from app.services.screenshots import ScreenshotResult
@@ -376,6 +379,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
     def test_casino_mode_queries_do_not_include_easy_money(self) -> None:
         queries = Investigator._user_search_queries("онлайн казино", "casino")
 
+        self.assertLessEqual(len(queries), 6)
         joined = " ".join(queries).lower()
         self.assertIn("онлайн казино", joined)
         self.assertNotIn("легкие деньги", joined)
@@ -464,7 +468,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
             def add_log(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
                 self.logs.append((args, kwargs))
 
-        def fake_search_pages(run_id, query, limit, search_mode="auto"):  # noqa: ANN001
+        def fake_search_pages(run_id, query, limit, search_mode="auto", disabled_engines=None):  # noqa: ANN001
             return [
                 Candidate(
                     url="https://play-slots.example",
@@ -486,6 +490,64 @@ class InvestigatorCandidateTests(unittest.TestCase):
         candidates = self.investigator._discover_with_user_search(1, "онлайн казино", 10, 5)
 
         self.assertEqual([candidate.domain for candidate in candidates], ["play-slots.example"])
+
+    def test_search_error_summary_sanitizes_google_429_url(self) -> None:
+        request = httpx.Request("GET", "https://www.google.com/sorry/index?continue=very-long-url")
+        response = httpx.Response(429, request=request)
+        exc = httpx.HTTPStatusError(
+            "Client error '429 Too Many Requests' for url 'https://www.google.com/sorry/index?continue=very-long-url'",
+            request=request,
+            response=response,
+        )
+
+        error, status_code = Investigator._search_error_summary(exc)
+
+        self.assertEqual(error, "HTTP 429 Too Many Requests")
+        self.assertEqual(status_code, 429)
+        self.assertNotIn("sorry/index", error)
+
+    def test_search_pages_disable_google_after_429(self) -> None:
+        class FakeDb:
+            def __init__(self) -> None:
+                self.logs = []
+
+            def add_log(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+                self.logs.append((args, kwargs))
+
+        class FakeClient:
+            requests: list[str] = []
+
+            def __init__(self, **kwargs) -> None:  # noqa: ANN003
+                pass
+
+            def __enter__(self) -> "FakeClient":
+                return self
+
+            def __exit__(self, *args) -> None:  # noqa: ANN002
+                return None
+
+            def get(self, url: str) -> httpx.Response:
+                self.requests.append(url)
+                request = httpx.Request("GET", url)
+                if "google.com" in url:
+                    return httpx.Response(429, request=request)
+                return httpx.Response(200, text="<html><body></body></html>", request=request)
+
+        original_client = investigator_module.httpx.Client
+        investigator_module.httpx.Client = FakeClient
+        try:
+            self.investigator.settings = Settings()
+            self.investigator.db = FakeDb()
+            disabled_engines: set[str] = set()
+
+            self.investigator._discover_from_search_pages(1, "онлайн казино", 10, "casino", disabled_engines)
+            self.investigator._discover_from_search_pages(1, "казино бонус", 10, "casino", disabled_engines)
+        finally:
+            investigator_module.httpx.Client = original_client
+
+        google_requests = [url for url in FakeClient.requests if "google.com" in url]
+        self.assertEqual(len(google_requests), 1)
+        self.assertIn("google", disabled_engines)
 
     def test_bootstrap_adds_verification_candidates_when_discovery_is_empty(self) -> None:
         self.investigator.settings = Settings(seed_queries=["казино зеркало рабочий вход"])
