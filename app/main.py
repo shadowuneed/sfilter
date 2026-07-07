@@ -27,7 +27,7 @@ investigator = Investigator(settings, db, gemini)
 exporter = Exporter(settings, db)
 cancel_events: dict[int, threading.Event] = {}
 
-app = FastAPI(title="Argus", version="1.0.0")
+app = FastAPI(title="DOFilter", version="1.0.0")
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -109,7 +109,7 @@ async def api_auth_middleware(request: Request, call_next):
 
 class RunRequest(BaseModel):
     seed_query: str | None = Field(default=None, max_length=2000)
-    max_candidates: int = Field(default=150, ge=1, le=500)
+    max_candidates: int = Field(default=150, ge=1, le=1000)
     take_screenshots: bool = True
 
 
@@ -157,7 +157,7 @@ def health() -> dict[str, Any]:
     cyberscan_status = investigator.cyberscan.status()
     return {
         "ok": True,
-        "app_name": "Argus",
+        "app_name": "DOFilter",
         "gemini_configured": gemini.available,
         "gemini_key_format_ok": gemini.key_format_ok,
         "gemini_key_warnings": gemini.key_format_warnings,

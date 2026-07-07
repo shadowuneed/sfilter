@@ -1,6 +1,6 @@
-# Argus
+# DOFilter
 
-Argus is a working OSINT investigation platform for suspicious casino, betting, phishing, scam, mirror-domain, and investment-fraud websites. The name comes from Argus Panoptes, the hundred-eyed giant from Greek mythology: the product is built to watch many signals and keep evidence, not just show a loose list of links.
+DOFilter is a working OSINT investigation platform for suspicious casino, betting, phishing, scam, mirror-domain, and investment-fraud websites. It is built to watch many signals and keep evidence, not just show a loose list of links.
 
 ## What It Does
 
@@ -25,7 +25,7 @@ XLSX has two sheets:
 - `Отчет`: the same simplified report plus embedded screenshot thumbnails when the screenshot file exists.
 - `Доказательства`: technical audit fields such as run/finding IDs, saved HTML file, and SHA-256.
 
-How to explain HTML and SHA-256 to non-technical people: Argus saves a copy of the page HTML at the moment of inspection. SHA-256 is a digital fingerprint of that saved HTML file. If the website changes later, the fingerprint helps prove which exact page copy was captured and that the evidence file was not silently changed.
+How to explain HTML and SHA-256 to non-technical people: DOFilter saves a copy of the page HTML at the moment of inspection. SHA-256 is a digital fingerprint of that saved HTML file. If the website changes later, the fingerprint helps prove which exact page copy was captured and that the evidence file was not silently changed.
 
 ## Case Workflow
 
@@ -89,11 +89,11 @@ Do not commit real API keys. Keys pasted into chat should be treated as sensitiv
 `ADMIN_TOKEN` protects all `/api/*` endpoints except `/api/health`. The browser UI asks for this token and sends it as `Authorization: Bearer <token>`, preventing anonymous users from starting runs and spending Gemini quota.
 Set `ADMIN_TOKEN` in the deployment environment. If it is missing, the UI no longer blocks the whole page with a login modal, but protected API actions cannot run correctly until the variable exists.
 
-`DATABASE_URL` enables persistent Postgres storage and takes priority over `DATABASE_PATH`. Use the Supabase connection string with SSL enabled. For `*.supabase.com` hosts Argus also adds `sslmode=require` automatically if it is missing. If `DATABASE_URL` is empty, Argus falls back to local SQLite at `DATABASE_PATH`, which is useful only for local development.
+`DATABASE_URL` enables persistent Postgres storage and takes priority over `DATABASE_PATH`. Use the Supabase connection string with SSL enabled. For `*.supabase.com` hosts DOFilter also adds `sslmode=require` automatically if it is missing. If `DATABASE_URL` is empty, DOFilter falls back to local SQLite at `DATABASE_PATH`, which is useful only for local development.
 
 `REQUIRE_POSTGRES=true` disables silent SQLite fallback. The Render blueprint sets it to `true`, so production fails fast if Supabase `DATABASE_URL` is missing instead of creating a temporary local database.
 
-`ML_MODEL_PATH` points to the trained CatBoost artifact. `CYBERSCAN_MODEL_PATH` points to the bundled CyberScan RandomForest artifact copied from the reference project. Argus collects candidates from OSINT feeds first, optionally enriches the pool with Gemini, opens each reachable site, extracts evidence, and stores CatBoost, CyberScan ML, and content-analysis signals inside each finding's evidence JSON.
+`ML_MODEL_PATH` points to the trained CatBoost artifact. `CYBERSCAN_MODEL_PATH` points to the bundled CyberScan RandomForest artifact copied from the reference project. DOFilter collects candidates from OSINT feeds first, optionally enriches the pool with Gemini, opens each reachable site, extracts evidence, and stores CatBoost, CyberScan ML, and content-analysis signals inside each finding's evidence JSON.
 
 ## Docker
 
@@ -123,7 +123,7 @@ The blueprint still mounts a persistent disk at `/var/data` for file evidence:
 - HTML and screenshots at `/var/data/evidence`
 - exports at `/var/data/exports`
 
-For screenshots, deploy Argus as a Docker service so the Dockerfile runs `python -m playwright install --with-deps chromium`. Render starter has limited memory, so the blueprint uses `SCAN_CONCURRENCY=2` and `SCREENSHOT_CONCURRENCY=1`: site checks can still run in parallel, but Chromium screenshots are serialized. If Chromium cannot produce a page image, Argus saves a small fallback PNG evidence file instead of leaving a broken screenshot link.
+For screenshots, deploy DOFilter as a Docker service so the Dockerfile runs `python -m playwright install --with-deps chromium`. Render starter has limited memory, so the blueprint uses `SCAN_CONCURRENCY=2` and `SCREENSHOT_CONCURRENCY=1`: site checks can still run in parallel, but Chromium screenshots are serialized. If Chromium cannot produce a page image, DOFilter saves a small fallback PNG evidence file instead of leaving a broken screenshot link.
 
 If you create a non-Docker Python service manually, add this to the Render build command instead:
 
@@ -135,7 +135,7 @@ Open `/api/health` after deploy and check `screenshot_runtime.chromium_exists`. 
 
 Local SQLite files and evidence files are not durable across rebuilds/restarts unless persistent storage or an external database/storage service is attached. Postgres fixes the run/history database; screenshots and saved HTML still need durable file storage if the host filesystem is ephemeral.
 
-For a real Kazakhstan-only accessibility check, set `KZ_PROXY_URL` in Render/Vercel to an HTTP/SOCKS proxy located in Kazakhstan. `KZ_HTTP_PROXY`, `KZ_HTTPS_PROXY`, and `KZ_PROXY` are accepted aliases. By default `REQUIRE_KZ_PROXY=false`, so Argus can still run without a proxy and marks evidence as checked from the server network. Set `REQUIRE_KZ_PROXY=true` only for strict mode: Argus will then block automatic and manual launches until the proxy exists and `KZ_PROXY_CHECK_URL` confirms country `KZ`.
+For a real Kazakhstan-only accessibility check, set `KZ_PROXY_URL` in Render/Vercel to an HTTP/SOCKS proxy located in Kazakhstan. `KZ_HTTP_PROXY`, `KZ_HTTPS_PROXY`, and `KZ_PROXY` are accepted aliases. By default `REQUIRE_KZ_PROXY=false`, so DOFilter can still run without a proxy and marks evidence as checked from the server network. Set `REQUIRE_KZ_PROXY=true` only for strict mode: DOFilter will then block automatic and manual launches until the proxy exists and `KZ_PROXY_CHECK_URL` confirms country `KZ`.
 
 If the journal shows `Gemini API 401 Unauthorized`, Google rejected the specific key used for that attempt. Check that the deployed `GEMINI_API_KEYS` value contains every key, has no literal quotes or `Bearer ` prefix, and that old standard keys are restricted or migrated to Gemini auth keys. Google notes that from June 19, 2026 the Gemini API rejects unrestricted standard keys: https://ai.google.dev/gemini-api/docs/api-key
 

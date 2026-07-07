@@ -89,24 +89,36 @@ const statusLabels = {
 const categoryLabels = {
   legit: "Низкий риск",
   casino: "Казино",
+  online_casino: "Онлайн-казино",
+  sports_betting_review: "Букмекер/проверка",
   phishing: "Фишинг",
   pyramid: "Пирамиды",
+  investment_pyramid: "Пирамиды",
+  empty_or_parked: "Пустой сайт",
   suspicious: "Подозрительный",
 };
 
 const categoryColors = {
   legit: "#10b981",
   casino: "#f59e0b",
+  online_casino: "#f59e0b",
+  sports_betting_review: "#38bdf8",
   phishing: "#ef4444",
   pyramid: "#8b5cf6",
+  investment_pyramid: "#8b5cf6",
+  empty_or_parked: "#64748b",
   suspicious: "#3b82f6",
 };
 
 const modelLabelLabels = {
   legit: "похож на обычный сайт",
   casino: "похож на казино/беттинг",
+  online_casino: "похож на онлайн-казино",
+  sports_betting_review: "похож на букмекера, нужна проверка лицензии",
   phishing: "похож на фишинг",
   pyramid: "похож на финансовую пирамиду",
+  investment_pyramid: "похож на финансовую пирамиду",
+  empty_or_parked: "пустой или parking-сайт",
   suspicious: "требует проверки",
 };
 
@@ -131,8 +143,13 @@ const featureLabels = {
   num_suspicious_patterns: "подозрительный JavaScript",
   num_hidden_elements: "скрытые элементы страницы",
   casino_confidence_score: "уверенность по казино-маркерам",
+  betting_confidence_score: "уверенность по betting-маркерам",
+  betting_keywords_count: "слова букмекера или ставок",
+  trusted_domain: "доверенный домен",
+  site_quality_score: "качество страницы",
   has_brand_impersonation: "упоминание чужого бренда",
   has_casino_in_url: "казино/ставки в адресе",
+  has_betting_in_url: "букмекер/ставки в адресе",
   num_external_links: "много внешних ссылок",
   num_iframes: "встроенные чужие блоки",
 };

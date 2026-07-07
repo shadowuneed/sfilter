@@ -21,12 +21,14 @@ from app.services.domains import (
     likely_related_domains,
     normalize_url,
     registered_domain,
+    unwrap_known_redirect_url,
 )
 from app.services.content_intelligence import ContentIntelligence
 from app.services.cyberscan_classifier import CyberScanClassifier
 from app.services.evidence import EvidenceCollector, score_finding
 from app.services.gemini import GeminiAPIError, GeminiClient, GeminiQuotaError
 from app.services.ml_classifier import DomainMLClassifier
+from app.services.risky_domains import gambling_domain_signals, has_casino_context, has_gambling_context
 from app.services.screenshots import ScreenshotService
 
 
@@ -137,6 +139,8 @@ MIRROR_TLDS = [
 MIRROR_MODIFIERS = [
     "kz",
     "kaz",
+    "top",
+    "go",
     "login",
     "mirror",
     "zerkalo",
@@ -149,14 +153,37 @@ MIRROR_MODIFIERS = [
     "app",
 ]
 
+NON_TARGET_REGISTERED_DOMAINS = {
+    "askgamblers.com",
+    "casino.guru",
+    "facebook.com",
+    "github.com",
+    "instagram.com",
+    "linkedin.com",
+    "ok.ru",
+    "scamadviser.com",
+    "telegram.org",
+    "t.me",
+    "trustpilot.com",
+    "twitter.com",
+    "vk.com",
+    "x.com",
+    "youtube.com",
+    "youtu.be",
+}
+
 CATEGORY_DISPLAY = {
     "legit": "обычный сайт",
-    "casino": "казино или ставки",
+    "casino": "казино или азартные игры",
+    "online_casino": "онлайн-казино",
     "gambling": "казино или ставки",
     "betting": "казино или ставки",
+    "sports_betting_review": "букмекер/ставки, требуется проверка лицензии",
     "phishing": "фишинг",
     "scam": "скам",
     "pyramid": "финансовая пирамида",
+    "investment_pyramid": "финансовая пирамида",
+    "empty_or_parked": "пустой или parking-сайт",
     "suspicious": "подозрительный сайт",
 }
 
@@ -286,7 +313,7 @@ class Investigator:
             candidate = Candidate(
                 url=normalize_url(target),
                 domain=domain,
-                category=(category or "manual").lower(),
+                category=self._category_from_domain_context(domain, target, (category or "manual").lower()),
                 why="Домен указан оператором для ручной проверки.",
                 search_query=target,
             )
@@ -573,7 +600,7 @@ class Investigator:
                     Candidate(
                         url=normalize_url(domain),
                         domain=domain,
-                        category="manual",
+                        category=self._category_from_domain_context(domain, seed_query, "manual"),
                         why="Домен указан оператором вручную.",
                         search_query=seed_query,
                     )
@@ -755,10 +782,15 @@ class Investigator:
     ) -> list[Candidate]:
         focus = seed_query.strip() if seed_query else " ; ".join(self.settings.seed_queries)
         prompt = f"""
-Ты OSINT-следователь. Найди публичные подозрительные сайты. Учитывай, что сайт может выглядеть как обычный домен, но внутри содержать casino, betting, фишинг или финансовый скам. Найди сайты, которые похожи на:
-Используй Google Search grounding как браузерный поиск. Обязательно проверяй жалобы пользователей, форумы, отзывы, публичные обсуждения, blacklist reports и страницы с complaints.
+Critical local-search behavior:
+- Treat domains like pinco4.aktif.kz and top.45minut.kz only as examples of direct Kazakhstan search-result patterns; do not hardcode them or stop at these examples.
+- If Google/Gemini returns a redirect URL, unwrap it and return the real target domain, not google.com or vertexaisearch.cloud.google.com.
+- Do not discard plain-looking .kz subdomains when the title/snippet/query context is casino, slots, mirror, or gambling.
+
+Ты OSINT-следователь и имитируешь обычный пользовательский поиск из Казахстана. Нужно найти прямые домены сайтов, которые обычный человек реально увидит, если ищет онлайн-казино, слоты, рабочие зеркала, фишинг или инвестиционные пирамиды.
+Используй Google Search grounding как браузерный поиск. Начинай с пользовательских запросов: "онлайн казино Казахстан", "казино онлайн играть", "слоты на деньги Казахстан", "рабочее зеркало казино", "казино зеркало вход", "инвестиции быстрый доход USDT", "Kaspi фишинг вход". Затем проверяй жалобы, отзывы, blacklist reports и страницы с complaints.
 Ищи не только по названию бренда, но и по шаблонам "site scam", "withdraw problem", "не выводят деньги", "жалоба", "отзывы", "обман", "blacklist", "complaint", "report".
-Полезные источники для расширения пула: публичные страницы жалоб, ScamAdviser/Trustpilot-style обзоры, форумы пострадавших, открытые blacklist reports, обсуждения возврата денег и проблем с выводом средств.
+Полезные источники для расширения пула: поисковая выдача по пользовательским запросам, публичные страницы жалоб, ScamAdviser/Trustpilot-style обзоры, форумы пострадавших, открытые blacklist reports, обсуждения возврата денег и проблем с выводом средств.
 Важно: форум, новость, Telegram, YouTube, соцсеть или каталог не является кандидатом. Из таких страниц извлекай прямой домен подозрительного сайта и сохраняй страницу жалобы в source_urls.
 1) онлайн-казино/беттинг без очевидной лицензии,
 2) рабочие зеркала казино/беттинга,
@@ -766,6 +798,9 @@ class Investigator:
 
 Очень важно:
 - Фокус: Казахстан. Нужны домены, которые сейчас открываются у пользователей Казахстана, включая рабочие зеркала.
+- Не возвращай официальные банки, госуслуги, маркетплейсы и крупные легитимные сервисы: kaspi.kz, halykbank.kz, homebank.kz, egov.kz, gov.kz и похожие официальные домены.
+- Если это букмекер без признаков casino/slots/roulette и без подтверждения нелегальности, ставь category="betting", а не "casino".
+- Если это онлайн-казино, должны быть признаки реального игрового продукта: slots, roulette, blackjack, jackpot, live casino, регистрация/депозит/игровое лобби.
 - Не возвращай домены, которые публично описаны как заблокированные и не имеют рабочего зеркала.
 - НЕ возвращай IP-адреса.
 - НЕ возвращай служебные URL Gemini/Google Search вроде vertexaisearch.cloud.google.com/grounding-api-redirect, google.com/url или google.com/search.
@@ -820,6 +855,7 @@ class Investigator:
                 candidates.append(candidate)
             else:
                 skipped_technical += 1
+        candidates.extend(self._candidates_from_grounding_sources(grounding_sources, focus))
         if skipped_technical:
             self.db.add_log(
                 run_id,
@@ -827,6 +863,38 @@ class Investigator:
                 "Технические или неподходящие URL от Gemini пропущены",
                 {"count": skipped_technical},
             )
+        return candidates
+
+    def _candidates_from_grounding_sources(
+        self,
+        grounding_sources: list[dict[str, str]],
+        focus: str,
+    ) -> list[Candidate]:
+        candidates: list[Candidate] = []
+        context = f"{focus} " + " ".join(
+            f"{source.get('title', '')} {source.get('url', '')}" for source in grounding_sources
+        )
+        if not has_gambling_context(context):
+            return candidates
+        for source in grounding_sources:
+            url = str(source.get("url") or "")
+            title = str(source.get("title") or "")
+            candidate = self._candidate_from_item(
+                {
+                    "url": url,
+                    "title": title,
+                    "category": "casino" if has_casino_context(context) else "gambling",
+                    "why": "Домен найден как прямой результат пользовательского Google-поиска через Gemini Search grounding.",
+                    "search_query": focus,
+                    "source_urls": [url],
+                },
+                default_sources=[],
+            )
+            if not candidate:
+                continue
+            if not gambling_domain_signals(candidate.domain, context) and candidate.category in {"casino", "gambling"}:
+                candidate.category = "suspicious"
+            candidates.append(candidate)
         return candidates
 
     async def _discover_from_plain_feeds_legacy(self, run_id: int, max_candidates: int) -> list[Candidate]:
@@ -973,7 +1041,11 @@ class Investigator:
         cleaned = text.strip().strip('"').strip("'").strip(",")
         if not cleaned:
             return []
-        urls = [url for url in re.findall(r"(?i)https?://[^\s,\"'<>]+", cleaned) if is_candidate_url(url)]
+        urls = [
+            normalize_url(unwrap_known_redirect_url(url) or url)
+            for url in re.findall(r"(?i)https?://[^\s,\"'<>]+", cleaned)
+            if is_candidate_url(unwrap_known_redirect_url(url) or url)
+        ]
         if urls:
             return urls
         domains = [
@@ -1092,9 +1164,27 @@ class Investigator:
             self.db.add_log(
                 run_id,
                 "warning",
-                "HTML не сохранен, но сайт добавлен по HTTP/DNS/TLS данным",
+                "HTML не сохранен, продолжаю проверку по HTTP/DNS/TLS данным",
                 {"domain": domain, "status_code": evidence.status_code, "page_size_bytes": evidence.page_size_bytes},
             )
+
+        source_urls = self._clean_sources(candidate.source_urls)
+        content_ai = self.content_ai.analyze(candidate.url, evidence)
+        content_skip = self._content_skip_reason(content_ai, evidence, candidate)
+        if content_skip:
+            self.db.add_log(
+                run_id,
+                "warning",
+                "Сайт пропущен после контентной проверки",
+                {"domain": domain, "reason": content_skip, "category": content_ai.get("category_hint")},
+            )
+            return {
+                "_skip": True,
+                "_skip_reason": content_skip,
+                "url": candidate.url,
+                "domain": domain,
+                "status_code": evidence.status_code,
+            }
 
         screenshot_path = None
         screenshot_error = None
@@ -1124,8 +1214,6 @@ class Investigator:
         elif not take_screenshots:
             self.db.add_log(run_id, "info", "Скриншот пропущен: выключен в запуске", {"domain": domain})
 
-        source_urls = self._clean_sources(candidate.source_urls)
-        content_ai = self.content_ai.analyze(candidate.url, evidence)
         cyberscan_result = self.cyberscan.classify(candidate.url, evidence, content_ai)
         if cyberscan_result.get("available"):
             self.db.add_log(
@@ -1186,6 +1274,7 @@ class Investigator:
         )
         technical_delta, technical_reasons = self._technical_risk_signals(evidence)
         risk = max(0, min(100, risk + technical_delta))
+        risk = self._apply_policy_caps(risk, category, content_ai)
         risk = min(95, risk)
         verdict = self._verdict_for_risk(risk)
         if candidate.why:
@@ -1243,6 +1332,41 @@ class Investigator:
         }
 
     @staticmethod
+    def _content_skip_reason(content_ai: dict[str, Any], evidence: Any, candidate: Candidate | None = None) -> str | None:
+        quality = content_ai.get("site_quality") or {}
+        has_domain_signals = bool(
+            content_ai.get("casino_keywords")
+            or content_ai.get("betting_keywords")
+            or content_ai.get("pyramid_keywords")
+            or content_ai.get("brand_impersonation")
+            or content_ai.get("domain_gambling_signals")
+        )
+        candidate_category = (candidate.category if candidate else "").lower()
+        candidate_context = " ".join(
+            [
+                candidate.domain if candidate else "",
+                candidate.search_query if candidate else "",
+                candidate.why if candidate else "",
+            ]
+        )
+        source_supports_gambling = bool(
+            candidate
+            and (
+                set(re.split(r"[^a-z_]+", candidate_category)) & {"casino", "gambling", "betting"}
+                or gambling_domain_signals(candidate.domain, candidate_context)
+            )
+        )
+        if quality.get("is_empty_or_parked") and (quality.get("markers") or not has_domain_signals):
+            return "страница пустая, parking/placeholder или не содержит полезного контента"
+        if source_supports_gambling:
+            return None
+        if quality.get("quality") == "thin_content" and not has_domain_signals:
+            return "страница слишком пустая для реестра: нет контента и нет сильных признаков риска"
+        if not getattr(evidence, "html_path", None) and int(getattr(evidence, "page_size_bytes", 0) or 0) < 1500 and not has_domain_signals:
+            return "ответ сайта слишком мал и HTML не сохранен; кандидат похож на пустышку"
+        return None
+
+    @staticmethod
     def _technical_risk_signals(evidence: Any) -> tuple[int, list[str]]:
         delta = 0
         reasons: list[str] = []
@@ -1298,6 +1422,19 @@ class Investigator:
 
         return delta, reasons
 
+    @staticmethod
+    def _apply_policy_caps(risk: int, category: str, content_ai: dict[str, Any]) -> int:
+        policy = content_ai.get("domain_policy") or {}
+        credential_risk = bool(content_ai.get("credential_risk"))
+        category_lower = (category or "").lower()
+        if policy.get("trusted") and category_lower != "phishing" and not credential_risk:
+            return max(0, min(35, risk))
+        if category_lower == "sports_betting_review":
+            return max(0, min(72, risk))
+        if category_lower == "empty_or_parked":
+            return max(0, min(25, risk))
+        return risk
+
     def _category_with_ai(
         self,
         category: str,
@@ -1307,7 +1444,19 @@ class Investigator:
     ) -> str:
         content_label = str(content_ai.get("category_hint") or "").lower()
         content_confidence = str(content_ai.get("category_confidence") or "low").lower()
-        if content_label in {"casino", "pyramid", "phishing", "suspicious"} and content_confidence in {"medium", "high"}:
+        policy = content_ai.get("domain_policy") or {}
+        if policy.get("trusted") and content_label != "phishing":
+            return "legit"
+        strong_content_labels = {
+            "online_casino",
+            "sports_betting_review",
+            "investment_pyramid",
+            "phishing",
+            "suspicious",
+            "empty_or_parked",
+            "legit",
+        }
+        if content_label in strong_content_labels and content_confidence in {"medium", "high"}:
             return content_label
 
         ml_label = str(ml_result.get("label") or "").lower()
@@ -1332,8 +1481,10 @@ class Investigator:
         if label not in {"phishing", "casino", "pyramid", "suspicious"}:
             return category
         weak_category = category.lower() in {"", "manual", "unknown", "suspicious"}
+        label_map = {"casino": "online_casino", "pyramid": "investment_pyramid"}
+        mapped_label = label_map.get(label, label)
         if confidence >= self.settings.ml_min_confidence and (weak_category or confidence >= 0.65):
-            return label
+            return mapped_label
         return category
 
     @staticmethod
@@ -1450,16 +1601,23 @@ class Investigator:
         item: dict[str, Any],
         default_sources: list[dict[str, str]],
     ) -> Candidate | None:
-        url = str(item.get("url") or item.get("domain") or "").strip()
-        if not url:
-            text_blob = " ".join(str(value) for value in item.values())
-            domains = re.findall(r"(?i)(?:[a-z0-9-]+\.)+[a-z]{2,24}", text_blob)
-            url = domains[0] if domains else ""
+        text_blob = self._item_text_blob(item, default_sources)
+        url = unwrap_known_redirect_url(str(item.get("url") or item.get("domain") or "").strip())
         domain = extract_domain(item.get("domain") or url)
+        domain_candidates = self._candidate_domains_from_text(text_blob)
+        if self._is_non_target_source_domain(domain):
+            domain = next((candidate for candidate in domain_candidates if not self._is_non_target_source_domain(candidate)), "")
+        if not is_candidate_domain(domain):
+            domain = next((candidate for candidate in domain_candidates if not self._is_non_target_source_domain(candidate)), "")
         if not is_candidate_domain(domain):
             return None
         normalized_url = normalize_url(url or domain)
-        if not is_candidate_url(normalized_url):
+        normalized_url_domain = extract_domain(normalized_url)
+        if (
+            not is_candidate_url(normalized_url)
+            or normalized_url_domain != domain
+            or self._is_non_target_source_domain(normalized_url_domain)
+        ):
             if is_candidate_domain(domain):
                 normalized_url = normalize_url(domain)
             else:
@@ -1473,17 +1631,70 @@ class Investigator:
         if isinstance(mirrors, str):
             mirrors = [mirrors]
         mirror_hints = [extract_domain(str(mirror)) for mirror in mirrors]
-        mirror_hints = [domain for domain in mirror_hints if is_candidate_domain(domain)]
+        mirror_hints = [domain for domain in [*mirror_hints, *domain_candidates] if is_candidate_domain(domain)]
+        mirror_hints = sorted({hint for hint in mirror_hints if hint != domain})
+        category = self._category_from_domain_context(domain, text_blob, str(item.get("category") or "suspicious").lower())
+        why = str(item.get("why") or "")
+        domain_signals = gambling_domain_signals(domain, text_blob)
+        if domain_signals and not why:
+            why = "Домен похож на casino/mirror результат поисковой выдачи: " + "; ".join(domain_signals[:3])
         return Candidate(
             url=normalized_url,
             domain=domain,
-            category=str(item.get("category") or "suspicious").lower(),
-            why=str(item.get("why") or ""),
+            category=category,
+            why=why,
             search_query=str(item.get("search_query") or ""),
             source_urls=self._clean_sources(sources),
             mirror_hints=mirror_hints,
             brand=str(item.get("brand") or "") or None,
         )
+
+    @staticmethod
+    def _item_text_blob(item: dict[str, Any], default_sources: list[dict[str, str]]) -> str:
+        parts: list[str] = []
+
+        def collect(value: Any) -> None:
+            if isinstance(value, dict):
+                for nested in value.values():
+                    collect(nested)
+            elif isinstance(value, (list, tuple, set)):
+                for nested in value:
+                    collect(nested)
+            elif value is not None:
+                parts.append(str(value))
+
+        collect(item)
+        collect(default_sources)
+        return " ".join(parts)
+
+    @staticmethod
+    def _candidate_domains_from_text(text: str) -> list[str]:
+        domains: list[str] = []
+        for raw_url in re.findall(r"(?i)https?://[^\s,\"'<>]+", text or ""):
+            domain = extract_domain(unwrap_known_redirect_url(raw_url) or raw_url)
+            if is_candidate_domain(domain):
+                domains.append(domain)
+        for raw_domain in re.findall(r"(?i)(?:[a-z0-9-]+\.)+[a-z]{2,24}", text or ""):
+            domain = extract_domain(raw_domain)
+            if is_candidate_domain(domain):
+                domains.append(domain)
+        return list(dict.fromkeys(domains))
+
+    @staticmethod
+    def _category_from_domain_context(domain: str, context: str, fallback: str) -> str:
+        fallback = (fallback or "suspicious").lower()
+        if fallback not in {"suspicious", "manual", "unknown", ""}:
+            return fallback
+        if not gambling_domain_signals(domain, context):
+            return fallback or "suspicious"
+        return "casino" if has_casino_context(context) or has_gambling_context(context) else "gambling"
+
+    @staticmethod
+    def _is_non_target_source_domain(domain: str) -> bool:
+        domain = extract_domain(domain)
+        if not domain:
+            return False
+        return registered_domain(domain) in NON_TARGET_REGISTERED_DOMAINS
 
     def _dedupe_candidates(self, candidates: list[Candidate], limit: int) -> list[Candidate]:
         by_key: dict[str, Candidate] = {}

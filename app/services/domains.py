@@ -3,7 +3,7 @@
 import ipaddress
 import re
 from difflib import SequenceMatcher
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 
 DOMAIN_RE = re.compile(r"(?i)\b(?:[a-z0-9-]+\.)+[a-z]{2,24}\b")
@@ -63,6 +63,16 @@ TECHNICAL_URL_MARKERS = (
     "/url?",
 )
 
+REDIRECT_QUERY_PARAMS = (
+    "q",
+    "url",
+    "u",
+    "target",
+    "to",
+    "redirect",
+    "redirect_url",
+)
+
 
 def normalize_adblock_token(value: str) -> str:
     text = (value or "").strip()
@@ -101,6 +111,36 @@ def normalize_url(value: str, prefer_https: bool = True) -> str:
     query = f"?{parsed.query}" if parsed.query else ""
     scheme = parsed.scheme or ("https" if prefer_https else "http")
     return f"{scheme}://{host}{path}{query}"
+
+
+def unwrap_known_redirect_url(value: str) -> str:
+    value = normalize_adblock_token(value)
+    if not value or "://" not in value:
+        return value
+    parsed = urlparse(value)
+    host = extract_domain(value)
+    path = (parsed.path or "").lower()
+    looks_like_redirect = (
+        is_technical_domain(host)
+        or path.endswith("/url")
+        or "/url" in path
+        or "/redirect" in path
+        or "/grounding-api-redirect/" in path
+    )
+    if not looks_like_redirect:
+        return value
+
+    query = parse_qs(parsed.query, keep_blank_values=False)
+    for param in REDIRECT_QUERY_PARAMS:
+        for raw_target in query.get(param, []):
+            target = unquote(str(raw_target or "")).strip()
+            if not target:
+                continue
+            if target.startswith(("http://", "https://")) and is_public_domain(extract_domain(target)):
+                return target
+            if is_public_domain(extract_domain(target)):
+                return normalize_url(target)
+    return value
 
 
 def is_ip_address(value: str) -> bool:
@@ -213,7 +253,10 @@ def find_domains(text: str) -> list[str]:
 
 
 def find_urls(text: str) -> list[str]:
-    urls = {normalize_url(match.group(0)) for match in URL_RE.finditer(text or "")}
+    urls = {
+        normalize_url(unwrap_known_redirect_url(match.group(0)) or match.group(0))
+        for match in URL_RE.finditer(text or "")
+    }
     return sorted(url for url in urls if is_public_domain(extract_domain(url)))
 
 

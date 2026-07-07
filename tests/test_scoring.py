@@ -68,6 +68,27 @@ class ScoringTests(unittest.TestCase):
             0,
         )
 
+    def test_trusted_domain_policy_caps_non_phishing_risk(self) -> None:
+        capped = Investigator._apply_policy_caps(
+            95,
+            "online_casino",
+            {
+                "domain_policy": {"trusted": True, "reason": "официальный домен Kaspi"},
+                "credential_risk": False,
+            },
+        )
+
+        self.assertLessEqual(capped, 35)
+
+    def test_sports_betting_review_is_capped_below_illegal_verdict(self) -> None:
+        capped = Investigator._apply_policy_caps(
+            95,
+            "sports_betting_review",
+            {"domain_policy": {"trusted": False}, "credential_risk": False},
+        )
+
+        self.assertLessEqual(capped, 72)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,30 +21,24 @@ from app.services.domains import extract_domain, normalize_url, registered_domai
 CASINO_KEYWORDS = {
     "casino",
     "казино",
-    "bet",
-    "bets",
-    "bookmaker",
-    "букмекер",
     "slot",
     "slots",
     "слоты",
-    "bonus",
-    "бонус",
-    "deposit",
-    "депозит",
-    "withdraw",
-    "вывод",
-    "mirror",
-    "зеркало",
-    "1xbet",
+    "roulette",
+    "рулетка",
+    "blackjack",
+    "poker",
+    "jackpot",
+    "джекпот",
+    "free spins",
+    "фриспины",
+    "игровые автоматы",
+    "live casino",
 }
 
 SCAM_KEYWORDS = {
     "phishing",
-    "login",
-    "verify",
     "wallet",
-    "crypto",
     "airdrop",
     "giveaway",
     "лохотрон",
@@ -54,6 +48,15 @@ SCAM_KEYWORDS = {
     "удвоение",
     "доход",
     "гарантированный",
+}
+
+BETTING_KEYWORDS = {
+    "bookmaker",
+    "букмекер",
+    "ставки",
+    "sportsbook",
+    "sports betting",
+    "betting",
 }
 
 BLOCK_PAGE_MARKERS = {
@@ -224,8 +227,12 @@ class EvidenceCollector:
 
     def _keyword_hits(self, text: str) -> list[str]:
         lowered = text.lower()
-        hits = sorted({word for word in CASINO_KEYWORDS | SCAM_KEYWORDS if word in lowered})
-        return hits[:30]
+        hits: set[str] = set()
+        for word in CASINO_KEYWORDS | SCAM_KEYWORDS | BETTING_KEYWORDS:
+            pattern = r"(?<![\w])" + r"\s+".join(re.escape(part) for part in word.lower().split()) + r"(?![\w])"
+            if re.search(pattern, lowered, re.IGNORECASE):
+                hits.add(word)
+        return sorted(hits)[:30]
 
     def _resolve_dns(self, domain: str | None) -> dict[str, Any]:
         if not domain:
@@ -386,13 +393,20 @@ def score_finding(
     risk = 20
 
     category_lower = (category or "").lower()
-    category_tokens = set(re.split(r"[^a-z]+", category_lower))
-    if category_tokens & {"casino", "gambling", "betting"}:
-        risk += 35
-        reasons.append("Категория похожа на казино/беттинг.")
-    elif category_tokens & {"phishing", "scam", "pyramid", "malware"}:
+    category_tokens = set(re.split(r"[^a-z_]+", category_lower))
+    if category_tokens & {"online_casino", "casino", "gambling"}:
+        risk += 38
+        reasons.append("Категория похожа на онлайн-казино/азартные игры.")
+    elif category_tokens & {"sports_betting", "sports_betting_review", "betting", "bookmaker"}:
+        risk += 18
+        reasons.append("Категория похожа на букмекерский/ставочный сайт и требует проверки лицензии.")
+    elif category_tokens & {"phishing", "scam", "pyramid", "investment_pyramid", "malware"}:
         risk += 45
         reasons.append("Категория похожа на фишинг/скам/пирамиду.")
+    elif category_tokens & {"legit"}:
+        risk -= 12
+    elif category_tokens & {"empty_or_parked", "blocked_or_unreachable"}:
+        risk -= 10
     elif category_lower == "suspicious":
         risk += 25
         reasons.append("Источник пометил домен как подозрительный.")
@@ -407,9 +421,13 @@ def score_finding(
     if keyword_hits:
         casino_hits = sorted(set(keyword_hits) & CASINO_KEYWORDS)
         scam_hits = sorted(set(keyword_hits) & SCAM_KEYWORDS)
+        betting_hits = sorted(set(keyword_hits) & BETTING_KEYWORDS)
         if casino_hits:
             risk += min(18, 4 * len(casino_hits))
-            reasons.append("На странице найдены казино/беттинг-маркеры: " + ", ".join(casino_hits[:8]))
+            reasons.append("На странице найдены casino/game маркеры: " + ", ".join(casino_hits[:8]))
+        if betting_hits:
+            risk += min(8, 2 * len(betting_hits))
+            reasons.append("На странице найдены betting/bookmaker маркеры: " + ", ".join(betting_hits[:8]))
         if scam_hits:
             risk += min(18, 4 * len(scam_hits))
             reasons.append("На странице найдены скам/фишинг-маркеры: " + ", ".join(scam_hits[:8]))

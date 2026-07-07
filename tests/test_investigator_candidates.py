@@ -48,6 +48,38 @@ class InvestigatorCandidateTests(unittest.TestCase):
         self.assertEqual(candidate.url, "https://mirror-entry.lol")
         self.assertEqual(candidate.source_urls, ["https://public-report.kz/case"])
 
+    def test_unwraps_google_search_redirect_to_direct_candidate(self) -> None:
+        candidate = self.investigator._candidate_from_item(
+            {
+                "url": "https://www.google.com/url?q=https%3A%2F%2Fpinco4.aktif.kz%2F&sa=U",
+                "category": "suspicious",
+                "search_query": "online casino Kazakhstan",
+            },
+            default_sources=[],
+        )
+
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertEqual(candidate.domain, "pinco4.aktif.kz")
+        self.assertEqual(candidate.url, "https://pinco4.aktif.kz")
+        self.assertEqual(candidate.category, "casino")
+
+    def test_grounding_source_extracts_direct_site_not_review_platform(self) -> None:
+        candidates = self.investigator._candidates_from_grounding_sources(
+            [
+                {
+                    "url": "https://www.scamadviser.com/check-website/top.45minut.kz",
+                    "title": "top.45minut.kz online casino Kazakhstan",
+                }
+            ],
+            "online casino Kazakhstan",
+        )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].domain, "top.45minut.kz")
+        self.assertEqual(candidates[0].url, "https://top.45minut.kz")
+        self.assertEqual(candidates[0].category, "casino")
+
     def test_feed_parser_extracts_csv_and_hosts_domains(self) -> None:
         csv_tokens = self.investigator._feed_tokens(
             '# comment\n"2026-06-30","https://bad-login.example/home.php","online"\n',
@@ -96,7 +128,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
         self.assertEqual(len(candidates), 3)
         self.assertTrue(all(candidate.why.startswith("Bootstrap-кандидат") for candidate in candidates))
 
-    def test_build_finding_keeps_active_http_site_without_html_or_screenshot(self) -> None:
+    def test_build_finding_skips_active_http_site_without_html_content(self) -> None:
         class FakeDb:
             def __init__(self) -> None:
                 self.logs = []
@@ -152,12 +184,9 @@ class InvestigatorCandidateTests(unittest.TestCase):
             )
         )
 
-        self.assertNotIn("_skip", finding)
-        self.assertEqual(finding["final_url"], "http://no-ssl.example")
+        self.assertTrue(finding["_skip"])
         self.assertEqual(finding["status_code"], 200)
-        self.assertIsNone(finding["html_path"])
-        self.assertIsNone(finding["screenshot_path"])
-        self.assertTrue(any("SSL/TLS" in reason for reason in finding["reasons_json"]))
+        self.assertIn("пустышку", finding["_skip_reason"])
 
 
 if __name__ == "__main__":

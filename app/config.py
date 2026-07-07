@@ -110,6 +110,10 @@ def _first_env(names: tuple[str, ...]) -> tuple[str | None, str | None]:
 
 
 DEFAULT_SEED_QUERIES = [
+    'онлайн казино',
+    'онлайн казино Казахстан',
+    'казино онлайн играть Казахстан',
+    'слоты на деньги Казахстан',
     'казино зеркало рабочий вход новый домен',
     'онлайн казино зеркало бонус новый домен',
     '1xbet зеркало рабочее зеркало вход',
@@ -150,7 +154,7 @@ class Settings:
     evidence_dir: Path = Path("evidence")
     export_dir: Path = Path("exports")
 
-    max_candidates_per_run: int = 500
+    max_candidates_per_run: int = 1000
     max_mirror_checks_per_run: int = 6
     request_timeout_seconds: int = 18
     scan_concurrency: int = 3
@@ -213,14 +217,14 @@ def get_settings() -> Settings:
         gemini_rpm_limit=_int_env("GEMINI_RPM_LIMIT", _int_env("GEMINI_RPM_PER_KEY", 10)),
         gemini_rpd_limit=_int_env("GEMINI_RPD_LIMIT", _int_env("GEMINI_RPD_PER_KEY", 250)),
         gemini_timeout_seconds=_int_env("GEMINI_TIMEOUT_SECONDS", 90),
-        admin_token=_optional_env("ADMIN_TOKEN") or _optional_env("ARGUS_ADMIN_TOKEN"),
+        admin_token=_optional_env("ADMIN_TOKEN") or _optional_env("ARGUS_ADMIN_TOKEN") or _optional_env("DOFILTER_ADMIN_TOKEN"),
         auth_required=_bool_env("AUTH_REQUIRED", True),
         database_url=_optional_env("DATABASE_URL"),
         database_path=Path(os.getenv("DATABASE_PATH", "data/argus.db")),
         require_postgres=_bool_env("REQUIRE_POSTGRES", False),
         evidence_dir=Path(os.getenv("EVIDENCE_DIR", "evidence")),
         export_dir=Path(os.getenv("EXPORT_DIR", "exports")),
-        max_candidates_per_run=max(1, min(_int_env("MAX_CANDIDATES_PER_RUN", 500), 500)),
+        max_candidates_per_run=max(1, min(_int_env("MAX_CANDIDATES_PER_RUN", 1000), 1000)),
         max_mirror_checks_per_run=_int_env("MAX_MIRROR_CHECKS_PER_RUN", 6),
         request_timeout_seconds=_int_env("REQUEST_TIMEOUT_SECONDS", 18),
         scan_concurrency=max(1, min(_int_env("SCAN_CONCURRENCY", 3), 8)),
@@ -261,4 +265,3 @@ def get_settings() -> Settings:
     settings.screenshots_dir.mkdir(parents=True, exist_ok=True)
     settings.export_dir.mkdir(parents=True, exist_ok=True)
     return settings
-

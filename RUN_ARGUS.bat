@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions
 chcp 65001 >nul
-title Argus Investigator
+title DOFilter Investigator
 
 set "PROJECT_DIR=%~dp0"
 set "URL=http://127.0.0.1:8000"
@@ -10,7 +10,7 @@ cd /d "%PROJECT_DIR%"
 
 echo.
 echo ========================================
-echo   Argus Investigator launcher
+echo   DOFilter Investigator launcher
 echo ========================================
 echo Project: %PROJECT_DIR%
 echo URL:     %URL%
@@ -24,7 +24,7 @@ if not exist ".env" (
 
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue; if($p){exit 0}else{exit 1}" >nul 2>nul
 if not errorlevel 1 (
-    echo [OK] Argus is already running. Opening browser...
+    echo [OK] DOFilter is already running. Opening browser...
     start "" "%URL%"
     exit /b 0
 )
@@ -66,13 +66,13 @@ if not exist ".venv\.playwright-installed" (
 echo [OK] Opening browser in a few seconds...
 start "" powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 4; Start-Process '%URL%'"
 
-echo [OK] Starting Argus. Keep this window open.
+echo [OK] Starting DOFilter. Keep this window open.
 echo Press CTRL+C to stop.
 echo.
 "%PYTHON_EXE%" -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 echo.
-echo Argus stopped.
+echo DOFilter stopped.
 pause
 exit /b 0
 
