@@ -28,7 +28,12 @@ from app.services.cyberscan_classifier import CyberScanClassifier
 from app.services.evidence import EvidenceCollector, score_finding
 from app.services.gemini import GeminiAPIError, GeminiClient, GeminiQuotaError
 from app.services.ml_classifier import DomainMLClassifier
-from app.services.risky_domains import gambling_domain_signals, has_casino_context, has_gambling_context
+from app.services.risky_domains import (
+    gambling_domain_signals,
+    has_casino_context,
+    has_gambling_context,
+    has_user_risk_search_context,
+)
 from app.services.screenshots import ScreenshotService
 
 
@@ -171,6 +176,17 @@ NON_TARGET_REGISTERED_DOMAINS = {
     "youtube.com",
     "youtu.be",
 }
+
+USER_SEARCH_QUERIES = [
+    "онлайн казино Казахстан",
+    "казино онлайн играть Казахстан",
+    "слоты на деньги Казахстан",
+    "казино бонус регистрация Казахстан",
+    "рабочее зеркало казино Казахстан",
+    "легкие деньги Казахстан",
+    "быстрый заработок Казахстан",
+    "инвестиции быстрый доход USDT Казахстан",
+]
 
 CATEGORY_DISPLAY = {
     "legit": "обычный сайт",
@@ -567,30 +583,50 @@ class Investigator:
             max(max_candidates, self.settings.osint_candidate_pool_size),
         )
         discovered: list[Candidate] = []
-        if self.settings.osint_feeds_enabled:
-            feed_candidates = await self._discover_from_feeds(run_id, discovery_limit)
-            discovered.extend(feed_candidates)
+        user_search_mode = self._user_search_mode(seed_query)
 
-        if self.gemini.available:
+        if user_search_mode and self.gemini.available:
             try:
-                gemini_limit = min(discovery_limit, max(max_candidates * 2, 50))
-                discovered.extend(self._discover_with_gemini(run_id, seed_query, gemini_limit))
+                discovered.extend(self._discover_with_user_search(run_id, seed_query, discovery_limit, max_candidates))
             except GeminiAPIError as exc:
                 level = "warning" if exc.status_code in {401, 403} else "error"
                 self.db.add_log(
                     run_id,
                     level,
-                    "Gemini Search недоступен, продолжаю через OSINT/ML",
+                    "Gemini Search недоступен для пользовательского поиска",
                     {"error": str(exc), "status_code": exc.status_code},
                 )
-                if not discovered and not self.settings.osint_feeds_enabled:
+                if not discovered and self.settings.osint_feeds_enabled:
                     discovered.extend(await self._discover_from_feeds(run_id, discovery_limit))
             except Exception as exc:  # noqa: BLE001
-                self.db.add_log(run_id, "warning", "Gemini Search недоступен, продолжаю через OSINT/ML", {"error": str(exc)})
-                if not discovered and not self.settings.osint_feeds_enabled:
+                self.db.add_log(run_id, "warning", "Gemini Search недоступен для пользовательского поиска", {"error": str(exc)})
+                if not discovered and self.settings.osint_feeds_enabled:
                     discovered.extend(await self._discover_from_feeds(run_id, discovery_limit))
         else:
-            self.db.add_log(run_id, "warning", "Gemini ключ не настроен. Автопоиск продолжается через OSINT-фиды.")
+            if self.settings.osint_feeds_enabled:
+                feed_candidates = await self._discover_from_feeds(run_id, discovery_limit)
+                discovered.extend(feed_candidates)
+
+            if self.gemini.available:
+                try:
+                    gemini_limit = min(discovery_limit, max(max_candidates * 2, 50))
+                    discovered.extend(self._discover_with_gemini(run_id, seed_query, gemini_limit))
+                except GeminiAPIError as exc:
+                    level = "warning" if exc.status_code in {401, 403} else "error"
+                    self.db.add_log(
+                        run_id,
+                        level,
+                        "Gemini Search недоступен, продолжаю через OSINT/ML",
+                        {"error": str(exc), "status_code": exc.status_code},
+                    )
+                    if not discovered and not self.settings.osint_feeds_enabled:
+                        discovered.extend(await self._discover_from_feeds(run_id, discovery_limit))
+                except Exception as exc:  # noqa: BLE001
+                    self.db.add_log(run_id, "warning", "Gemini Search недоступен, продолжаю через OSINT/ML", {"error": str(exc)})
+                    if not discovered and not self.settings.osint_feeds_enabled:
+                        discovered.extend(await self._discover_from_feeds(run_id, discovery_limit))
+            else:
+                self.db.add_log(run_id, "warning", "Gemini ключ не настроен. Автопоиск продолжается через OSINT-фиды.")
 
         if seed_query:
             for domain in find_domains(seed_query):
@@ -606,7 +642,9 @@ class Investigator:
                     )
                 )
 
-        if len(discovered) < max_candidates:
+        allow_synthetic_refill = not user_search_mode or not self.gemini.available
+
+        if allow_synthetic_refill and len(discovered) < max_candidates:
             bootstrap = self._discover_from_bootstrap(seed_query, max_candidates - len(discovered))
             if bootstrap:
                 discovered.extend(bootstrap)
@@ -624,7 +662,7 @@ class Investigator:
         algorithmic_added = 0
         seed_domains = set(find_domains(seed_query or ""))
 
-        if len(fresh_candidates) < max_candidates and not seed_domains:
+        if allow_synthetic_refill and len(fresh_candidates) < max_candidates and not seed_domains:
             excluded_domains = known_domains | {candidate.key() for candidate in candidates}
             algorithmic = self._discover_from_algorithmic_mirrors(
                 seed_query,
@@ -644,7 +682,7 @@ class Investigator:
                     },
                 )
 
-        if len(fresh_candidates) < max_candidates and not seed_domains:
+        if allow_synthetic_refill and len(fresh_candidates) < max_candidates and not seed_domains:
             refill_count = max_candidates - len(fresh_candidates)
             known_candidates = [
                 candidate
@@ -668,6 +706,89 @@ class Investigator:
             },
         )
         return fresh_candidates[:discovery_limit]
+
+    def _discover_with_user_search(
+        self,
+        run_id: int,
+        seed_query: str | None,
+        discovery_limit: int,
+        max_candidates: int,
+    ) -> list[Candidate]:
+        queries = self._user_search_queries(seed_query)
+        per_query_limit = max(12, min(40, max_candidates))
+        candidates: list[Candidate] = []
+        seen: set[str] = set()
+        self.db.add_log(
+            run_id,
+            "info",
+            "User-search discovery started",
+            {"queries": queries, "mode": "google-like-user-results"},
+        )
+        for query in queries:
+            if len(candidates) >= discovery_limit:
+                break
+            try:
+                batch = self._discover_with_gemini(run_id, query, per_query_limit)
+            except GeminiQuotaError:
+                raise
+            except GeminiAPIError:
+                raise
+            for candidate in batch:
+                key = candidate.key()
+                if not key or key in seen:
+                    continue
+                if not self._candidate_matches_user_search(candidate, query):
+                    continue
+                seen.add(key)
+                if not candidate.search_query:
+                    candidate.search_query = query
+                candidates.append(candidate)
+                if len(candidates) >= discovery_limit:
+                    break
+        self.db.add_log(
+            run_id,
+            "info",
+            "User-search discovery finished",
+            {"queries": len(queries), "candidates": len(candidates)},
+        )
+        return candidates
+
+    @staticmethod
+    def _user_search_mode(seed_query: str | None) -> bool:
+        return has_user_risk_search_context(seed_query or " ".join(USER_SEARCH_QUERIES))
+
+    @staticmethod
+    def _user_search_queries(seed_query: str | None) -> list[str]:
+        queries: list[str] = []
+        if seed_query and seed_query.strip():
+            queries.append(seed_query.strip())
+        if not seed_query or has_user_risk_search_context(seed_query):
+            queries.extend(USER_SEARCH_QUERIES)
+        clean: list[str] = []
+        for query in queries:
+            normalized = re.sub(r"\s+", " ", query).strip()
+            if normalized and normalized not in clean:
+                clean.append(normalized)
+        return clean[:8]
+
+    @staticmethod
+    def _candidate_matches_user_search(candidate: Candidate, query: str) -> bool:
+        candidate_context = " ".join(
+            [
+                candidate.domain,
+                candidate.url,
+                candidate.category,
+                candidate.why,
+                candidate.search_query,
+            ]
+        )
+        category_tokens = set(re.split(r"[^a-z_]+", candidate.category.lower()))
+        if category_tokens & {"casino", "gambling", "betting", "online_casino", "pyramid", "investment_pyramid", "scam"}:
+            return True
+        return bool(
+            gambling_domain_signals(candidate.domain, f"{candidate_context} {query}")
+            or has_user_risk_search_context(candidate_context)
+        )
 
     def _discover_from_bootstrap(self, seed_query: str | None, limit: int) -> list[Candidate]:
         if limit <= 0:
@@ -786,11 +907,13 @@ Critical local-search behavior:
 - Treat domains like pinco4.aktif.kz and top.45minut.kz only as examples of direct Kazakhstan search-result patterns; do not hardcode them or stop at these examples.
 - If Google/Gemini returns a redirect URL, unwrap it and return the real target domain, not google.com or vertexaisearch.cloud.google.com.
 - Do not discard plain-looking .kz subdomains when the title/snippet/query context is casino, slots, mirror, or gambling.
+- Primary task: reproduce what an ordinary Kazakhstan user sees in Google after typing the query. Prefer direct sites from organic/ad-like search results over blacklist feeds, review articles, forums, and complaint databases.
+- The target is the source website where a user can register, deposit, play, invest, or send money. A review, Telegram post, YouTube video, article, forum, catalog, or blacklist page is only a source_url, never the candidate.
 
 Ты OSINT-следователь и имитируешь обычный пользовательский поиск из Казахстана. Нужно найти прямые домены сайтов, которые обычный человек реально увидит, если ищет онлайн-казино, слоты, рабочие зеркала, фишинг или инвестиционные пирамиды.
-Используй Google Search grounding как браузерный поиск. Начинай с пользовательских запросов: "онлайн казино Казахстан", "казино онлайн играть", "слоты на деньги Казахстан", "рабочее зеркало казино", "казино зеркало вход", "инвестиции быстрый доход USDT", "Kaspi фишинг вход". Затем проверяй жалобы, отзывы, blacklist reports и страницы с complaints.
+Используй Google Search grounding как браузерный поиск. Начинай с пользовательских запросов: "онлайн казино Казахстан", "казино онлайн играть", "слоты на деньги Казахстан", "рабочее зеркало казино", "казино зеркало вход", "инвестиции быстрый доход USDT", "Kaspi фишинг вход". Смотри прежде всего прямые результаты поиска, где пользователь может зайти, зарегистрироваться, внести деньги, играть или отправить деньги.
 Ищи не только по названию бренда, но и по шаблонам "site scam", "withdraw problem", "не выводят деньги", "жалоба", "отзывы", "обман", "blacklist", "complaint", "report".
-Полезные источники для расширения пула: поисковая выдача по пользовательским запросам, публичные страницы жалоб, ScamAdviser/Trustpilot-style обзоры, форумы пострадавших, открытые blacklist reports, обсуждения возврата денег и проблем с выводом средств.
+Полезные источники для расширения пула: поисковая выдача по пользовательским запросам. Публичные страницы жалоб, ScamAdviser/Trustpilot-style обзоры, форумы пострадавших и blacklist reports используй только как вспомогательные источники для извлечения прямого домена сайта-источника.
 Важно: форум, новость, Telegram, YouTube, соцсеть или каталог не является кандидатом. Из таких страниц извлекай прямой домен подозрительного сайта и сохраняй страницу жалобы в source_urls.
 1) онлайн-казино/беттинг без очевидной лицензии,
 2) рабочие зеркала казино/беттинга,
@@ -874,16 +997,18 @@ Critical local-search behavior:
         context = f"{focus} " + " ".join(
             f"{source.get('title', '')} {source.get('url', '')}" for source in grounding_sources
         )
-        if not has_gambling_context(context):
+        if not has_user_risk_search_context(context):
             return candidates
         for source in grounding_sources:
             url = str(source.get("url") or "")
             title = str(source.get("title") or "")
+            source_context = f"{focus} {title} {url}"
+            category = "casino" if has_casino_context(source_context) else "scam"
             candidate = self._candidate_from_item(
                 {
                     "url": url,
                     "title": title,
-                    "category": "casino" if has_casino_context(context) else "gambling",
+                    "category": category,
                     "why": "Домен найден как прямой результат пользовательского Google-поиска через Gemini Search grounding.",
                     "search_query": focus,
                     "source_urls": [url],
@@ -892,7 +1017,7 @@ Critical local-search behavior:
             )
             if not candidate:
                 continue
-            if not gambling_domain_signals(candidate.domain, context) and candidate.category in {"casino", "gambling"}:
+            if not gambling_domain_signals(candidate.domain, source_context) and candidate.category in {"casino", "gambling"}:
                 candidate.category = "suspicious"
             candidates.append(candidate)
         return candidates

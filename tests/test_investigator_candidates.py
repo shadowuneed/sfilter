@@ -80,6 +80,21 @@ class InvestigatorCandidateTests(unittest.TestCase):
         self.assertEqual(candidates[0].url, "https://top.45minut.kz")
         self.assertEqual(candidates[0].category, "casino")
 
+    def test_easy_money_grounding_source_is_treated_as_user_risk_search(self) -> None:
+        candidates = self.investigator._candidates_from_grounding_sources(
+            [
+                {
+                    "url": "https://fast-money.example/register",
+                    "title": "Легкие деньги и быстрый заработок онлайн",
+                }
+            ],
+            "легкие деньги",
+        )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].domain, "fast-money.example")
+        self.assertEqual(candidates[0].category, "scam")
+
     def test_feed_parser_extracts_csv_and_hosts_domains(self) -> None:
         csv_tokens = self.investigator._feed_tokens(
             '# comment\n"2026-06-30","https://bad-login.example/home.php","online"\n',
@@ -119,6 +134,64 @@ class InvestigatorCandidateTests(unittest.TestCase):
         self.assertEqual(candidates, [])
         last_log = self.investigator.db.logs[-1][0]
         self.assertEqual(last_log[3]["skipped_known"], 1)
+
+    def test_user_search_mode_does_not_start_from_feeds_or_bootstrap(self) -> None:
+        class FakeDb:
+            def __init__(self) -> None:
+                self.logs = []
+
+            def known_domains(self) -> set[str]:
+                return set()
+
+            def add_log(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+                self.logs.append((args, kwargs))
+
+        class FakeGemini:
+            available = True
+
+        async def fail_feeds(*args, **kwargs):  # noqa: ANN002, ANN003
+            raise AssertionError("OSINT feeds must not lead user-search discovery")
+
+        def fail_bootstrap(*args, **kwargs):  # noqa: ANN002, ANN003
+            raise AssertionError("Bootstrap candidates must not be mixed into user-search discovery")
+
+        def fail_algorithmic(*args, **kwargs):  # noqa: ANN002, ANN003
+            raise AssertionError("Algorithmic mirrors must not be mixed into user-search discovery")
+
+        def fake_user_search(run_id, seed_query, discovery_limit, max_candidates):  # noqa: ANN001
+            return [
+                Candidate(
+                    url="https://live-casino.example",
+                    domain="live-casino.example",
+                    category="casino",
+                    why="Search result",
+                    search_query="онлайн казино Казахстан",
+                )
+            ]
+
+        self.investigator.settings = Settings(osint_feeds_enabled=True, osint_candidate_pool_size=10)
+        self.investigator.db = FakeDb()
+        self.investigator.gemini = FakeGemini()
+        self.investigator._discover_from_feeds = fail_feeds
+        self.investigator._discover_from_bootstrap = fail_bootstrap
+        self.investigator._discover_from_algorithmic_mirrors = fail_algorithmic
+        self.investigator._discover_with_user_search = fake_user_search
+
+        candidates = asyncio.run(self.investigator._discover_candidates(1, "онлайн казино", 5))
+
+        self.assertEqual([candidate.domain for candidate in candidates], ["live-casino.example"])
+        self.assertEqual(candidates[0].search_query, "онлайн казино Казахстан")
+
+    def test_user_search_filter_rejects_unrelated_suspicious_domain(self) -> None:
+        candidate = Candidate(
+            url="https://ordinary-news.example",
+            domain="ordinary-news.example",
+            category="suspicious",
+            why="generic result",
+            search_query="",
+        )
+
+        self.assertFalse(Investigator._candidate_matches_user_search(candidate, "онлайн казино"))
 
     def test_bootstrap_adds_verification_candidates_when_discovery_is_empty(self) -> None:
         self.investigator.settings = Settings(seed_queries=["казино зеркало рабочий вход"])

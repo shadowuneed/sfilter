@@ -11,6 +11,15 @@ GAMBLING_CONTEXT_RE = re.compile(
     re.IGNORECASE,
 )
 
+USER_RISK_SEARCH_RE = re.compile(
+    r"(casino|kazino|казино|слот|slots?|ставк|букмекер|betting|bookmaker|"
+    r"зеркал|mirror|легк(?:ие|их|ими)?\s+деньг|л[её]гк(?:ие|их|ими)?\s+деньг|"
+    r"быстр(?:ый|ого|ые|ых)\s+(?:заработ|доход)|заработ(?:ать|ок)|"
+    r"инвестиц|пассивн(?:ый|ого)\s+доход|доход\s+без\s+влож|"
+    r"usdt|crypto|крипт|pin[-\s]?up|pinco|1xbet|mostbet|1win|vulkan|joycasino)",
+    re.IGNORECASE,
+)
+
 CASINO_CONTEXT_RE = re.compile(
     r"(casino|kazino|казино|слот|slots?|roulette|рулет|blackjack|jackpot|"
     r"live\s+casino|pin[-\s]?up|pinco|vulkan|joycasino)",
@@ -70,6 +79,10 @@ def has_gambling_context(text: str | None) -> bool:
     return bool(GAMBLING_CONTEXT_RE.search(text or ""))
 
 
+def has_user_risk_search_context(text: str | None) -> bool:
+    return bool(USER_RISK_SEARCH_RE.search(text or ""))
+
+
 def has_casino_context(text: str | None) -> bool:
     return bool(CASINO_CONTEXT_RE.search(text or ""))
 
@@ -104,4 +117,3 @@ def gambling_domain_signals(domain_or_url: str | None, context: str | None = Non
             signals.append("KZ search-result landing subdomain with gambling context")
 
     return list(dict.fromkeys(signals))
-
