@@ -95,6 +95,50 @@ class InvestigatorCandidateTests(unittest.TestCase):
         self.assertEqual(candidates[0].domain, "fast-money.example")
         self.assertEqual(candidates[0].category, "scam")
 
+    def test_search_html_extracts_duckduckgo_redirect_target(self) -> None:
+        html = """
+        <html><body>
+          <div class="result">
+            <a class="result__a" href="/l/?uddg=https%3A%2F%2Fplay-slots.example%2Fregister">
+              Онлайн казино слоты на деньги
+            </a>
+            <a href="/html/?q=online+casino">next</a>
+          </div>
+        </body></html>
+        """
+
+        candidates = self.investigator._candidates_from_search_html(
+            query="онлайн казино",
+            html=html,
+            source_url="https://html.duckduckgo.com/html/?q=online+casino",
+            engine="duckduckgo",
+            limit=10,
+        )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].domain, "play-slots.example")
+        self.assertEqual(candidates[0].url, "https://play-slots.example/register")
+        self.assertEqual(candidates[0].category, "casino")
+
+    def test_search_html_rejects_unrelated_search_result(self) -> None:
+        html = """
+        <html><body>
+          <div class="result">
+            <a href="https://ordinary-news.example/story">Weather and local news</a>
+          </div>
+        </body></html>
+        """
+
+        candidates = self.investigator._candidates_from_search_html(
+            query="онлайн казино",
+            html=html,
+            source_url="https://www.google.com/search?q=online+casino",
+            engine="google",
+            limit=10,
+        )
+
+        self.assertEqual(candidates, [])
+
     def test_feed_parser_extracts_csv_and_hosts_domains(self) -> None:
         csv_tokens = self.investigator._feed_tokens(
             '# comment\n"2026-06-30","https://bad-login.example/home.php","online"\n',
@@ -124,7 +168,11 @@ class InvestigatorCandidateTests(unittest.TestCase):
         class FakeGemini:
             available = False
 
-        self.investigator.settings = Settings(osint_feeds_enabled=False, osint_candidate_pool_size=10)
+        self.investigator.settings = Settings(
+            osint_feeds_enabled=False,
+            osint_candidate_pool_size=10,
+            search_pages_enabled=False,
+        )
         self.investigator.db = FakeDb()
         self.investigator.gemini = FakeGemini()
 
@@ -147,7 +195,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
                 self.logs.append((args, kwargs))
 
         class FakeGemini:
-            available = True
+            available = False
 
         async def fail_feeds(*args, **kwargs):  # noqa: ANN002, ANN003
             raise AssertionError("OSINT feeds must not lead user-search discovery")
@@ -192,6 +240,37 @@ class InvestigatorCandidateTests(unittest.TestCase):
         )
 
         self.assertFalse(Investigator._candidate_matches_user_search(candidate, "онлайн казино"))
+
+    def test_user_search_uses_search_pages_without_gemini_by_default(self) -> None:
+        class FakeDb:
+            def __init__(self) -> None:
+                self.logs = []
+
+            def add_log(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+                self.logs.append((args, kwargs))
+
+        def fake_search_pages(run_id, query, limit):  # noqa: ANN001
+            return [
+                Candidate(
+                    url="https://play-slots.example",
+                    domain="play-slots.example",
+                    category="casino",
+                    why="Search page result",
+                    search_query=query,
+                )
+            ]
+
+        def fail_gemini(*args, **kwargs):  # noqa: ANN002, ANN003
+            raise AssertionError("Gemini must not be used while GEMINI_USER_SEARCH_FALLBACK=false")
+
+        self.investigator.settings = Settings(search_pages_enabled=True, gemini_user_search_fallback=False)
+        self.investigator.db = FakeDb()
+        self.investigator._discover_from_search_pages = fake_search_pages
+        self.investigator._discover_with_gemini = fail_gemini
+
+        candidates = self.investigator._discover_with_user_search(1, "онлайн казино", 10, 5)
+
+        self.assertEqual([candidate.domain for candidate in candidates], ["play-slots.example"])
 
     def test_bootstrap_adds_verification_candidates_when_discovery_is_empty(self) -> None:
         self.investigator.settings = Settings(seed_queries=["казино зеркало рабочий вход"])

@@ -167,6 +167,8 @@ class Settings:
     screenshot_concurrency: int = 1
     osint_feeds_enabled: bool = True
     osint_candidate_pool_size: int = 1500
+    search_pages_enabled: bool = True
+    gemini_user_search_fallback: bool = False
     ml_enabled: bool = True
     ml_model_path: Path = Path("models/domain_classifier.cbm")
     cyberscan_model_path: Path = Path("models/cyberscan_model.pkl")
@@ -240,6 +242,8 @@ def get_settings() -> Settings:
         screenshot_concurrency=max(1, min(_int_env("SCREENSHOT_CONCURRENCY", 1), 2)),
         osint_feeds_enabled=_bool_env("OSINT_FEEDS_ENABLED", True),
         osint_candidate_pool_size=max(150, min(_int_env("OSINT_CANDIDATE_POOL_SIZE", 1500), 5000)),
+        search_pages_enabled=_bool_env("SEARCH_PAGES_ENABLED", True),
+        gemini_user_search_fallback=_bool_env("GEMINI_USER_SEARCH_FALLBACK", False),
         ml_enabled=_bool_env("ML_ENABLED", True),
         ml_model_path=Path(os.getenv("ML_MODEL_PATH", "models/domain_classifier.cbm")),
         cyberscan_model_path=Path(os.getenv("CYBERSCAN_MODEL_PATH", "models/cyberscan_model.pkl")),

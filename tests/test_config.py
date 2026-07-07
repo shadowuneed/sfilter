@@ -88,6 +88,16 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(settings.browser_screenshots_enabled)
         self.assertTrue(settings.screenshot_fallback_enabled)
 
+    @patch("app.config._load_dotenv", lambda: None)
+    def test_user_search_defaults_avoid_gemini_fallback(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SEARCH_PAGES_ENABLED", None)
+            os.environ.pop("GEMINI_USER_SEARCH_FALLBACK", None)
+            settings = get_settings()
+
+        self.assertTrue(settings.search_pages_enabled)
+        self.assertFalse(settings.gemini_user_search_fallback)
+
 
 if __name__ == "__main__":
     unittest.main()

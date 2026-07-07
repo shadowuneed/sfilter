@@ -175,6 +175,8 @@ def health() -> dict[str, Any]:
         "scan_concurrency": settings.scan_concurrency,
         "max_candidates_per_run": settings.max_candidates_per_run,
         "osint_candidate_pool_size": settings.osint_candidate_pool_size,
+        "search_pages_enabled": settings.search_pages_enabled,
+        "gemini_user_search_fallback": settings.gemini_user_search_fallback,
         "candidate_timeout_seconds": settings.candidate_timeout_seconds,
         "screenshot_timeout_seconds": settings.screenshot_timeout_seconds,
         "screenshot_runtime": investigator.screenshots.runtime_status(),

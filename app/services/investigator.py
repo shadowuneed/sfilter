@@ -7,8 +7,10 @@ from dataclasses import dataclass, field
 from io import StringIO
 from threading import Event
 from typing import Any
+from urllib.parse import urlencode, urljoin
 
 import httpx
+from bs4 import BeautifulSoup
 
 from app.config import Settings
 from app.database import Database, utc_now
@@ -161,8 +163,11 @@ MIRROR_MODIFIERS = [
 NON_TARGET_REGISTERED_DOMAINS = {
     "askgamblers.com",
     "casino.guru",
+    "bing.com",
+    "duckduckgo.com",
     "facebook.com",
     "github.com",
+    "google.com",
     "instagram.com",
     "linkedin.com",
     "ok.ru",
@@ -176,6 +181,24 @@ NON_TARGET_REGISTERED_DOMAINS = {
     "youtube.com",
     "youtu.be",
 }
+
+USER_SEARCH_ENGINES = [
+    {
+        "name": "duckduckgo",
+        "url": "https://html.duckduckgo.com/html/",
+        "params": {"kl": "kz-ru"},
+    },
+    {
+        "name": "google",
+        "url": "https://www.google.com/search",
+        "params": {"hl": "ru", "gl": "kz", "num": "20", "pws": "0"},
+    },
+    {
+        "name": "bing",
+        "url": "https://www.bing.com/search",
+        "params": {"setlang": "ru-RU", "cc": "KZ", "count": "20"},
+    },
+]
 
 USER_SEARCH_QUERIES = [
     "онлайн казино Казахстан",
@@ -397,8 +420,8 @@ class Investigator:
             )
 
         methodology = [
-            "Ищем подозрительные casino/scam сайты через Gemini Search, а не через сырые malware/IP фиды.",
-            "В поисковых запросах просим только живые домены, рабочие зеркала и страницы, доступные для пользователей Казахстана.",
+            "Ищем подозрительные casino/scam сайты через поисковую выдачу DuckDuckGo/Google/Bing; Gemini используется только как опциональный fallback.",
+            "В поисковых запросах берем живые домены, рабочие зеркала и страницы, доступные для пользователей Казахстана.",
             "Открытие кандидатов проверяем через KZ_PROXY_URL; если прокси не задан, фиксируем прямую сеть сервера как ограничение доказательства.",
             "Отбрасываем IP-адреса, localhost, тестовые домены и технические источники.",
             "Оставляем в таблице только сайты, которые удалось открыть и зафиксировать, а страницы блокировки не показываем как рабочие сайты.",
@@ -585,7 +608,7 @@ class Investigator:
         discovered: list[Candidate] = []
         user_search_mode = self._user_search_mode(seed_query)
 
-        if user_search_mode and self.gemini.available:
+        if user_search_mode:
             try:
                 discovered.extend(self._discover_with_user_search(run_id, seed_query, discovery_limit, max_candidates))
             except GeminiAPIError as exc:
@@ -596,12 +619,8 @@ class Investigator:
                     "Gemini Search недоступен для пользовательского поиска",
                     {"error": str(exc), "status_code": exc.status_code},
                 )
-                if not discovered and self.settings.osint_feeds_enabled:
-                    discovered.extend(await self._discover_from_feeds(run_id, discovery_limit))
             except Exception as exc:  # noqa: BLE001
-                self.db.add_log(run_id, "warning", "Gemini Search недоступен для пользовательского поиска", {"error": str(exc)})
-                if not discovered and self.settings.osint_feeds_enabled:
-                    discovered.extend(await self._discover_from_feeds(run_id, discovery_limit))
+                self.db.add_log(run_id, "warning", "Пользовательский поиск недоступен", {"error": str(exc)})
         else:
             if self.settings.osint_feeds_enabled:
                 feed_candidates = await self._discover_from_feeds(run_id, discovery_limit)
@@ -642,7 +661,7 @@ class Investigator:
                     )
                 )
 
-        allow_synthetic_refill = not user_search_mode or not self.gemini.available
+        allow_synthetic_refill = not user_search_mode
 
         if allow_synthetic_refill and len(discovered) < max_candidates:
             bootstrap = self._discover_from_bootstrap(seed_query, max_candidates - len(discovered))
@@ -722,17 +741,32 @@ class Investigator:
             run_id,
             "info",
             "User-search discovery started",
-            {"queries": queries, "mode": "google-like-user-results"},
+            {
+                "queries": queries,
+                "mode": "search-page-user-results",
+                "search_pages_enabled": self.settings.search_pages_enabled,
+                "gemini_fallback": self.settings.gemini_user_search_fallback,
+            },
         )
         for query in queries:
             if len(candidates) >= discovery_limit:
                 break
-            try:
-                batch = self._discover_with_gemini(run_id, query, per_query_limit)
-            except GeminiQuotaError:
-                raise
-            except GeminiAPIError:
-                raise
+            batch: list[Candidate] = []
+            if self.settings.search_pages_enabled:
+                batch.extend(self._discover_from_search_pages(run_id, query, per_query_limit))
+            if len(batch) < max(3, min(per_query_limit, max_candidates)) and self.settings.gemini_user_search_fallback:
+                self.db.add_log(
+                    run_id,
+                    "info",
+                    "Gemini fallback enabled for user-search query",
+                    {"query": query, "search_page_candidates": len(batch)},
+                )
+                try:
+                    batch.extend(self._discover_with_gemini(run_id, query, per_query_limit))
+                except GeminiQuotaError:
+                    raise
+                except GeminiAPIError:
+                    raise
             for candidate in batch:
                 key = candidate.key()
                 if not key or key in seen:
@@ -752,6 +786,120 @@ class Investigator:
             {"queries": len(queries), "candidates": len(candidates)},
         )
         return candidates
+
+    def _discover_from_search_pages(self, run_id: int, query: str, limit: int) -> list[Candidate]:
+        if limit <= 0:
+            return []
+        timeout = min(max(self.settings.request_timeout_seconds, 8), 18)
+        headers = {
+            "User-Agent": self.settings.user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "ru-KZ,ru;q=0.9,en;q=0.6",
+        }
+        candidates: list[Candidate] = []
+        seen: set[str] = set()
+        with httpx.Client(
+            timeout=timeout,
+            headers=headers,
+            follow_redirects=True,
+            proxy=self.settings.kz_proxy_url,
+        ) as client:
+            for engine in USER_SEARCH_ENGINES:
+                if len(candidates) >= limit:
+                    break
+                url = self._search_engine_url(engine, query)
+                try:
+                    response = client.get(url)
+                    response.raise_for_status()
+                except Exception as exc:  # noqa: BLE001
+                    self.db.add_log(
+                        run_id,
+                        "warning",
+                        "Search page unavailable",
+                        {"engine": engine["name"], "query": query, "error": str(exc)},
+                    )
+                    continue
+                parsed = self._candidates_from_search_html(
+                    query=query,
+                    html=response.text,
+                    source_url=str(response.url),
+                    engine=str(engine["name"]),
+                    limit=limit - len(candidates),
+                )
+                added = 0
+                for candidate in parsed:
+                    key = candidate.key()
+                    if not key or key in seen:
+                        continue
+                    seen.add(key)
+                    candidates.append(candidate)
+                    added += 1
+                    if len(candidates) >= limit:
+                        break
+                self.db.add_log(
+                    run_id,
+                    "info",
+                    "Search page processed",
+                    {"engine": engine["name"], "query": query, "added": added},
+                )
+        return candidates
+
+    @staticmethod
+    def _search_engine_url(engine: dict[str, Any], query: str) -> str:
+        params = {**dict(engine.get("params") or {}), "q": query}
+        return f"{engine['url']}?{urlencode(params)}"
+
+    def _candidates_from_search_html(
+        self,
+        *,
+        query: str,
+        html: str,
+        source_url: str,
+        engine: str,
+        limit: int,
+    ) -> list[Candidate]:
+        candidates: list[Candidate] = []
+        soup = BeautifulSoup(html or "", "html.parser")
+        for anchor in soup.find_all("a", href=True):
+            if len(candidates) >= limit:
+                break
+            href = str(anchor.get("href") or "").strip()
+            if not href or href.startswith(("#", "javascript:", "mailto:")):
+                continue
+            target_url = unwrap_known_redirect_url(urljoin(source_url, href))
+            title = re.sub(r"\s+", " ", anchor.get_text(" ", strip=True))
+            parent = anchor.find_parent(["article", "li", "div"])
+            snippet = re.sub(r"\s+", " ", parent.get_text(" ", strip=True)) if parent else title
+            if not title and not target_url:
+                continue
+            source_context = f"{title} {snippet} {target_url}"
+            category = self._category_from_search_result(source_context)
+            if category == "suspicious" and not gambling_domain_signals(target_url, source_context):
+                continue
+            candidate = self._candidate_from_item(
+                {
+                    "url": target_url,
+                    "title": title,
+                    "snippet": snippet,
+                    "category": category,
+                    "why": f"Домен найден в поисковой выдаче {engine} по пользовательскому запросу.",
+                    "search_query": query,
+                    "source_urls": [source_url],
+                },
+                default_sources=[],
+            )
+            if not candidate or not self._candidate_matches_user_search(candidate, query):
+                continue
+            candidates.append(candidate)
+        return self._dedupe_candidates(candidates, limit)
+
+    @staticmethod
+    def _category_from_search_result(text: str) -> str:
+        if has_casino_context(text):
+            return "casino"
+        if has_user_risk_search_context(text):
+            return "scam"
+        return "suspicious"
 
     @staticmethod
     def _user_search_mode(seed_query: str | None) -> bool:
@@ -779,14 +927,13 @@ class Investigator:
                 candidate.url,
                 candidate.category,
                 candidate.why,
-                candidate.search_query,
             ]
         )
         category_tokens = set(re.split(r"[^a-z_]+", candidate.category.lower()))
         if category_tokens & {"casino", "gambling", "betting", "online_casino", "pyramid", "investment_pyramid", "scam"}:
             return True
         return bool(
-            gambling_domain_signals(candidate.domain, f"{candidate_context} {query}")
+            gambling_domain_signals(candidate.domain, candidate_context)
             or has_user_risk_search_context(candidate_context)
         )
 
@@ -1002,8 +1149,8 @@ Critical local-search behavior:
         for source in grounding_sources:
             url = str(source.get("url") or "")
             title = str(source.get("title") or "")
-            source_context = f"{focus} {title} {url}"
-            category = "casino" if has_casino_context(source_context) else "scam"
+            source_context = f"{title} {url}"
+            category = self._category_from_search_result(source_context)
             candidate = self._candidate_from_item(
                 {
                     "url": url,
@@ -1017,7 +1164,7 @@ Critical local-search behavior:
             )
             if not candidate:
                 continue
-            if not gambling_domain_signals(candidate.domain, source_context) and candidate.category in {"casino", "gambling"}:
+            if not gambling_domain_signals(candidate.domain, f"{focus} {source_context}") and candidate.category in {"casino", "gambling"}:
                 candidate.category = "suspicious"
             candidates.append(candidate)
         return candidates

@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import ipaddress
+import base64
 import re
 from difflib import SequenceMatcher
 from urllib.parse import parse_qs, unquote, urlparse
@@ -42,13 +43,18 @@ BLOCKED_HOSTS = {"localhost", "local", "example.com", "example.org", "example.ne
 
 TECHNICAL_HOSTS = {
     "accounts.google.com",
+    "bing.com",
     "cloud.google.com",
     "developers.google.com",
+    "duckduckgo.com",
     "gemini.google.com",
     "generativelanguage.googleapis.com",
     "google.com",
+    "html.duckduckgo.com",
     "search.google.com",
     "vertexaisearch.cloud.google.com",
+    "www.bing.com",
+    "www.duckduckgo.com",
     "www.google.com",
 }
 
@@ -67,6 +73,7 @@ REDIRECT_QUERY_PARAMS = (
     "q",
     "url",
     "u",
+    "uddg",
     "target",
     "to",
     "redirect",
@@ -136,11 +143,34 @@ def unwrap_known_redirect_url(value: str) -> str:
             target = unquote(str(raw_target or "")).strip()
             if not target:
                 continue
+            decoded_target = _decode_wrapped_url(target)
+            if decoded_target:
+                return decoded_target
             if target.startswith(("http://", "https://")) and is_public_domain(extract_domain(target)):
                 return target
             if is_public_domain(extract_domain(target)):
                 return normalize_url(target)
     return value
+
+
+def _decode_wrapped_url(value: str) -> str:
+    text = (value or "").strip()
+    if text.startswith(("http://", "https://")):
+        return text if is_public_domain(extract_domain(text)) else ""
+
+    candidates = [text]
+    if text.startswith("a1") and len(text) > 8:
+        candidates.append(text[2:])
+    for candidate in candidates:
+        padded = candidate + "=" * (-len(candidate) % 4)
+        try:
+            decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8", errors="ignore")
+        except Exception:
+            continue
+        match = re.search(r"https?://[^\s\"'<>]+", decoded)
+        if match and is_public_domain(extract_domain(match.group(0))):
+            return match.group(0)
+    return ""
 
 
 def is_ip_address(value: str) -> bool:
