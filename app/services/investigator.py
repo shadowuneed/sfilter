@@ -820,7 +820,7 @@ class Investigator:
                     )
                 )
 
-        allow_synthetic_refill = not user_search_mode
+        allow_synthetic_refill = not user_search_mode or (search_mode == "casino" and not discovered)
 
         if allow_synthetic_refill and len(discovered) < max_candidates:
             bootstrap = self._discover_from_bootstrap(seed_query, max_candidates - len(discovered))

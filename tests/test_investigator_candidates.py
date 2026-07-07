@@ -365,6 +365,48 @@ class InvestigatorCandidateTests(unittest.TestCase):
         self.assertEqual([candidate.domain for candidate in candidates], ["live-casino.example"])
         self.assertEqual(candidates[0].search_query, "онлайн казино Казахстан")
 
+    def test_empty_casino_user_search_falls_back_to_bootstrap(self) -> None:
+        class FakeDb:
+            def __init__(self) -> None:
+                self.logs = []
+
+            def known_domains(self) -> set[str]:
+                return set()
+
+            def add_log(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+                self.logs.append((args, kwargs))
+
+        class FakeGemini:
+            available = False
+
+        async def fail_feeds(*args, **kwargs):  # noqa: ANN002, ANN003
+            raise AssertionError("OSINT feeds must not lead user-search discovery")
+
+        def fake_user_search(run_id, seed_query, discovery_limit, max_candidates, search_mode="auto"):  # noqa: ANN001
+            return []
+
+        def fake_bootstrap(seed_query, limit):  # noqa: ANN001
+            return [
+                Candidate(
+                    url="https://pin-up.kz",
+                    domain="pin-up.kz",
+                    category="casino",
+                    why="Fallback casino candidate",
+                    search_query=seed_query,
+                )
+            ][:limit]
+
+        self.investigator.settings = Settings(osint_feeds_enabled=True, osint_candidate_pool_size=10)
+        self.investigator.db = FakeDb()
+        self.investigator.gemini = FakeGemini()
+        self.investigator._discover_from_feeds = fail_feeds
+        self.investigator._discover_with_user_search = fake_user_search
+        self.investigator._discover_from_bootstrap = fake_bootstrap
+
+        candidates = asyncio.run(self.investigator._discover_candidates(1, "онлайн казино", 1, "casino"))
+
+        self.assertEqual([candidate.domain for candidate in candidates], ["pin-up.kz"])
+
     def test_user_search_filter_rejects_unrelated_suspicious_domain(self) -> None:
         candidate = Candidate(
             url="https://ordinary-news.example",
