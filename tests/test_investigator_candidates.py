@@ -506,7 +506,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
         self.assertEqual(status_code, 429)
         self.assertNotIn("sorry/index", error)
 
-    def test_search_pages_disable_google_after_429(self) -> None:
+    def test_search_pages_aggregate_google_429_without_disabling_google(self) -> None:
         class FakeDb:
             def __init__(self) -> None:
                 self.logs = []
@@ -516,9 +516,11 @@ class InvestigatorCandidateTests(unittest.TestCase):
 
         class FakeClient:
             requests: list[str] = []
+            headers = {}
 
             def __init__(self, **kwargs) -> None:  # noqa: ANN003
-                pass
+                self.headers = dict(kwargs.get("headers") or {})
+                FakeClient.headers = self.headers
 
             def __enter__(self) -> "FakeClient":
                 return self
@@ -538,16 +540,49 @@ class InvestigatorCandidateTests(unittest.TestCase):
         try:
             self.investigator.settings = Settings()
             self.investigator.db = FakeDb()
-            disabled_engines: set[str] = set()
 
-            self.investigator._discover_from_search_pages(1, "онлайн казино", 10, "casino", disabled_engines)
-            self.investigator._discover_from_search_pages(1, "казино бонус", 10, "casino", disabled_engines)
+            candidates = self.investigator._discover_with_user_search(1, "онлайн казино", 10, 5, "casino")
         finally:
             investigator_module.httpx.Client = original_client
 
         google_requests = [url for url in FakeClient.requests if "google.com" in url]
-        self.assertEqual(len(google_requests), 1)
-        self.assertIn("google", disabled_engines)
+        self.assertGreaterEqual(len(google_requests), 2)
+        self.assertEqual(candidates, [])
+        self.assertFalse(any(log[0][2] == "Search engine temporarily disabled" for log in self.investigator.db.logs))
+        degraded_logs = [log for log in self.investigator.db.logs if log[0][2] == "Search pages unavailable"]
+        self.assertEqual(len(degraded_logs), 1)
+        self.assertIn("Mozilla/5.0", FakeClient.headers.get("User-Agent", ""))
+
+    def test_yandex_search_url_uses_text_query_param(self) -> None:
+        engine = next(engine for engine in investigator_module.USER_SEARCH_ENGINES if engine["name"] == "yandex_kz")
+
+        url = Investigator._search_engine_url(engine, "онлайн казино")
+
+        self.assertIn("text=", url)
+        self.assertNotIn("&q=", url)
+
+    def test_search_html_extracts_yandex_redirect_target(self) -> None:
+        html = """
+        <html><body>
+          <div class="serp-item">
+            <a href="/clck/jsredir?url=https%3A%2F%2Fpinco4.aktif.kz%2F">
+              Онлайн казино играть Казахстан
+            </a>
+          </div>
+        </body></html>
+        """
+
+        candidates = self.investigator._candidates_from_search_html(
+            query="онлайн казино",
+            html=html,
+            source_url="https://yandex.kz/search/?text=онлайн+казино",
+            engine="yandex_kz",
+            limit=10,
+            search_mode="casino",
+        )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].domain, "pinco4.aktif.kz")
 
     def test_bootstrap_adds_verification_candidates_when_discovery_is_empty(self) -> None:
         self.investigator.settings = Settings(seed_queries=["казино зеркало рабочий вход"])

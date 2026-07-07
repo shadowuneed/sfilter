@@ -193,8 +193,16 @@ NON_TARGET_REGISTERED_DOMAINS = {
     "x.com",
     "youtube.com",
     "youtu.be",
+    "ya.ru",
+    "yandex.kz",
+    "yandex.ru",
     "zakon.kz",
 }
+
+SEARCH_PAGE_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
 
 USER_SEARCH_ENGINES = [
     {
@@ -205,12 +213,18 @@ USER_SEARCH_ENGINES = [
     {
         "name": "google",
         "url": "https://www.google.com/search",
-        "params": {"hl": "ru", "gl": "kz", "num": "20", "pws": "0"},
+        "params": {"hl": "ru", "gl": "kz", "num": "20", "pws": "0", "gbv": "1"},
     },
     {
         "name": "bing",
         "url": "https://www.bing.com/search",
         "params": {"setlang": "ru-RU", "cc": "KZ", "count": "20"},
+    },
+    {
+        "name": "yandex_kz",
+        "url": "https://yandex.kz/search/",
+        "query_param": "text",
+        "params": {"lr": "162", "lang": "ru"},
     },
 ]
 
@@ -887,7 +901,7 @@ class Investigator:
         per_query_limit = max(12, min(40, max_candidates))
         candidates: list[Candidate] = []
         seen: set[str] = set()
-        disabled_search_engines: set[str] = set()
+        search_issues: list[dict[str, Any]] = []
         self.db.add_log(
             run_id,
             "info",
@@ -911,7 +925,7 @@ class Investigator:
                         query,
                         per_query_limit,
                         search_mode,
-                        disabled_search_engines,
+                        search_issues,
                     )
                 )
             if len(batch) < max(3, min(per_query_limit, max_candidates)) and self.settings.gemini_user_search_fallback:
@@ -939,6 +953,7 @@ class Investigator:
                 candidates.append(candidate)
                 if len(candidates) >= discovery_limit:
                     break
+        self._log_search_page_issues(run_id, search_issues, len(queries), len(candidates))
         self.db.add_log(
             run_id,
             "info",
@@ -953,21 +968,19 @@ class Investigator:
         query: str,
         limit: int,
         search_mode: str = "auto",
-        disabled_engines: set[str] | None = None,
+        search_issues: list[dict[str, Any]] | None = None,
     ) -> list[Candidate]:
         if limit <= 0:
             return []
-        timeout = min(max(self.settings.request_timeout_seconds, 6), 10)
+        timeout = min(max(self.settings.request_timeout_seconds, 8), 14)
         headers = {
-            "User-Agent": self.settings.user_agent,
+            "User-Agent": SEARCH_PAGE_USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "ru-KZ,ru;q=0.9,en;q=0.6",
         }
         candidates: list[Candidate] = []
         seen: set[str] = set()
-        disabled_engines = disabled_engines if disabled_engines is not None else set()
-        failures: list[dict[str, Any]] = []
-        processed_engines = 0
+        search_issues = search_issues if search_issues is not None else []
         with httpx.Client(
             timeout=timeout,
             headers=headers,
@@ -976,8 +989,6 @@ class Investigator:
         ) as client:
             for engine in USER_SEARCH_ENGINES:
                 engine_name = str(engine["name"])
-                if engine_name in disabled_engines:
-                    continue
                 if len(candidates) >= limit:
                     break
                 url = self._search_engine_url(engine, query)
@@ -986,20 +997,11 @@ class Investigator:
                     response.raise_for_status()
                 except Exception as exc:  # noqa: BLE001
                     error, status_code = self._search_error_summary(exc)
-                    failure: dict[str, Any] = {"engine": engine_name, "error": error}
+                    issue: dict[str, Any] = {"engine": engine_name, "query": query, "error": error}
                     if status_code is not None:
-                        failure["status_code"] = status_code
-                    failures.append(failure)
-                    if status_code == 429 and engine_name not in disabled_engines:
-                        disabled_engines.add(engine_name)
-                        self.db.add_log(
-                            run_id,
-                            "warning",
-                            "Search engine temporarily disabled",
-                            {"engine": engine_name, "query": query, "error": error},
-                        )
+                        issue["status_code"] = status_code
+                    search_issues.append(issue)
                     continue
-                processed_engines += 1
                 parsed = self._candidates_from_search_html(
                     query=query,
                     html=response.text,
@@ -1025,23 +1027,40 @@ class Investigator:
                         "Search page processed",
                         {"engine": engine_name, "query": query, "added": added},
                     )
-        if failures:
-            self.db.add_log(
-                run_id,
-                "warning" if processed_engines == 0 else "info",
-                "Search pages unavailable",
-                {
-                    "query": query,
-                    "failures": failures[:3],
-                    "processed_engines": processed_engines,
-                },
-            )
         return candidates
 
     @staticmethod
     def _search_engine_url(engine: dict[str, Any], query: str) -> str:
-        params = {**dict(engine.get("params") or {}), "q": query}
+        query_param = str(engine.get("query_param") or "q")
+        params = {**dict(engine.get("params") or {}), query_param: query}
         return f"{engine['url']}?{urlencode(params)}"
+
+    def _log_search_page_issues(self, run_id: int, issues: list[dict[str, Any]], queries: int, candidates: int) -> None:
+        if not issues:
+            return
+        summary: dict[tuple[str, str, int | None], int] = {}
+        for issue in issues:
+            key = (
+                str(issue.get("engine") or "unknown"),
+                str(issue.get("error") or "error"),
+                issue.get("status_code") if isinstance(issue.get("status_code"), int) else None,
+            )
+            summary[key] = summary.get(key, 0) + 1
+        failures = [
+            {
+                "engine": engine,
+                "error": error,
+                "count": count,
+                **({"status_code": status_code} if status_code is not None else {}),
+            }
+            for (engine, error, status_code), count in sorted(summary.items(), key=lambda item: (-item[1], item[0][0]))
+        ]
+        self.db.add_log(
+            run_id,
+            "warning" if candidates == 0 else "info",
+            "Search pages degraded" if candidates else "Search pages unavailable",
+            {"queries": queries, "candidates": candidates, "failures": failures[:5]},
+        )
 
     @staticmethod
     def _search_error_summary(exc: Exception) -> tuple[str, int | None]:

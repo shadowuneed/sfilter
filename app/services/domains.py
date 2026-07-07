@@ -56,6 +56,12 @@ TECHNICAL_HOSTS = {
     "www.bing.com",
     "www.duckduckgo.com",
     "www.google.com",
+    "www.yandex.kz",
+    "www.yandex.ru",
+    "ya.ru",
+    "yabs.yandex.kz",
+    "yandex.kz",
+    "yandex.ru",
 }
 
 TECHNICAL_DOMAIN_SUFFIXES = (
@@ -65,6 +71,7 @@ TECHNICAL_DOMAIN_SUFFIXES = (
 
 TECHNICAL_URL_MARKERS = (
     "/grounding-api-redirect/",
+    "/clck/",
     "/search?",
     "/url?",
 )
