@@ -469,6 +469,43 @@ class Database:
             self._upsert_case_for_finding(conn, finding_id)
             return finding_id
 
+    def update_finding_screenshot(self, finding_id: int, screenshot_path: str | None, screenshot_error: str | None) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT evidence_json, reasons_json FROM findings WHERE id=?",
+                (finding_id,),
+            ).fetchone()
+            if not row:
+                return False
+            evidence = loads(row["evidence_json"], {})
+            reasons = loads(row["reasons_json"], [])
+            if not isinstance(evidence, dict):
+                evidence = {}
+            if not isinstance(reasons, list):
+                reasons = []
+
+            evidence["screenshot_pending"] = False
+            evidence["screenshot_path"] = screenshot_path
+            evidence["screenshot_error"] = screenshot_error
+            if screenshot_error:
+                reason = (
+                    f"Screenshot saved with warning: {screenshot_error}"
+                    if screenshot_path
+                    else f"Screenshot not saved: {screenshot_error}"
+                )
+                if reason not in reasons:
+                    reasons.append(reason)
+
+            conn.execute(
+                """
+                UPDATE findings
+                SET screenshot_path=?, evidence_json=?, reasons_json=?
+                WHERE id=?
+                """,
+                (screenshot_path, dumps(evidence), dumps(reasons), finding_id),
+            )
+            return True
+
     def _finding_insert_values(self, run_id: int, finding: dict[str, Any]) -> tuple[list[str], list[Any]]:
         columns = [
             "run_id", "url", "final_url", "domain", "normalized_domain", "title",

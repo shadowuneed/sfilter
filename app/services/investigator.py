@@ -674,6 +674,16 @@ class Investigator:
             discovery_round = 0
             checked_total = 0
             no_candidate_rounds = 0
+            screenshot_tasks: list[asyncio.Task[Any]] = []
+            screenshot_semaphore = asyncio.Semaphore(max(1, int(self.settings.screenshot_concurrency)))
+
+            def queue_screenshot(finding_id: int, finding: dict[str, Any]) -> None:
+                if not take_screenshots or not finding.get("final_url"):
+                    return
+                task = asyncio.create_task(
+                    self._capture_and_store_screenshot(run_id, finding_id, finding, screenshot_semaphore)
+                )
+                screenshot_tasks.append(task)
 
             def handle_inspection_result(finding: dict[str, Any]) -> None:
                 nonlocal findings_count
@@ -692,7 +702,8 @@ class Investigator:
                     )
                     return
 
-                self.db.insert_finding(run_id, finding)
+                finding_id = self.db.insert_finding(run_id, finding)
+                queue_screenshot(finding_id, finding)
                 findings_count += 1
                 self.db.update_run(run_id, finding_count=findings_count)
                 self.db.add_log(
@@ -859,6 +870,16 @@ class Investigator:
                     )
                     break
 
+            if screenshot_tasks:
+                pending = sum(1 for task in screenshot_tasks if not task.done())
+                self.db.add_log(
+                    run_id,
+                    "info",
+                    "Основной поиск не ждет скриншоты: завершаю фоновые снимки",
+                    {"screenshots": len(screenshot_tasks), "pending": pending, "findings": findings_count},
+                )
+                await asyncio.gather(*screenshot_tasks, return_exceptions=True)
+
             self.db.update_run(run_id, status="completed", finished_at=utc_now(), finding_count=findings_count)
             if findings_count >= max_candidates:
                 self.db.add_log(run_id, "info", "Поиск завершен: выбранная цель набрана", {"findings": findings_count, "target": max_candidates})
@@ -913,12 +934,16 @@ class Investigator:
             )
             mirror_group = self._mirror_group_for(candidate, all_candidates, mirror_groups)
             try:
-                inspection_timeout = self.settings.candidate_timeout_seconds
-                if take_screenshots:
-                    inspection_timeout += self.settings.screenshot_timeout_seconds + 2
                 finding = await asyncio.wait_for(
-                    self._build_finding(run_id, candidate, mirror_group, take_screenshots, search_mode),
-                    timeout=inspection_timeout,
+                    self._build_finding(
+                        run_id,
+                        candidate,
+                        mirror_group,
+                        take_screenshots,
+                        search_mode,
+                        defer_screenshot=True,
+                    ),
+                    timeout=self.settings.candidate_timeout_seconds,
                 )
             except asyncio.TimeoutError:
                 return {
@@ -2101,6 +2126,73 @@ Critical local-search behavior:
         self.db.add_log(run_id, "info", "Зеркальные группы проверены", {"count": len(groups), "model": meta.get("model")})
         return groups
 
+    async def _capture_and_store_screenshot(
+        self,
+        run_id: int,
+        finding_id: int,
+        finding: dict[str, Any],
+        semaphore: asyncio.Semaphore,
+    ) -> None:
+        async with semaphore:
+            domain = str(finding.get("domain") or extract_domain(str(finding.get("final_url") or finding.get("url") or "")) or "")
+            final_url = str(finding.get("final_url") or finding.get("url") or "")
+            if not final_url:
+                return
+            self.db.add_log(
+                run_id,
+                "info",
+                "Делаю скриншот сайта",
+                {"domain": domain, "url": final_url, "finding_id": finding_id},
+            )
+            try:
+                screenshot = await self.screenshots.capture(
+                    final_url,
+                    run_id,
+                    title=finding.get("title"),
+                    html_path=finding.get("html_path"),
+                    status_code=finding.get("status_code"),
+                )
+                updated = self.db.update_finding_screenshot(finding_id, screenshot.path, screenshot.error)
+                if screenshot.path:
+                    if screenshot.error:
+                        self.db.add_log(
+                            run_id,
+                            "warning",
+                            "Скриншот сохранен с предупреждением",
+                            {"domain": domain, "path": screenshot.path, "warning": screenshot.error, "finding_id": finding_id},
+                        )
+                    else:
+                        self.db.add_log(
+                            run_id,
+                            "info",
+                            "Скриншот сохранен",
+                            {"domain": domain, "path": screenshot.path, "finding_id": finding_id},
+                        )
+                else:
+                    self.db.add_log(
+                        run_id,
+                        "warning",
+                        "Скриншот не сохранен",
+                        {"domain": domain, "error": screenshot.error, "finding_id": finding_id},
+                    )
+                if not updated:
+                    self.db.add_log(
+                        run_id,
+                        "warning",
+                        "Скриншот сделан, но запись находки уже не найдена",
+                        {"domain": domain, "finding_id": finding_id},
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self.db.update_finding_screenshot(finding_id, None, f"{type(exc).__name__}: {exc}")
+                self.db.add_log(
+                    run_id,
+                    "warning",
+                    "Скриншот не сохранен",
+                    {"domain": domain, "error": f"{type(exc).__name__}: {exc}", "finding_id": finding_id},
+                )
+
     async def _build_finding(
         self,
         run_id: int,
@@ -2108,6 +2200,7 @@ Critical local-search behavior:
         mirror_group: str | None,
         take_screenshots: bool,
         search_mode: str = "auto",
+        defer_screenshot: bool = False,
     ) -> dict[str, Any]:
         evidence = await self.evidence.collect(candidate.url, run_id)
         domain = evidence.domain or candidate.domain
@@ -2159,7 +2252,8 @@ Critical local-search behavior:
 
         screenshot_path = None
         screenshot_error = None
-        if take_screenshots and evidence.final_url:
+        screenshot_pending = bool(take_screenshots and evidence.final_url and defer_screenshot)
+        if take_screenshots and evidence.final_url and not defer_screenshot:
             self.db.add_log(run_id, "info", "Делаю скриншот сайта", {"domain": domain, "url": evidence.final_url})
             screenshot = await self.screenshots.capture(
                 evidence.final_url,
@@ -2182,6 +2276,8 @@ Critical local-search behavior:
                     self.db.add_log(run_id, "info", "Скриншот сохранен", {"domain": domain, "path": screenshot_path})
             elif screenshot_error:
                 self.db.add_log(run_id, "warning", "Скриншот не сохранен", {"domain": domain, "error": screenshot_error})
+        elif screenshot_pending:
+            self.db.add_log(run_id, "info", "Скриншот поставлен в фоновую очередь", {"domain": domain, "url": evidence.final_url})
         elif not take_screenshots:
             self.db.add_log(run_id, "info", "Скриншот пропущен: выключен в запуске", {"domain": domain})
 
@@ -2297,6 +2393,7 @@ Critical local-search behavior:
                 "cyberscan_ml": cyberscan_result,
                 "content_ai": content_ai,
                 "screenshot_error": screenshot_error,
+                "screenshot_pending": screenshot_pending,
             },
             "sources_json": [{"url": url} for url in source_urls],
             "reasons_json": reasons,

@@ -111,6 +111,41 @@ class DatabaseBackendTests(unittest.TestCase):
             self.assertEqual(len(cases), 1)
             self.assertEqual(cases[0]["normalized_domain"], "no-ssl.example")
 
+    def test_finding_screenshot_can_be_updated_after_insert(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "argus.db")
+            db.init()
+            run_id = db.create_run(seed_query="casino", max_candidates=1, take_screenshots=True)
+            finding_id = db.insert_finding(
+                run_id,
+                {
+                    "url": "https://casino.example",
+                    "final_url": "https://casino.example",
+                    "domain": "casino.example",
+                    "normalized_domain": "casino.example",
+                    "category": "casino",
+                    "verdict": "suspicious",
+                    "risk_score": 95,
+                    "active": True,
+                    "status_code": 200,
+                    "evidence_json": {"screenshot_pending": True},
+                    "reasons_json": ["initial reason"],
+                },
+            )
+
+            updated = db.update_finding_screenshot(
+                finding_id,
+                "evidence/screenshots/run_1_casino.example.png",
+                "navigation warning",
+            )
+            finding = db.list_findings(run_id=run_id)[0]
+
+            self.assertTrue(updated)
+            self.assertEqual(finding["screenshot_path"], "evidence/screenshots/run_1_casino.example.png")
+            self.assertFalse(finding["evidence"]["screenshot_pending"])
+            self.assertEqual(finding["evidence"]["screenshot_error"], "navigation warning")
+            self.assertIn("Screenshot saved with warning: navigation warning", finding["reasons"])
+
     def test_registry_lists_latest_seen_cases_first(self) -> None:
         with TemporaryDirectory() as tmp:
             db = Database(Path(tmp) / "argus.db")
