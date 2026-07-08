@@ -98,6 +98,13 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(settings.search_pages_enabled)
         self.assertFalse(settings.gemini_user_search_fallback)
 
+    @patch("app.config._load_dotenv", lambda: None)
+    def test_search_page_delay_is_read_from_environment(self) -> None:
+        with patch.dict(os.environ, {"SEARCH_PAGE_DELAY_SECONDS": "1.5"}, clear=False):
+            settings = get_settings()
+
+        self.assertEqual(settings.search_page_delay_seconds, 1.5)
+
 
 if __name__ == "__main__":
     unittest.main()

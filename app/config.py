@@ -168,6 +168,7 @@ class Settings:
     osint_feeds_enabled: bool = True
     osint_candidate_pool_size: int = 1500
     search_pages_enabled: bool = True
+    search_page_delay_seconds: float = 0.0
     gemini_user_search_fallback: bool = False
     ml_enabled: bool = True
     ml_model_path: Path = Path("models/domain_classifier.cbm")
@@ -243,6 +244,7 @@ def get_settings() -> Settings:
         osint_feeds_enabled=_bool_env("OSINT_FEEDS_ENABLED", True),
         osint_candidate_pool_size=max(150, min(_int_env("OSINT_CANDIDATE_POOL_SIZE", 1500), 5000)),
         search_pages_enabled=_bool_env("SEARCH_PAGES_ENABLED", True),
+        search_page_delay_seconds=max(0.0, min(_float_env("SEARCH_PAGE_DELAY_SECONDS", 0.0), 10.0)),
         gemini_user_search_fallback=_bool_env("GEMINI_USER_SEARCH_FALLBACK", False),
         ml_enabled=_bool_env("ML_ENABLED", True),
         ml_model_path=Path(os.getenv("ML_MODEL_PATH", "models/domain_classifier.cbm")),

@@ -55,6 +55,8 @@ services:
         value: "true"
       - key: OSINT_CANDIDATE_POOL_SIZE
         value: "5000"
+      - key: SEARCH_PAGE_DELAY_SECONDS
+        value: "1.5"
       - key: ML_ENABLED
         value: "true"
       - key: ML_MODEL_PATH

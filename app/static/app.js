@@ -91,6 +91,7 @@ const categoryLabels = {
   legit: "Низкий риск",
   casino: "Казино",
   online_casino: "Онлайн-казино",
+  betting: "Букмекер",
   sports_betting_review: "Букмекер/проверка",
   phishing: "Фишинг",
   pyramid: "Пирамиды",
@@ -103,6 +104,7 @@ const categoryColors = {
   legit: "#10b981",
   casino: "#f59e0b",
   online_casino: "#f59e0b",
+  betting: "#38bdf8",
   sports_betting_review: "#38bdf8",
   phishing: "#ef4444",
   pyramid: "#8b5cf6",
@@ -113,8 +115,9 @@ const categoryColors = {
 
 const modelLabelLabels = {
   legit: "похож на обычный сайт",
-  casino: "похож на казино/беттинг",
+  casino: "похож на казино",
   online_casino: "похож на онлайн-казино",
+  betting: "похож на букмекер/ставки",
   sports_betting_review: "похож на букмекера, нужна проверка лицензии",
   phishing: "похож на фишинг",
   pyramid: "похож на финансовую пирамиду",
@@ -300,7 +303,8 @@ function formatPercent(value) {
 function normalizeCategory(value) {
   const text = String(value || "").toLowerCase();
   if (/(legit|benign|trusted|low_signal)/.test(text)) return "legit";
-  if (/(casino|gambling|betting|bookmaker)/.test(text)) return "casino";
+  if (/(betting|bookmaker|sports_betting)/.test(text)) return "betting";
+  if (/(casino|gambling)/.test(text)) return "casino";
   if (/(phishing|scam|malware)/.test(text)) return "phishing";
   if (/(pyramid|investment)/.test(text)) return "pyramid";
   return "suspicious";

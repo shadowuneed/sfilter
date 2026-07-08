@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import re
+import time
 from dataclasses import dataclass, field
 from io import StringIO
 from threading import Event
@@ -124,6 +125,49 @@ BOOTSTRAP_CANDIDATES = [
     {"domain": "wazamba.com", "category": "casino", "brand": "Wazamba", "aliases": ["wazamba"]},
     {"domain": "nationalcasino.com", "category": "casino", "brand": "National Casino", "aliases": ["national casino"]},
 ]
+
+BOOKMAKER_FIRST_BRANDS = {
+    "1xbet",
+    "22bet",
+    "bet365",
+    "betano",
+    "betfair",
+    "betway",
+    "betwinner",
+    "bwin",
+    "coral",
+    "fonbet",
+    "ggbet",
+    "ladbrokes",
+    "leon",
+    "linebet",
+    "marathonbet",
+    "megapari",
+    "melbet",
+    "mostbet",
+    "olimpbet",
+    "parimatch",
+    "rabona",
+    "sportsbet",
+    "tennisi",
+    "unibet",
+    "williamhill",
+    "winline",
+    "xparibet",
+}
+
+BOOKMAKER_FIRST_RE = re.compile(
+    r"(?i)(?:^|[^a-z0-9])("
+    + "|".join(re.escape(brand) for brand in sorted(BOOKMAKER_FIRST_BRANDS, key=len, reverse=True))
+    + r")(?:[^a-z0-9]|$)"
+)
+
+CASINO_PRODUCT_SIGNAL_RE = re.compile(
+    r"(?i)(casino|kazino|казино|slots?|слот|слоты|slot\s*games?|live\s+casino|roulette|рулет|"
+    r"blackjack|блэкджек|poker|покер|jackpot|джекпот|free\s*spins?|фриспин|"
+    r"игровые\s+автоматы|автоматы|1xslots|vulkan|joycasino|playfortuna|888casino|pinco|"
+    r"pin[-_\s]?up|vavada|wazamba|leovegas|fairspin|zotabet|roobet|rollbit|bc\.?game|stake)"
+)
 
 MIRROR_TLDS = [
     "com",
@@ -355,7 +399,7 @@ CATEGORY_DISPLAY = {
     "casino": "казино или азартные игры",
     "online_casino": "онлайн-казино",
     "gambling": "казино или ставки",
-    "betting": "казино или ставки",
+    "betting": "букмекер/ставки",
     "sports_betting_review": "букмекер/ставки, требуется проверка лицензии",
     "phishing": "фишинг",
     "scam": "скам",
@@ -615,7 +659,7 @@ class Investigator:
                 self.db.add_log(run_id, "warning", "Проверка остановлена до анализа сайтов")
                 return
 
-            mirror_groups = await self._discover_mirrors(run_id, candidates_to_check)
+            mirror_groups = await self._discover_mirrors(run_id, candidates_to_check, search_mode)
             findings_count = 0
             concurrency = max(1, min(self.settings.scan_concurrency, max_candidates, len(candidates_to_check) or 1))
             self.db.add_log(
@@ -1016,12 +1060,16 @@ class Investigator:
             follow_redirects=True,
             proxy=self.settings.kz_proxy_url,
         ) as client:
+            request_count = 0
             for engine in USER_SEARCH_ENGINES:
                 engine_name = str(engine["name"])
                 if len(candidates) >= limit:
                     break
                 url = self._search_engine_url(engine, query)
                 try:
+                    if request_count and self.settings.search_page_delay_seconds > 0:
+                        time.sleep(self.settings.search_page_delay_seconds)
+                    request_count += 1
                     response = client.get(url)
                     response.raise_for_status()
                 except Exception as exc:  # noqa: BLE001
@@ -1285,6 +1333,27 @@ class Investigator:
     def _is_wrong_geo_casino_result(url: str, context: str) -> bool:
         return Investigator._casino_kz_relevance_score(url, context) < 0
 
+    @staticmethod
+    def _has_casino_product_signal(text: str | None) -> bool:
+        return bool(CASINO_PRODUCT_SIGNAL_RE.search(text or ""))
+
+    @staticmethod
+    def _is_bookmaker_first_context(text: str | None) -> bool:
+        return bool(BOOKMAKER_FIRST_RE.search(text or ""))
+
+    @staticmethod
+    def _bootstrap_item_category(item: dict[str, Any]) -> str:
+        raw_values = [
+            str(item.get("brand") or ""),
+            extract_domain(str(item.get("domain") or "")).split(".", 1)[0],
+            *[str(alias) for alias in item.get("aliases", [])],
+        ]
+        for value in raw_values:
+            clean = re.sub(r"[^a-z0-9]+", "", value.lower())
+            if clean in BOOKMAKER_FIRST_BRANDS:
+                return "betting"
+        return str(item.get("category") or "suspicious")
+
     def _sort_candidates_for_search_mode(self, candidates: list[Candidate], search_mode: str | None) -> list[Candidate]:
         effective_mode = self.normalize_search_mode(search_mode)
         if effective_mode == "auto":
@@ -1300,21 +1369,26 @@ class Investigator:
     @staticmethod
     def _candidate_search_rank(candidate: Candidate, search_mode: str) -> int:
         context = " ".join([candidate.domain, candidate.url, candidate.category, candidate.why])
+        product_context = " ".join([candidate.domain, candidate.url, candidate.why])
         category_tokens = set(re.split(r"[^a-z_]+", candidate.category.lower()))
         if search_mode == "casino":
             score = 0
+            has_casino_product = Investigator._has_casino_product_signal(product_context)
+            bookmaker_first = Investigator._is_bookmaker_first_context(product_context)
             score += Investigator._casino_kz_relevance_score(candidate.url, context)
             if category_tokens & {"casino", "online_casino"}:
                 score += 120
-            if has_casino_context(context):
+            if has_casino_product:
                 score += 90
             if re.search(r"(?i)(/casino|casino|slots?|slot|roulette|blackjack|jackpot|vulkan|joycasino|pinco|pin[-_]?up)", candidate.url):
                 score += 70
             if Investigator._looks_like_kz_search_landing(candidate.domain):
                 score += 45
-            if category_tokens & {"betting", "gambling"} and not has_casino_context(context):
+            if category_tokens & {"betting", "gambling"} and not has_casino_product:
                 score -= 80
-            if BETTING_ONLY_RE.search(context) and not has_casino_context(context):
+            if bookmaker_first and not has_casino_product:
+                score -= 160
+            if BETTING_ONLY_RE.search(context) and not has_casino_product:
                 score -= 60
             if category_tokens & {"phishing", "scam", "pyramid", "investment_pyramid"}:
                 score -= 100
@@ -1340,9 +1414,12 @@ class Investigator:
         if effective_mode == "casino":
             if Investigator._is_wrong_geo_casino_result(candidate.url, candidate_context):
                 return False
+            product_context = " ".join([candidate.domain, candidate.url, candidate.why])
+            has_casino_product = Investigator._has_casino_product_signal(product_context)
+            bookmaker_first = Investigator._is_bookmaker_first_context(product_context)
             if category_tokens & {"casino", "online_casino"}:
-                return True
-            if has_casino_context(candidate_context):
+                return not bookmaker_first or has_casino_product
+            if has_casino_product:
                 return True
             if Investigator._looks_like_kz_search_landing(candidate.domain) and has_casino_context(query):
                 return True
@@ -1382,7 +1459,7 @@ class Investigator:
                 Candidate(
                     url=normalize_url(domain),
                     domain=domain,
-                    category=str(item.get("category") or "suspicious"),
+                    category=self._bootstrap_item_category(item),
                     why=(
                         "Bootstrap-кандидат: внешний поиск не дал достаточно доменов, "
                         "поэтому известный бренд/домен отправлен на техническую проверку."
@@ -1427,7 +1504,7 @@ class Investigator:
                         Candidate(
                             url=normalize_url(key),
                             domain=key,
-                            category=str(item.get("category") or "suspicious"),
+                            category=self._bootstrap_item_category(item),
                             why=(
                                 "Algorithmic-кандидат: домен похож на зеркало или региональную "
                                 "вариацию известного risky-бренда и отправлен на живую проверку."
@@ -1768,11 +1845,18 @@ Critical local-search behavior:
         self,
         run_id: int,
         candidates: list[Candidate],
+        search_mode: str = "auto",
     ) -> list[dict[str, Any]]:
+        effective_mode = self.normalize_search_mode(search_mode)
         casino_candidates = [
             candidate
             for candidate in candidates
             if candidate.category.lower() in {"casino", "gambling", "betting", "suspicious"}
+            and (
+                effective_mode != "casino"
+                or candidate.category.lower() != "betting"
+                or self._has_casino_product_signal(" ".join([candidate.domain, candidate.url, candidate.why]))
+            )
         ][: self.settings.max_mirror_checks_per_run]
 
         groups: list[dict[str, Any]] = []
@@ -2086,6 +2170,7 @@ Critical local-search behavior:
             content_label = str(content_ai.get("category_hint") or "").lower()
             casino_hits = content_ai.get("casino_keywords") or []
             betting_hits = content_ai.get("betting_keywords") or []
+            pyramid_hits = content_ai.get("pyramid_keywords") or []
             casino_context = " ".join(
                 [
                     candidate.url if candidate else "",
@@ -2097,13 +2182,16 @@ Critical local-search behavior:
             has_casino_product = bool(
                 content_label == "online_casino"
                 or casino_hits
-                or has_casino_context(casino_context)
-                or (candidate and set(re.split(r"[^a-z_]+", candidate_category)) & {"casino", "online_casino"})
+                or Investigator._has_casino_product_signal(casino_context)
             )
+            if not has_casino_product and (content_label == "investment_pyramid" or pyramid_hits):
+                return None
             if not has_casino_product and (content_label == "sports_betting_review" or betting_hits):
                 return "режим casino: букмекерская/ставочная страница без признаков онлайн-казино"
             if not has_casino_product and candidate and candidate.category in {"betting", "gambling"}:
                 return "режим casino: кандидат похож на betting, но не на casino/slots"
+            if not has_casino_product:
+                return "режим casino: на странице нет признаков онлайн-казино, слотов или игрового лобби"
         if source_supports_gambling:
             return None
         if quality.get("quality") == "thin_content" and not has_domain_signals:

@@ -492,6 +492,24 @@ class InvestigatorCandidateTests(unittest.TestCase):
 
         self.assertFalse(Investigator._candidate_matches_user_search(candidate, "онлайн казино", "casino"))
 
+    def test_casino_mode_rejects_bookmaker_brand_mirror_without_casino_product(self) -> None:
+        candidate = Candidate(
+            url="https://1xbet-kz.net",
+            domain="1xbet-kz.net",
+            category="casino",
+            why="Algorithmic-кандидат: домен похож на зеркало известного risky-бренда",
+            search_query="онлайн казино",
+        )
+
+        self.assertFalse(Investigator._candidate_matches_user_search(candidate, "онлайн казино", "casino"))
+
+    def test_bookmaker_bootstrap_item_is_not_casino_category(self) -> None:
+        one_xbet = {"domain": "1xbet.com", "brand": "1xBet", "aliases": ["1xbet", "1x bet"], "category": "casino"}
+        vavada = {"domain": "vavada.com", "brand": "Vavada", "aliases": ["vavada"], "category": "casino"}
+
+        self.assertEqual(Investigator._bootstrap_item_category(one_xbet), "betting")
+        self.assertEqual(Investigator._bootstrap_item_category(vavada), "casino")
+
     def test_casino_mode_keeps_casino_path_candidate(self) -> None:
         candidate = Candidate(
             url="https://casino-play.kz/casino",
@@ -534,6 +552,50 @@ class InvestigatorCandidateTests(unittest.TestCase):
         reason = Investigator._content_skip_reason(content_ai, FakeEvidence(), candidate, "casino")
 
         self.assertIn("режим casino", reason or "")
+
+    def test_casino_mode_content_skip_rejects_bookmaker_brand_without_casino_product(self) -> None:
+        class FakeEvidence:
+            final_url = "https://1xbet-kz.net"
+
+        candidate = Candidate(
+            url="https://1xbet-kz.net",
+            domain="1xbet-kz.net",
+            category="betting",
+            why="Algorithmic mirror candidate",
+        )
+        content_ai = {
+            "site_quality": {"quality": "usable"},
+            "category_hint": "phishing",
+            "casino_keywords": [],
+            "betting_keywords": [],
+            "pyramid_keywords": [],
+        }
+
+        reason = Investigator._content_skip_reason(content_ai, FakeEvidence(), candidate, "casino")
+
+        self.assertIn("не на casino/slots", reason or "")
+
+    def test_casino_mode_content_allows_bookmaker_brand_with_real_casino_product(self) -> None:
+        class FakeEvidence:
+            final_url = "https://1xbet-kz.net/casino"
+
+        candidate = Candidate(
+            url="https://1xbet-kz.net/casino",
+            domain="1xbet-kz.net",
+            category="betting",
+            why="Search result",
+        )
+        content_ai = {
+            "site_quality": {"quality": "usable"},
+            "category_hint": "online_casino",
+            "casino_keywords": ["slots", "roulette"],
+            "betting_keywords": ["1xbet"],
+            "pyramid_keywords": [],
+        }
+
+        reason = Investigator._content_skip_reason(content_ai, FakeEvidence(), candidate, "casino")
+
+        self.assertIsNone(reason)
 
     def test_casino_mode_content_skip_rejects_foreign_locale_page(self) -> None:
         class FakeEvidence:
