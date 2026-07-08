@@ -360,7 +360,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
         self.investigator._discover_from_algorithmic_mirrors = fail_algorithmic
         self.investigator._discover_with_user_search = fake_user_search
 
-        candidates = asyncio.run(self.investigator._discover_candidates(1, "онлайн казино", 5))
+        candidates = asyncio.run(self.investigator._discover_candidates(1, "онлайн казино", 1))
 
         self.assertEqual([candidate.domain for candidate in candidates], ["live-casino.example"])
         self.assertEqual(candidates[0].search_query, "онлайн казино Казахстан")
@@ -406,6 +406,60 @@ class InvestigatorCandidateTests(unittest.TestCase):
         candidates = asyncio.run(self.investigator._discover_candidates(1, "онлайн казино", 1, "casino"))
 
         self.assertEqual([candidate.domain for candidate in candidates], ["pin-up.kz"])
+
+    def test_large_casino_user_search_refills_partial_results(self) -> None:
+        class FakeDb:
+            def __init__(self) -> None:
+                self.logs = []
+
+            def known_domains(self) -> set[str]:
+                return set()
+
+            def add_log(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+                self.logs.append((args, kwargs))
+
+        class FakeGemini:
+            available = False
+
+        captured_bootstrap_limits: list[int] = []
+
+        def fake_user_search(run_id, seed_query, discovery_limit, max_candidates, search_mode="auto"):  # noqa: ANN001
+            return [
+                Candidate(
+                    url=f"https://casino-{index}.kz",
+                    domain=f"casino-{index}.kz",
+                    category="casino",
+                    why="Search result",
+                    search_query=seed_query,
+                )
+                for index in range(10)
+            ]
+
+        def fake_bootstrap(seed_query, limit):  # noqa: ANN001
+            captured_bootstrap_limits.append(limit)
+            return []
+
+        def fake_algorithmic(seed_query, limit, excluded_domains):  # noqa: ANN001
+            return []
+
+        self.investigator.settings = Settings(osint_candidate_pool_size=700)
+        self.investigator.db = FakeDb()
+        self.investigator.gemini = FakeGemini()
+        self.investigator._discover_with_user_search = fake_user_search
+        self.investigator._discover_from_bootstrap = fake_bootstrap
+        self.investigator._discover_from_algorithmic_mirrors = fake_algorithmic
+
+        candidates = asyncio.run(self.investigator._discover_candidates(1, "онлайн казино", 100, "casino"))
+
+        self.assertEqual(len(candidates), 10)
+        self.assertEqual(captured_bootstrap_limits, [490])
+
+    def test_casino_check_limit_overscans_candidates(self) -> None:
+        self.investigator.settings = Settings(max_candidates_per_run=2000)
+
+        limit = self.investigator._candidate_check_limit(100, 700, "casino")
+
+        self.assertEqual(limit, 500)
 
     def test_user_search_filter_rejects_unrelated_suspicious_domain(self) -> None:
         candidate = Candidate(

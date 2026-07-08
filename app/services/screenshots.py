@@ -15,6 +15,12 @@ from app.config import Settings
 from app.services.domains import extract_domain
 
 
+BROWSER_SCREENSHOT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+
+
 @dataclass
 class ScreenshotResult:
     path: str | None
@@ -124,7 +130,7 @@ class ScreenshotService:
                     ignore_https_errors=True,
                     viewport={"width": 1280, "height": 720},
                     device_scale_factor=1,
-                    user_agent=self.settings.user_agent,
+                    user_agent=BROWSER_SCREENSHOT_USER_AGENT,
                     locale="ru-RU",
                     timezone_id="Asia/Almaty",
                     proxy={"server": self.settings.kz_proxy_url} if self.settings.kz_proxy_url else None,
@@ -133,7 +139,15 @@ class ScreenshotService:
                 timeout_ms = max(4_000, int(self.settings.screenshot_timeout_seconds * 1000))
                 settle_ms = max(0, int(self.settings.screenshot_settle_ms))
                 page.set_default_timeout(timeout_ms)
-                await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms + 3_000)
+                navigation_error = None
+                try:
+                    await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms + 3_000)
+                except Exception as exc:  # noqa: BLE001
+                    navigation_error = exc
+                    try:
+                        await page.goto(url, wait_until="commit", timeout=max(3_000, timeout_ms // 2))
+                    except Exception:
+                        pass
                 try:
                     await page.wait_for_load_state("networkidle", timeout=min(3_000, timeout_ms))
                 except Exception:
@@ -150,6 +164,11 @@ class ScreenshotService:
                     )
                     result = self._capture_result(output, rel_path)
                     if result.path or not self.settings.screenshot_fallback_enabled:
+                        if result.path and navigation_error:
+                            return ScreenshotResult(
+                                path=result.path,
+                                error=f"navigation warning: {type(navigation_error).__name__}: {navigation_error}",
+                            )
                         return result
                     return self._fallback_result(
                         output,
@@ -178,6 +197,11 @@ class ScreenshotService:
                         output.write_bytes(base64.b64decode(capture["data"]))
                     result = self._capture_result(output, rel_path)
                     if result.path or not self.settings.screenshot_fallback_enabled:
+                        if result.path and navigation_error:
+                            return ScreenshotResult(
+                                path=result.path,
+                                error=f"navigation warning: {type(navigation_error).__name__}: {navigation_error}",
+                            )
                         return result
                     return self._fallback_result(
                         output,

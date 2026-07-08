@@ -6,10 +6,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from app.config import Settings
-from app.services.screenshots import ScreenshotService
+from app.services.screenshots import BROWSER_SCREENSHOT_USER_AGENT, ScreenshotService
 
 
 class ScreenshotServiceTests(unittest.TestCase):
+    def test_browser_screenshot_user_agent_is_not_service_bot(self) -> None:
+        self.assertIn("Mozilla/5.0", BROWSER_SCREENSHOT_USER_AGENT)
+        self.assertNotIn("Argus", BROWSER_SCREENSHOT_USER_AGENT)
+
     def test_browser_disabled_writes_fallback_png(self) -> None:
         with TemporaryDirectory() as tmp:
             settings = Settings(

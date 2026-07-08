@@ -79,8 +79,8 @@ SCAN_CONCURRENCY=2
 SCREENSHOT_CONCURRENCY=1
 SCREENSHOT_FALLBACK_ENABLED=true
 OSINT_FEEDS_ENABLED=true
-MAX_CANDIDATES_PER_RUN=500
-OSINT_CANDIDATE_POOL_SIZE=1500
+MAX_CANDIDATES_PER_RUN=2000
+OSINT_CANDIDATE_POOL_SIZE=5000
 ML_MIN_CONFIDENCE=0.45
 ```
 
@@ -123,7 +123,7 @@ The blueprint still mounts a persistent disk at `/var/data` for file evidence:
 - HTML and screenshots at `/var/data/evidence`
 - exports at `/var/data/exports`
 
-For screenshots, deploy DOFilter as a Docker service so the Dockerfile runs `python -m playwright install --with-deps chromium`. Render starter has limited memory, so the blueprint uses `SCAN_CONCURRENCY=2` and `SCREENSHOT_CONCURRENCY=1`: site checks can still run in parallel, but Chromium screenshots are serialized. If Chromium cannot produce a page image, DOFilter saves a small fallback PNG evidence file instead of leaving a broken screenshot link.
+For screenshots, deploy DOFilter as a Docker service so the Dockerfile runs `python -m playwright install --with-deps chromium`. Render starter has limited memory, so the blueprint uses `SCAN_CONCURRENCY=2` and `SCREENSHOT_CONCURRENCY=1`: site checks can still run in parallel, but Chromium screenshots are serialized. If Chromium cannot produce a page image, DOFilter saves a small fallback PNG evidence file instead of leaving a broken screenshot link. For larger overnight casino runs, the selected run size is treated as the target number of findings; DOFilter may check a larger candidate pool to reach that target.
 
 If you create a non-Docker Python service manually, add this to the Render build command instead:
 

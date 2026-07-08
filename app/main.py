@@ -110,7 +110,7 @@ async def api_auth_middleware(request: Request, call_next):
 class RunRequest(BaseModel):
     seed_query: str | None = Field(default=None, max_length=2000)
     search_mode: str = Field(default="casino", max_length=30)
-    max_candidates: int = Field(default=150, ge=1, le=1000)
+    max_candidates: int = Field(default=150, ge=1, le=5000)
     take_screenshots: bool = True
 
 

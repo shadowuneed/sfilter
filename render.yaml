@@ -32,7 +32,7 @@ services:
       - key: EXPORT_DIR
         value: /var/data/exports
       - key: MAX_CANDIDATES_PER_RUN
-        value: "500"
+        value: "2000"
       - key: MAX_MIRROR_CHECKS_PER_RUN
         value: "6"
       - key: SCAN_CONCURRENCY
@@ -48,13 +48,13 @@ services:
       - key: SCREENSHOT_CONCURRENCY
         value: "1"
       - key: SCREENSHOT_TIMEOUT_SECONDS
-        value: "8"
+        value: "12"
       - key: PLAYWRIGHT_BROWSERS_PATH
         value: /ms-playwright
       - key: OSINT_FEEDS_ENABLED
         value: "true"
       - key: OSINT_CANDIDATE_POOL_SIZE
-        value: "1500"
+        value: "5000"
       - key: ML_ENABLED
         value: "true"
       - key: ML_MODEL_PATH

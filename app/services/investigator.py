@@ -588,13 +588,19 @@ class Investigator:
 
         try:
             candidates = await self._discover_candidates(run_id, seed_query, max_candidates, search_mode)
-            candidates_to_check = candidates[:max_candidates]
+            candidate_check_limit = self._candidate_check_limit(max_candidates, len(candidates), search_mode)
+            candidates_to_check = candidates[:candidate_check_limit]
             self.db.update_run(run_id, candidate_count=len(candidates_to_check))
             self.db.add_log(
                 run_id,
                 "info",
                 "Список сайтов-кандидатов готов",
-                {"count": len(candidates), "checking": len(candidates_to_check), "limit": max_candidates},
+                {
+                    "count": len(candidates),
+                    "checking": len(candidates_to_check),
+                    "target_findings": max_candidates,
+                    "limit": max_candidates,
+                },
             )
 
             if not candidates_to_check:
@@ -616,7 +622,12 @@ class Investigator:
                 run_id,
                 "info",
                 "Пакетная проверка кандидатов запущена",
-                {"target": max_candidates, "candidates": len(candidates_to_check), "concurrency": concurrency},
+                {
+                    "target": max_candidates,
+                    "target_findings": max_candidates,
+                    "candidates": len(candidates_to_check),
+                    "concurrency": concurrency,
+                },
             )
             semaphore = asyncio.Semaphore(concurrency)
             tasks = [
@@ -688,6 +699,14 @@ class Investigator:
         except Exception as exc:  # noqa: BLE001
             self.db.update_run(run_id, status="failed", finished_at=utc_now(), error=f"{type(exc).__name__}: {exc}")
             self.db.add_log(run_id, "error", "Поиск завершился ошибкой", {"error": str(exc)})
+
+    def _candidate_check_limit(self, target_findings: int, available_candidates: int, search_mode: str) -> int:
+        if available_candidates <= 0:
+            return 0
+        target_findings = max(1, int(target_findings))
+        multiplier = 5 if self.normalize_search_mode(search_mode) == "casino" else 2
+        desired = max(target_findings, target_findings * multiplier)
+        return min(available_candidates, self.settings.max_candidates_per_run, desired)
 
     async def _inspect_candidate(
         self,
@@ -764,6 +783,13 @@ class Investigator:
             max(max_candidates * 7, 150),
             max(max_candidates, self.settings.osint_candidate_pool_size),
         )
+        candidate_target = max_candidates
+        if search_mode == "casino" and max_candidates >= 100:
+            candidate_target = min(
+                discovery_limit,
+                self.settings.max_candidates_per_run,
+                max_candidates * 5,
+            )
         discovered: list[Candidate] = []
         user_search_mode = self._user_search_mode(seed_query, search_mode)
 
@@ -820,10 +846,14 @@ class Investigator:
                     )
                 )
 
-        allow_synthetic_refill = not user_search_mode or (search_mode == "casino" and not discovered)
+        seed_domains = set(find_domains(seed_query or ""))
+        allow_synthetic_refill = (
+            not user_search_mode
+            or (search_mode == "casino" and not seed_domains and len(discovered) < candidate_target)
+        )
 
-        if allow_synthetic_refill and len(discovered) < max_candidates:
-            bootstrap = self._discover_from_bootstrap(seed_query, max_candidates - len(discovered))
+        if allow_synthetic_refill and len(discovered) < candidate_target:
+            bootstrap = self._discover_from_bootstrap(seed_query, candidate_target - len(discovered))
             if bootstrap:
                 discovered.extend(bootstrap)
                 self.db.add_log(
@@ -841,13 +871,12 @@ class Investigator:
         fresh_candidates, skipped_known = self._exclude_known_candidates(candidates, known_domains)
         known_rechecked = 0
         algorithmic_added = 0
-        seed_domains = set(find_domains(seed_query or ""))
 
-        if allow_synthetic_refill and len(fresh_candidates) < max_candidates and not seed_domains:
+        if allow_synthetic_refill and len(fresh_candidates) < candidate_target and not seed_domains:
             excluded_domains = known_domains | {candidate.key() for candidate in candidates}
             algorithmic = self._discover_from_algorithmic_mirrors(
                 seed_query,
-                max_candidates - len(fresh_candidates),
+                candidate_target - len(fresh_candidates),
                 excluded_domains,
             )
             if algorithmic:
@@ -863,8 +892,8 @@ class Investigator:
                     },
                 )
 
-        if allow_synthetic_refill and len(fresh_candidates) < max_candidates and not seed_domains:
-            refill_count = max_candidates - len(fresh_candidates)
+        if allow_synthetic_refill and len(fresh_candidates) < candidate_target and not seed_domains:
+            refill_count = candidate_target - len(fresh_candidates)
             known_candidates = [
                 candidate
                 for candidate in candidates

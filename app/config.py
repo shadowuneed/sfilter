@@ -154,7 +154,7 @@ class Settings:
     evidence_dir: Path = Path("evidence")
     export_dir: Path = Path("exports")
 
-    max_candidates_per_run: int = 1000
+    max_candidates_per_run: int = 2000
     max_mirror_checks_per_run: int = 6
     request_timeout_seconds: int = 18
     scan_concurrency: int = 3
@@ -226,7 +226,7 @@ def get_settings() -> Settings:
         require_postgres=_bool_env("REQUIRE_POSTGRES", False),
         evidence_dir=Path(os.getenv("EVIDENCE_DIR", "evidence")),
         export_dir=Path(os.getenv("EXPORT_DIR", "exports")),
-        max_candidates_per_run=max(1, min(_int_env("MAX_CANDIDATES_PER_RUN", 1000), 1000)),
+        max_candidates_per_run=max(1, min(_int_env("MAX_CANDIDATES_PER_RUN", 2000), 5000)),
         max_mirror_checks_per_run=_int_env("MAX_MIRROR_CHECKS_PER_RUN", 6),
         request_timeout_seconds=_int_env("REQUEST_TIMEOUT_SECONDS", 18),
         scan_concurrency=max(1, min(_int_env("SCAN_CONCURRENCY", 3), 8)),
