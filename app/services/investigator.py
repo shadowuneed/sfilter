@@ -669,59 +669,11 @@ class Investigator:
         self.db.update_run(run_id, methodology_json=methodology)
 
         try:
-            candidates = await self._discover_candidates(run_id, seed_query, max_candidates, search_mode)
-            candidate_check_limit = self._candidate_check_limit(max_candidates, len(candidates), search_mode)
-            candidates_to_check = candidates[:candidate_check_limit]
-            self.db.update_run(run_id, candidate_count=len(candidates_to_check))
-            self.db.add_log(
-                run_id,
-                "info",
-                "Список сайтов-кандидатов готов",
-                {
-                    "count": len(candidates),
-                    "checking": len(candidates_to_check),
-                    "target_findings": max_candidates,
-                    "limit": max_candidates,
-                },
-            )
-
-            if not candidates_to_check:
-                self.db.add_log(
-                    run_id,
-                    "warning",
-                    "Не нашлось подходящих доменов. Уточните запрос: например 'казино зеркало рабочий вход' или название бренда.",
-                )
-
-            if cancel_event and cancel_event.is_set():
-                self.db.update_run(run_id, status="canceled", finished_at=utc_now())
-                self.db.add_log(run_id, "warning", "Проверка остановлена до анализа сайтов")
-                return
-
-            mirror_groups = await self._discover_mirrors(run_id, candidates_to_check, search_mode)
             findings_count = self.db.count_findings(run_id)
-            if findings_count >= max_candidates:
-                self.db.update_run(run_id, status="completed", finished_at=utc_now(), finding_count=findings_count)
-                self.db.add_log(
-                    run_id,
-                    "info",
-                    "Поиск завершен: выбранная цель уже набрана",
-                    {"findings": findings_count, "target": max_candidates},
-                )
-                return
-            concurrency = max(1, min(self.settings.scan_concurrency, max_candidates, len(candidates_to_check) or 1))
-            self.db.add_log(
-                run_id,
-                "info",
-                "Пакетная проверка кандидатов запущена",
-                {
-                    "target": max_candidates,
-                    "target_findings": max_candidates,
-                    "candidates": len(candidates_to_check),
-                    "concurrency": concurrency,
-                    "already_saved": findings_count,
-                },
-            )
-            semaphore = asyncio.Semaphore(concurrency)
+            attempted_domains: set[str] = set()
+            discovery_round = 0
+            checked_total = 0
+            no_candidate_rounds = 0
 
             def handle_inspection_result(finding: dict[str, Any]) -> None:
                 nonlocal findings_count
@@ -755,31 +707,91 @@ class Investigator:
                     },
                 )
 
-            if concurrency <= 1:
-                for index, candidate in enumerate(candidates_to_check, start=1):
-                    if cancel_event and cancel_event.is_set():
-                        self.db.update_run(run_id, status="canceled", finished_at=utc_now(), finding_count=findings_count)
-                        self.db.add_log(run_id, "warning", "Проверка остановлена пользователем", {"findings": findings_count})
-                        return
-                    if findings_count >= max_candidates:
-                        break
-                    finding = await self._inspect_candidate(
+            while findings_count < max_candidates:
+                if cancel_event and cancel_event.is_set():
+                    self.db.update_run(run_id, status="canceled", finished_at=utc_now(), finding_count=findings_count)
+                    self.db.add_log(run_id, "warning", "Проверка остановлена пользователем", {"findings": findings_count})
+                    return
+
+                discovery_round += 1
+                remaining = max(1, max_candidates - findings_count)
+                candidates = await self._discover_candidates(
+                    run_id,
+                    seed_query,
+                    max_candidates,
+                    search_mode,
+                    excluded_domains=attempted_domains,
+                )
+                fresh_candidates = [
+                    candidate
+                    for candidate in candidates
+                    if candidate.key() and candidate.key() not in attempted_domains
+                ]
+                candidate_check_limit = self._candidate_check_limit(remaining, len(fresh_candidates), search_mode)
+                candidates_to_check = fresh_candidates[:candidate_check_limit]
+                checked_total += len(candidates_to_check)
+                self.db.update_run(run_id, candidate_count=checked_total)
+                self.db.add_log(
+                    run_id,
+                    "info",
+                    "Список сайтов-кандидатов готов",
+                    {
+                        "round": discovery_round,
+                        "count": len(candidates),
+                        "checking": len(candidates_to_check),
+                        "checked_total": checked_total,
+                        "target_findings": max_candidates,
+                        "already_saved": findings_count,
+                    },
+                )
+
+                if not candidates_to_check:
+                    no_candidate_rounds += 1
+                    self.db.add_log(
                         run_id,
-                        index,
-                        len(candidates_to_check),
-                        candidate,
-                        candidates_to_check,
-                        mirror_groups,
-                        take_screenshots,
-                        semaphore,
-                        cancel_event,
-                        search_mode,
+                        "warning",
+                        "Новых кандидатов для проверки не осталось",
+                        {
+                            "round": discovery_round,
+                            "findings": findings_count,
+                            "target": max_candidates,
+                            "attempted": len(attempted_domains),
+                        },
                     )
-                    handle_inspection_result(finding)
-            else:
-                tasks = [
-                    asyncio.create_task(
-                        self._inspect_candidate(
+                    if no_candidate_rounds >= 2 or len(attempted_domains) >= self.settings.max_candidates_per_run:
+                        break
+                    continue
+                no_candidate_rounds = 0
+
+                mirror_groups = await self._discover_mirrors(run_id, candidates_to_check, search_mode)
+                concurrency = max(1, min(self.settings.scan_concurrency, remaining, len(candidates_to_check) or 1))
+                self.db.add_log(
+                    run_id,
+                    "info",
+                    "Пакетная проверка кандидатов запущена",
+                    {
+                        "round": discovery_round,
+                        "target": max_candidates,
+                        "target_findings": max_candidates,
+                        "candidates": len(candidates_to_check),
+                        "concurrency": concurrency,
+                        "already_saved": findings_count,
+                    },
+                )
+                semaphore = asyncio.Semaphore(concurrency)
+
+                if concurrency <= 1:
+                    for index, candidate in enumerate(candidates_to_check, start=1):
+                        if cancel_event and cancel_event.is_set():
+                            self.db.update_run(run_id, status="canceled", finished_at=utc_now(), finding_count=findings_count)
+                            self.db.add_log(run_id, "warning", "Проверка остановлена пользователем", {"findings": findings_count})
+                            return
+                        if findings_count >= max_candidates:
+                            break
+                        key = candidate.key()
+                        if key:
+                            attempted_domains.add(key)
+                        finding = await self._inspect_candidate(
                             run_id,
                             index,
                             len(candidates_to_check),
@@ -791,30 +803,72 @@ class Investigator:
                             cancel_event,
                             search_mode,
                         )
-                    )
-                    for index, candidate in enumerate(candidates_to_check, start=1)
-                ]
-
-                try:
-                    for task in asyncio.as_completed(tasks):
-                        if cancel_event and cancel_event.is_set():
-                            self.db.update_run(run_id, status="canceled", finished_at=utc_now(), finding_count=findings_count)
-                            self.db.add_log(run_id, "warning", "Проверка остановлена пользователем", {"findings": findings_count})
-                            return
-                        if findings_count >= max_candidates:
-                            break
-
-                        finding = await task
                         handle_inspection_result(finding)
-                finally:
-                    for task in tasks:
-                        if not task.done():
-                            task.cancel()
-                    if tasks:
-                        await asyncio.gather(*tasks, return_exceptions=True)
+                else:
+                    for candidate in candidates_to_check:
+                        key = candidate.key()
+                        if key:
+                            attempted_domains.add(key)
+                    tasks = [
+                        asyncio.create_task(
+                            self._inspect_candidate(
+                                run_id,
+                                index,
+                                len(candidates_to_check),
+                                candidate,
+                                candidates_to_check,
+                                mirror_groups,
+                                take_screenshots,
+                                semaphore,
+                                cancel_event,
+                                search_mode,
+                            )
+                        )
+                        for index, candidate in enumerate(candidates_to_check, start=1)
+                    ]
+
+                    try:
+                        for task in asyncio.as_completed(tasks):
+                            if cancel_event and cancel_event.is_set():
+                                self.db.update_run(run_id, status="canceled", finished_at=utc_now(), finding_count=findings_count)
+                                self.db.add_log(run_id, "warning", "Проверка остановлена пользователем", {"findings": findings_count})
+                                return
+                            if findings_count >= max_candidates:
+                                break
+
+                            finding = await task
+                            handle_inspection_result(finding)
+                    finally:
+                        for task in tasks:
+                            if not task.done():
+                                task.cancel()
+                        if tasks:
+                            await asyncio.gather(*tasks, return_exceptions=True)
+
+                if findings_count < max_candidates and len(attempted_domains) >= self.settings.max_candidates_per_run:
+                    self.db.add_log(
+                        run_id,
+                        "warning",
+                        "Достигнут технический лимит проверенных доменов до набора цели",
+                        {
+                            "findings": findings_count,
+                            "target": max_candidates,
+                            "attempted": len(attempted_domains),
+                            "limit": self.settings.max_candidates_per_run,
+                        },
+                    )
+                    break
 
             self.db.update_run(run_id, status="completed", finished_at=utc_now(), finding_count=findings_count)
-            self.db.add_log(run_id, "info", "Поиск завершен", {"findings": findings_count})
+            if findings_count >= max_candidates:
+                self.db.add_log(run_id, "info", "Поиск завершен: выбранная цель набрана", {"findings": findings_count, "target": max_candidates})
+            else:
+                self.db.add_log(
+                    run_id,
+                    "warning",
+                    "Поиск завершен ниже выбранной цели: открытых подходящих сайтов оказалось меньше цели",
+                    {"findings": findings_count, "target": max_candidates, "attempted": len(attempted_domains)},
+                )
         except Exception as exc:  # noqa: BLE001
             self.db.update_run(run_id, status="failed", finished_at=utc_now(), error=f"{type(exc).__name__}: {exc}")
             self.db.add_log(run_id, "error", "Поиск завершился ошибкой", {"error": str(exc)})
@@ -896,8 +950,14 @@ class Investigator:
         seed_query: str | None,
         max_candidates: int,
         search_mode: str = "auto",
+        excluded_domains: set[str] | None = None,
     ) -> list[Candidate]:
         search_mode = self._effective_search_mode(seed_query, search_mode)
+        excluded_domains = {
+            registered_domain(domain)
+            for domain in (excluded_domains or set())
+            if registered_domain(domain)
+        }
         discovery_limit = min(
             max(max_candidates * 60, 5000),
             max(max_candidates, self.settings.osint_candidate_pool_size),
@@ -925,6 +985,21 @@ class Investigator:
                 )
             except Exception as exc:  # noqa: BLE001
                 self.db.add_log(run_id, "warning", "Пользовательский поиск недоступен", {"error": str(exc)})
+            if self.settings.osint_feeds_enabled and len(discovered) < candidate_target:
+                feed_candidates = await self._discover_from_feeds(run_id, discovery_limit)
+                matched_feeds = [
+                    candidate
+                    for candidate in feed_candidates
+                    if self._candidate_matches_user_search(candidate, seed_query or "онлайн казино", search_mode)
+                ]
+                if matched_feeds:
+                    discovered.extend(matched_feeds)
+                    self.db.add_log(
+                        run_id,
+                        "warning",
+                        "OSINT fallback добавил кандидатов после недоступного поискового поиска",
+                        {"added": len(matched_feeds), "reason": "Search pages unavailable or returned too few casino domains"},
+                    )
         else:
             if self.settings.osint_feeds_enabled:
                 feed_candidates = await self._discover_from_feeds(run_id, discovery_limit)
@@ -987,16 +1062,17 @@ class Investigator:
             search_mode,
         )
         known_domains = self.db.known_domains()
-        fresh_candidates, skipped_known = self._exclude_known_candidates(candidates, known_domains)
+        fresh_after_known, skipped_known = self._exclude_known_candidates(candidates, known_domains)
+        fresh_candidates, skipped_attempted = self._exclude_known_candidates(fresh_after_known, excluded_domains)
         known_rechecked = 0
         algorithmic_added = 0
 
         if allow_synthetic_refill and len(fresh_candidates) < candidate_target and not seed_domains:
-            excluded_domains = known_domains | {candidate.key() for candidate in candidates}
+            algorithmic_excluded = known_domains | excluded_domains | {candidate.key() for candidate in candidates}
             algorithmic = self._discover_from_algorithmic_mirrors(
                 seed_query,
                 candidate_target - len(fresh_candidates),
-                excluded_domains,
+                algorithmic_excluded,
                 search_mode,
             )
             if algorithmic:
@@ -1017,7 +1093,7 @@ class Investigator:
             known_candidates = [
                 candidate
                 for candidate in candidates
-                if candidate.key() in known_domains
+                if candidate.key() in known_domains and candidate.key() not in excluded_domains
             ][:refill_count]
             if known_candidates:
                 fresh_candidates.extend(known_candidates)
@@ -1030,6 +1106,7 @@ class Investigator:
                 "raw": len(discovered),
                 "deduped": len(candidates),
                 "skipped_known": skipped_known,
+                "skipped_attempted": skipped_attempted,
                 "algorithmic_added": algorithmic_added,
                 "known_rechecked": known_rechecked,
                 "ready": len(fresh_candidates),
@@ -1641,7 +1718,7 @@ class Investigator:
                 domains.append(f"{root}-{modifier}.{tld}")
                 domains.append(f"{root}{modifier}.{tld}")
                 domains.append(f"{modifier}-{root}.{tld}")
-        return domains[:36]
+        return domains[:180]
 
     def _discover_with_gemini(
         self,

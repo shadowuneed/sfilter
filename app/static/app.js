@@ -488,7 +488,7 @@ async function loadHealth() {
     const concurrency = health.scan_concurrency || 3;
     const timeout = health.candidate_timeout_seconds || 15;
     const maxRun = Math.min(Number(health.max_candidates_per_run || MAX_RUN_CANDIDATES), MAX_RUN_CANDIDATES);
-    els.healthLine.textContent = `${geminiHint}. ${mlHint}. ${cyberHint}. ${kzHint}. Максимум запуска: ${maxRun} сайтов, потоков: ${concurrency}, таймаут сайта: ${timeout} сек.`;
+    els.healthLine.textContent = `${geminiHint}. ${mlHint}. ${cyberHint}. ${kzHint}. Цель запуска: до ${maxRun} находок, потоков: ${concurrency}, таймаут сайта: ${timeout} сек.`;
     const actionBlocked = authMissing || !kzReady;
     const actionReason = authMissing
       ? "На сервере не настроен ADMIN_TOKEN"
@@ -870,7 +870,7 @@ function renderRunFindings(findings, run, expanded = false) {
   }
   if (!expanded) {
     const status = run ? statusLabel(run.status) : "ожидание";
-    const progress = run ? `${run.finding_count || 0}/${run.candidate_count || DEFAULT_RUN_CANDIDATES}` : "0/0";
+    const progress = run ? `${run.finding_count || 0}/${run.max_candidates || DEFAULT_RUN_CANDIDATES}` : "0/0";
     els.runFindingsList.innerHTML = `
       <div class="collapsed-results">
         <div>

@@ -1,13 +1,10 @@
 from __future__ import annotations
 
+import math
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-import joblib
-import numpy as np
-from sklearn.exceptions import InconsistentVersionWarning
 
 from app.config import Settings
 
@@ -92,6 +89,8 @@ class CyberScanClassifier:
             return {"enabled": True, "available": False, "error": self.error or "CyberScan ML is unavailable"}
 
         try:
+            import numpy as np
+
             raw_features = content_ai.get("features") or {}
             vector = np.array(
                 [[self._number(raw_features.get(name)) for name in self.structural_features]],
@@ -130,6 +129,9 @@ class CyberScanClassifier:
             self.error = f"model file not found: {path}"
             return
         try:
+            import joblib
+            from sklearn.exceptions import InconsistentVersionWarning
+
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", InconsistentVersionWarning)
                 payload = joblib.load(path)
@@ -191,7 +193,7 @@ class CyberScanClassifier:
             if value is None:
                 return 0.0
             number = float(value)
-            if np.isnan(number) or np.isinf(number):
+            if not math.isfinite(number):
                 return 0.0
             return number
         except (TypeError, ValueError):

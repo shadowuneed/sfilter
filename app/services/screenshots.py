@@ -20,6 +20,11 @@ BROWSER_SCREENSHOT_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
 
+_MINIMAL_PNG_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/"
+    "l6wG6QAAAABJRU5ErkJggg=="
+)
+
 
 @dataclass
 class ScreenshotResult:
@@ -47,6 +52,9 @@ class ScreenshotService:
             "chromium_exists": False,
             "error": None,
         }
+        if not self.settings.browser_screenshots_enabled:
+            status["error"] = "browser screenshots disabled; fallback evidence images are enabled"
+            return status
         try:
             from playwright.sync_api import sync_playwright
 
@@ -267,7 +275,12 @@ class ScreenshotService:
         status_code: int | None,
         error: str,
     ) -> None:
-        from PIL import Image, ImageDraw, ImageFont
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+        except Exception:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(base64.b64decode(_MINIMAL_PNG_BASE64))
+            return
 
         width, height = 1280, 720
         image = Image.new("RGB", (width, height), "#101827")

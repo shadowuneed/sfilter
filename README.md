@@ -50,7 +50,6 @@ Manual start:
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-python -m playwright install chromium
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -72,7 +71,7 @@ ADMIN_TOKEN=use-a-long-random-secret
 AUTH_REQUIRED=true
 DATABASE_URL=postgresql://postgres:password@host:5432/postgres?sslmode=require
 REQUIRE_POSTGRES=false
-ML_ENABLED=true
+ML_ENABLED=false
 ML_MODEL_PATH=models/domain_classifier.cbm
 CYBERSCAN_MODEL_PATH=models/cyberscan_model.pkl
 SCAN_CONCURRENCY=1
@@ -81,6 +80,7 @@ REQUEST_TIMEOUT_SECONDS=6
 FAST_EVIDENCE_MODE=true
 SCREENSHOT_CONCURRENCY=1
 SCREENSHOT_TIMEOUT_SECONDS=5
+BROWSER_SCREENSHOTS_ENABLED=false
 SCREENSHOT_FALLBACK_ENABLED=true
 OSINT_FEEDS_ENABLED=true
 MAX_CANDIDATES_PER_RUN=15000
@@ -128,15 +128,9 @@ The blueprint still mounts a persistent disk at `/var/data` for file evidence:
 - HTML and screenshots at `/var/data/evidence`
 - exports at `/var/data/exports`
 
-For screenshots, deploy DOFilter as a Docker service so the Dockerfile runs `python -m playwright install --with-deps chromium`. Render starter has limited memory, so the blueprint uses `SCAN_CONCURRENCY=1` and `SCREENSHOT_CONCURRENCY=1`: site checks and Chromium screenshots run sequentially, which is slower but closer to ordinary browser behavior and reduces search/check bursts. If Chromium cannot produce a page image, DOFilter saves a small fallback PNG evidence file instead of leaving a broken screenshot link. For larger overnight casino runs, the selected run size is treated as the target number of findings; DOFilter may check a larger candidate pool to reach that target.
+Render starter has limited memory, so the blueprint uses `SCAN_CONCURRENCY=1`, disables browser-based Chromium screenshots, and saves fallback PNG evidence files instead of leaving broken screenshot links. This keeps overnight casino runs inside the 512 MB RAM limit. For larger overnight casino runs, the selected run size is treated as the target number of findings; DOFilter may check a larger candidate pool to reach that target.
 
-If you create a non-Docker Python service manually, add this to the Render build command instead:
-
-```bash
-pip install -r requirements.txt && python -m playwright install chromium
-```
-
-Open `/api/health` after deploy and check `screenshot_runtime.chromium_exists`. It should be `true`.
+Open `/api/health` after deploy and check `screenshot_runtime.browser_enabled`. On Render starter it should be `false`, with `screenshot_runtime.fallback_enabled=true`.
 
 Local SQLite files and evidence files are not durable across rebuilds/restarts unless persistent storage or an external database/storage service is attached. Postgres fixes the run/history database; screenshots and saved HTML still need durable file storage if the host filesystem is ephemeral.
 

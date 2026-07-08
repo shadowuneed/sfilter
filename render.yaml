@@ -48,7 +48,7 @@ services:
       - key: SCREENSHOTS_ENABLED
         value: "true"
       - key: BROWSER_SCREENSHOTS_ENABLED
-        value: "true"
+        value: "false"
       - key: SCREENSHOT_FALLBACK_ENABLED
         value: "true"
       - key: SCREENSHOT_CONCURRENCY
@@ -57,8 +57,6 @@ services:
         value: "5"
       - key: SCREENSHOT_SETTLE_MS
         value: "250"
-      - key: PLAYWRIGHT_BROWSERS_PATH
-        value: /ms-playwright
       - key: OSINT_FEEDS_ENABLED
         value: "true"
       - key: OSINT_CANDIDATE_POOL_SIZE
@@ -66,7 +64,7 @@ services:
       - key: SEARCH_PAGE_DELAY_SECONDS
         value: "2.5"
       - key: ML_ENABLED
-        value: "true"
+        value: "false"
       - key: ML_MODEL_PATH
         value: models/domain_classifier.cbm
       - key: CYBERSCAN_MODEL_PATH

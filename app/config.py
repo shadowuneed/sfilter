@@ -163,16 +163,16 @@ class Settings:
     screenshot_timeout_seconds: int = 10
     screenshot_settle_ms: int = 700
     screenshots_enabled: bool = True
-    browser_screenshots_enabled: bool = True
+    browser_screenshots_enabled: bool = False
     screenshot_fallback_enabled: bool = True
     screenshot_concurrency: int = 1
     osint_feeds_enabled: bool = True
     osint_candidate_pool_size: int = 1500
     search_pages_enabled: bool = True
     search_page_delay_seconds: float = 0.0
-    resume_active_runs: bool = False
+    resume_active_runs: bool = True
     gemini_user_search_fallback: bool = False
-    ml_enabled: bool = True
+    ml_enabled: bool = False
     ml_model_path: Path = Path("models/domain_classifier.cbm")
     cyberscan_model_path: Path = Path("models/cyberscan_model.pkl")
     ml_min_confidence: float = 0.45
@@ -240,7 +240,7 @@ def get_settings() -> Settings:
         screenshots_enabled=_bool_env("SCREENSHOTS_ENABLED", True),
         browser_screenshots_enabled=_bool_env(
             "BROWSER_SCREENSHOTS_ENABLED",
-            _bool_env("SCREENSHOT_BROWSER_ENABLED", True),
+            _bool_env("SCREENSHOT_BROWSER_ENABLED", False),
         ),
         screenshot_fallback_enabled=_bool_env("SCREENSHOT_FALLBACK_ENABLED", True),
         screenshot_concurrency=max(1, min(_int_env("SCREENSHOT_CONCURRENCY", 1), 2)),
@@ -248,9 +248,9 @@ def get_settings() -> Settings:
         osint_candidate_pool_size=max(150, min(_int_env("OSINT_CANDIDATE_POOL_SIZE", 1500), 20000)),
         search_pages_enabled=_bool_env("SEARCH_PAGES_ENABLED", True),
         search_page_delay_seconds=max(0.0, min(_float_env("SEARCH_PAGE_DELAY_SECONDS", 0.0), 10.0)),
-        resume_active_runs=_bool_env("RESUME_ACTIVE_RUNS", False),
+        resume_active_runs=_bool_env("RESUME_ACTIVE_RUNS", True),
         gemini_user_search_fallback=_bool_env("GEMINI_USER_SEARCH_FALLBACK", False),
-        ml_enabled=_bool_env("ML_ENABLED", True),
+        ml_enabled=_bool_env("ML_ENABLED", False),
         ml_model_path=Path(os.getenv("ML_MODEL_PATH", "models/domain_classifier.cbm")),
         cyberscan_model_path=Path(os.getenv("CYBERSCAN_MODEL_PATH", "models/cyberscan_model.pkl")),
         ml_min_confidence=_float_env("ML_MIN_CONFIDENCE", 0.45),

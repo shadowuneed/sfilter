@@ -1,13 +1,10 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
-import numpy as np
-import pandas as pd
-from catboost import CatBoostClassifier, Pool
 
 from app.config import Settings
 from feature_extraction import (
@@ -70,10 +67,12 @@ class DomainMLClassifier:
         self.model_path = settings.ml_model_path
         self.enabled = settings.ml_enabled
         self.error: str | None = None
-        self.model: CatBoostClassifier | None = None
+        self.model: Any | None = None
         if not self.enabled:
             return
         try:
+            from catboost import CatBoostClassifier
+
             if not self.model_path.exists():
                 self.error = f"model file not found: {self.model_path}"
                 return
@@ -103,6 +102,9 @@ class DomainMLClassifier:
             return {"enabled": True, "available": False, "error": self.error or "ML model is unavailable"}
 
         try:
+            import numpy as np
+            import pandas as pd
+
             features = self._features_from_evidence(url, evidence)
             frame = pd.DataFrame([{column: features[column] for column in FEATURE_COLUMNS}])
             probabilities = np.asarray(self.model.predict_proba(frame))[0]
@@ -194,7 +196,7 @@ class DomainMLClassifier:
             if value is None:
                 return default
             number = float(value)
-            if np.isnan(number):
+            if not math.isfinite(number):
                 return default
             return number
         except (TypeError, ValueError):
@@ -212,7 +214,7 @@ class DomainMLClassifier:
 
     def _top_features(
         self,
-        frame: pd.DataFrame,
+        frame: Any,
         raw_features: dict[str, float],
         label: str,
         classes: list[str],
@@ -220,6 +222,9 @@ class DomainMLClassifier:
         if not self.model:
             return []
         try:
+            import numpy as np
+            from catboost import Pool
+
             values = np.asarray(self.model.get_feature_importance(Pool(frame), type="ShapValues"))
             if values.ndim == 3:
                 class_index = classes.index(label) if label in classes else 0
