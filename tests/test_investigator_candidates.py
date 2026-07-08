@@ -251,7 +251,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
 
         self.assertEqual(candidates, [])
 
-    def test_search_html_rejects_foreign_geo_casino_results(self) -> None:
+    def test_search_html_keeps_global_casino_results(self) -> None:
         html = """
         <html><body>
           <div class="result">
@@ -272,7 +272,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
             search_mode="casino",
         )
 
-        self.assertEqual(candidates, [])
+        self.assertCountEqual([candidate.domain for candidate in candidates], ["mrbit.bg", "palmsbet.com"])
 
     def test_feed_parser_extracts_csv_and_hosts_domains(self) -> None:
         csv_tokens = self.investigator._feed_tokens(
@@ -385,7 +385,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
         def fake_user_search(run_id, seed_query, discovery_limit, max_candidates, search_mode="auto"):  # noqa: ANN001
             return []
 
-        def fake_bootstrap(seed_query, limit):  # noqa: ANN001
+        def fake_bootstrap(seed_query, limit, search_mode="auto"):  # noqa: ANN001
             return [
                 Candidate(
                     url="https://pin-up.kz",
@@ -435,11 +435,11 @@ class InvestigatorCandidateTests(unittest.TestCase):
                 for index in range(10)
             ]
 
-        def fake_bootstrap(seed_query, limit):  # noqa: ANN001
+        def fake_bootstrap(seed_query, limit, search_mode="auto"):  # noqa: ANN001
             captured_bootstrap_limits.append(limit)
             return []
 
-        def fake_algorithmic(seed_query, limit, excluded_domains):  # noqa: ANN001
+        def fake_algorithmic(seed_query, limit, excluded_domains, search_mode="auto"):  # noqa: ANN001
             return []
 
         self.investigator.settings = Settings(osint_candidate_pool_size=700)
@@ -492,6 +492,17 @@ class InvestigatorCandidateTests(unittest.TestCase):
 
         self.assertFalse(Investigator._candidate_matches_user_search(candidate, "онлайн казино", "casino"))
 
+    def test_casino_mode_rejects_official_bookmaker_domain(self) -> None:
+        candidate = Candidate(
+            url="https://fonbet.kz",
+            domain="fonbet.kz",
+            category="casino",
+            why="Search result with casino words",
+            search_query="онлайн казино",
+        )
+
+        self.assertFalse(Investigator._candidate_matches_user_search(candidate, "онлайн казино", "casino"))
+
     def test_casino_mode_rejects_bookmaker_brand_mirror_without_casino_product(self) -> None:
         candidate = Candidate(
             url="https://1xbet-kz.net",
@@ -521,7 +532,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
 
         self.assertTrue(Investigator._candidate_matches_user_search(candidate, "онлайн казино", "casino"))
 
-    def test_casino_mode_rejects_foreign_geo_casino_candidate(self) -> None:
+    def test_casino_mode_keeps_global_casino_candidate(self) -> None:
         candidate = Candidate(
             url="https://8888.bg/casino",
             domain="8888.bg",
@@ -530,7 +541,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
             search_query="онлайн казино",
         )
 
-        self.assertFalse(Investigator._candidate_matches_user_search(candidate, "онлайн казино", "casino"))
+        self.assertTrue(Investigator._candidate_matches_user_search(candidate, "онлайн казино", "casino"))
 
     def test_casino_mode_content_skip_rejects_betting_only_page(self) -> None:
         class FakeEvidence:
@@ -552,6 +563,60 @@ class InvestigatorCandidateTests(unittest.TestCase):
         reason = Investigator._content_skip_reason(content_ai, FakeEvidence(), candidate, "casino")
 
         self.assertIn("режим casino", reason or "")
+
+    def test_casino_mode_content_skip_rejects_official_bookmaker_domain(self) -> None:
+        class FakeEvidence:
+            final_url = "https://fonbet.kz"
+            title = "Fonbet"
+            description = ""
+            text_excerpt = ""
+            blocked_by_policy = False
+
+        candidate = Candidate(
+            url="https://fonbet.kz",
+            domain="fonbet.kz",
+            category="casino",
+            why="Search result",
+        )
+        content_ai = {
+            "site_quality": {"quality": "usable"},
+            "category_hint": "online_casino",
+            "casino_keywords": ["casino"],
+            "betting_keywords": ["fonbet"],
+            "pyramid_keywords": [],
+            "signals": [],
+        }
+
+        reason = Investigator._content_skip_reason(content_ai, FakeEvidence(), candidate, "casino")
+
+        self.assertIn("official bookmaker", reason or "")
+
+    def test_content_skip_rejects_blocked_page_even_with_casino_signals(self) -> None:
+        class FakeEvidence:
+            final_url = "https://blocked-casino.example"
+            title = "Access to this site is blocked"
+            description = ""
+            text_excerpt = "The requested resource is blocked by policy."
+            blocked_by_policy = False
+
+        candidate = Candidate(
+            url="https://blocked-casino.example",
+            domain="blocked-casino.example",
+            category="casino",
+            why="Search result",
+        )
+        content_ai = {
+            "site_quality": {"quality": "usable", "markers": ["access to this site is blocked"]},
+            "category_hint": "online_casino",
+            "casino_keywords": ["casino", "slots"],
+            "betting_keywords": [],
+            "pyramid_keywords": [],
+            "signals": ["casino keywords present"],
+        }
+
+        reason = Investigator._content_skip_reason(content_ai, FakeEvidence(), candidate, "casino")
+
+        self.assertIn("blocked/restricted", reason or "")
 
     def test_casino_mode_content_skip_rejects_bookmaker_brand_without_casino_product(self) -> None:
         class FakeEvidence:
@@ -597,7 +662,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
 
         self.assertIsNone(reason)
 
-    def test_casino_mode_content_skip_rejects_foreign_locale_page(self) -> None:
+    def test_casino_mode_content_allows_global_casino_page(self) -> None:
         class FakeEvidence:
             final_url = "https://mrbit.bg/bg"
 
@@ -616,7 +681,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
 
         reason = Investigator._content_skip_reason(content_ai, FakeEvidence(), candidate, "casino")
 
-        self.assertIn("чужая география", reason or "")
+        self.assertIsNone(reason)
 
     def test_user_search_uses_search_pages_without_gemini_by_default(self) -> None:
         class FakeDb:

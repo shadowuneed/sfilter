@@ -127,6 +127,23 @@ PARKED_OR_EMPTY_MARKERS = [
     "технические работы",
 ]
 
+BLOCKED_OR_RESTRICTED_MARKERS = [
+    "access to this site is blocked",
+    "site is blocked",
+    "resource is blocked",
+    "access denied",
+    "unavailable for legal reasons",
+    "blocked by",
+    "доступ ограничен",
+    "доступ запрещен",
+    "сайт заблокирован",
+    "ресурс заблокирован",
+    "заблокировано",
+    "по решению суда",
+    "қолжетімділік шектелген",
+    "бұғатталған",
+]
+
 SUSPICIOUS_SCRIPT_PATTERNS = [
     r"\beval\s*\(",
     r"\batob\s*\(",
@@ -441,9 +458,11 @@ class ContentIntelligence:
             page_size = 0
         lowered = " ".join([html[:80_000], text[:20_000]]).lower()
         marker_hits = [marker for marker in PARKED_OR_EMPTY_MARKERS if marker in lowered]
+        blocked_hits = [marker for marker in BLOCKED_OR_RESTRICTED_MARKERS if marker in lowered]
         thin = text_size < 120 and html_size < 20_000 and page_size < 20_000
         empty = not html or (text_size < 40 and html_size < 5000 and page_size < 5000)
         parked = bool(marker_hits)
+        blocked = bool(blocked_hits)
         score = 100
         if text_size < 120:
             score -= 35
@@ -453,8 +472,12 @@ class ContentIntelligence:
             score -= 15
         if parked:
             score -= 60
+        if blocked:
+            score -= 80
         quality = "usable"
-        if empty or parked:
+        if blocked:
+            quality = "blocked_or_unreachable"
+        elif empty or parked:
             quality = "empty_or_parked"
         elif thin:
             quality = "thin_content"
@@ -462,11 +485,12 @@ class ContentIntelligence:
             "quality": quality,
             "score": max(0, min(100, score)),
             "is_empty_or_parked": quality == "empty_or_parked",
-            "is_thin": quality in {"empty_or_parked", "thin_content"},
+            "is_blocked_or_restricted": quality == "blocked_or_unreachable",
+            "is_thin": quality in {"empty_or_parked", "thin_content", "blocked_or_unreachable"},
             "html_size": html_size,
             "visible_text_size": text_size,
             "page_size_bytes": page_size,
-            "markers": marker_hits[:8],
+            "markers": (blocked_hits + marker_hits)[:8],
         }
 
     @staticmethod
@@ -511,6 +535,8 @@ class ContentIntelligence:
         credential_risk: bool,
     ) -> tuple[str | None, str]:
         has_domain_signals = bool(casino_hits or betting_hits or pyramid_hits or brand_hits or domain_gambling_signals)
+        if site_quality.get("is_blocked_or_restricted"):
+            return "blocked_or_unreachable", "high"
         if site_quality.get("is_empty_or_parked") and (site_quality.get("markers") or not has_domain_signals):
             return "empty_or_parked", "high"
         if policy.get("trusted") and not credential_risk:
@@ -609,7 +635,7 @@ class ContentIntelligence:
             delta += 8
         elif category == "suspicious":
             delta += 10
-        elif category == "empty_or_parked":
+        elif category in {"empty_or_parked", "blocked_or_unreachable"}:
             delta -= 20
         delta += min(16, form_stats["num_password_forms"] * 8)
         delta += min(18, form_stats["num_external_form_actions"] * 12)
@@ -619,6 +645,8 @@ class ContentIntelligence:
             delta -= 30
         if site_quality.get("is_empty_or_parked"):
             delta -= 20
+        if site_quality.get("is_blocked_or_restricted"):
+            delta -= 25
         return max(-45, min(45, delta))
 
     @staticmethod

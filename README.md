@@ -75,7 +75,7 @@ REQUIRE_POSTGRES=false
 ML_ENABLED=true
 ML_MODEL_PATH=models/domain_classifier.cbm
 CYBERSCAN_MODEL_PATH=models/cyberscan_model.pkl
-SCAN_CONCURRENCY=2
+SCAN_CONCURRENCY=1
 SCREENSHOT_CONCURRENCY=1
 SCREENSHOT_FALLBACK_ENABLED=true
 OSINT_FEEDS_ENABLED=true
@@ -124,7 +124,7 @@ The blueprint still mounts a persistent disk at `/var/data` for file evidence:
 - HTML and screenshots at `/var/data/evidence`
 - exports at `/var/data/exports`
 
-For screenshots, deploy DOFilter as a Docker service so the Dockerfile runs `python -m playwright install --with-deps chromium`. Render starter has limited memory, so the blueprint uses `SCAN_CONCURRENCY=2` and `SCREENSHOT_CONCURRENCY=1`: site checks can still run in parallel, but Chromium screenshots are serialized. If Chromium cannot produce a page image, DOFilter saves a small fallback PNG evidence file instead of leaving a broken screenshot link. For larger overnight casino runs, the selected run size is treated as the target number of findings; DOFilter may check a larger candidate pool to reach that target.
+For screenshots, deploy DOFilter as a Docker service so the Dockerfile runs `python -m playwright install --with-deps chromium`. Render starter has limited memory, so the blueprint uses `SCAN_CONCURRENCY=1` and `SCREENSHOT_CONCURRENCY=1`: site checks and Chromium screenshots run sequentially, which is slower but closer to ordinary browser behavior and reduces search/check bursts. If Chromium cannot produce a page image, DOFilter saves a small fallback PNG evidence file instead of leaving a broken screenshot link. For larger overnight casino runs, the selected run size is treated as the target number of findings; DOFilter may check a larger candidate pool to reach that target.
 
 If you create a non-Docker Python service manually, add this to the Render build command instead:
 

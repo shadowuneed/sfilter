@@ -160,6 +160,27 @@ class ContentIntelligenceTests(unittest.TestCase):
         self.assertEqual(result["category_hint"], "empty_or_parked")
         self.assertTrue(result["site_quality"]["is_empty_or_parked"])
 
+    def test_blocked_page_is_detected_even_with_casino_words(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence_dir = Path(temp_dir)
+            html_path = evidence_dir / "run_1_blocked.html"
+            html_path.write_text(
+                "<html><body><h1>Access to this site is blocked</h1><p>casino slots roulette</p></body></html>",
+                encoding="utf-8",
+            )
+            evidence = EvidenceResult(
+                requested_url="https://blocked-casino.example",
+                final_url="https://blocked-casino.example",
+                domain="blocked-casino.example",
+                html_path=f"evidence/{html_path.name}",
+                page_size_bytes=3000,
+            )
+
+            result = ContentIntelligence(Settings(evidence_dir=evidence_dir)).analyze(evidence.final_url or "", evidence)
+
+        self.assertEqual(result["category_hint"], "blocked_or_unreachable")
+        self.assertTrue(result["site_quality"]["is_blocked_or_restricted"])
+
 
 if __name__ == "__main__":
     unittest.main()

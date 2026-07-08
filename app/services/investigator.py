@@ -156,6 +156,37 @@ BOOKMAKER_FIRST_BRANDS = {
     "xparibet",
 }
 
+OFFICIAL_BOOKMAKER_DOMAINS = {
+    "1xbet.com",
+    "1xbet.kz",
+    "22bet.com",
+    "bet365.com",
+    "betano.com",
+    "betfair.com",
+    "betway.com",
+    "betwinner.com",
+    "bwin.com",
+    "coral.co.uk",
+    "fonbet.kz",
+    "fonbet.com",
+    "ggbet.com",
+    "ladbrokes.com",
+    "leon.ru",
+    "linebet.com",
+    "marathonbet.com",
+    "melbet.com",
+    "mostbet.com",
+    "olimpbet.kz",
+    "olimpbet.com",
+    "parimatch.kz",
+    "parimatch.com",
+    "tennisi.kz",
+    "unibet.com",
+    "williamhill.com",
+    "winline.ru",
+    "xparibet.com",
+}
+
 BOOKMAKER_FIRST_RE = re.compile(
     r"(?i)(?:^|[^a-z0-9])("
     + "|".join(re.escape(brand) for brand in sorted(BOOKMAKER_FIRST_BRANDS, key=len, reverse=True))
@@ -167,6 +198,14 @@ CASINO_PRODUCT_SIGNAL_RE = re.compile(
     r"blackjack|блэкджек|poker|покер|jackpot|джекпот|free\s*spins?|фриспин|"
     r"игровые\s+автоматы|автоматы|1xslots|vulkan|joycasino|playfortuna|888casino|pinco|"
     r"pin[-_\s]?up|vavada|wazamba|leovegas|fairspin|zotabet|roobet|rollbit|bc\.?game|stake)"
+)
+
+BLOCKED_PAGE_SIGNAL_RE = re.compile(
+    r"(?i)(access\s+(?:to\s+(?:this\s+)?site\s+is\s+)?blocked|access\s+denied|resource\s+is\s+blocked|"
+    r"site\s+is\s+blocked|unavailable\s+for\s+legal\s+reasons|451\s+unavailable|blocked\s+by|"
+    r"доступ.{0,80}(?:ограничен|запрещен|заблокирован)|сайт.{0,80}заблокирован|"
+    r"ресурс.{0,80}заблокирован|заблокировано|по\s+решению\s+суда|"
+    r"қолжетімділік.{0,80}шектелген|бұғатталған)"
 )
 
 MIRROR_TLDS = [
@@ -349,31 +388,6 @@ KZ_RELEVANCE_RE = re.compile(
     r"(казахстан|қазақстан|kazakhstan|kazakstan|\.kz\b|(?:^|[/.?=&_-])kz(?:$|[/.?=&_-]))",
     re.IGNORECASE,
 )
-
-FOREIGN_LOCALE_PATH_RE = re.compile(
-    r"(?i)/(?:bg|ro|pl|de|cz|sk|hu|ua|by|ru|tr|gr|it|fr|es|pt|br|uk|en-gb)(?:/|$)"
-)
-
-FOREIGN_COUNTRY_TLDS = {
-    "bg",
-    "ro",
-    "pl",
-    "de",
-    "cz",
-    "sk",
-    "hu",
-    "ua",
-    "by",
-    "ru",
-    "tr",
-    "gr",
-    "it",
-    "fr",
-    "es",
-    "pt",
-    "br",
-    "uk",
-}
 
 INFORMATIONAL_SEARCH_URL_RE = re.compile(
     r"(?i)(?:^|[/.?=&_-])(?:news|novosti|journal|blog|wiki|article|articles|guide|guides|"
@@ -897,7 +911,7 @@ class Investigator:
         )
 
         if allow_synthetic_refill and len(discovered) < candidate_target:
-            bootstrap = self._discover_from_bootstrap(seed_query, candidate_target - len(discovered))
+            bootstrap = self._discover_from_bootstrap(seed_query, candidate_target - len(discovered), search_mode)
             if bootstrap:
                 discovered.extend(bootstrap)
                 self.db.add_log(
@@ -922,6 +936,7 @@ class Investigator:
                 seed_query,
                 candidate_target - len(fresh_candidates),
                 excluded_domains,
+                search_mode,
             )
             if algorithmic:
                 fresh_candidates.extend(algorithmic)
@@ -1181,8 +1196,6 @@ class Investigator:
                 continue
             source_context = f"{title} {snippet} {target_url}"
             query_context = f"{query} {source_context}"
-            if search_mode == "casino" and self._is_wrong_geo_casino_result(target_url, source_context):
-                continue
             if self._is_informational_search_result(target_url, query_context, search_mode):
                 continue
             category = self._category_from_search_result(source_context)
@@ -1322,16 +1335,7 @@ class Investigator:
             score += 60
         if KZ_RELEVANCE_RE.search(text):
             score += 60
-        if FOREIGN_LOCALE_PATH_RE.search(url or ""):
-            score -= 140
-        tld = registered.rsplit(".", 1)[-1] if "." in registered else ""
-        if tld in FOREIGN_COUNTRY_TLDS:
-            score -= 140
         return score
-
-    @staticmethod
-    def _is_wrong_geo_casino_result(url: str, context: str) -> bool:
-        return Investigator._casino_kz_relevance_score(url, context) < 0
 
     @staticmethod
     def _has_casino_product_signal(text: str | None) -> bool:
@@ -1340,6 +1344,26 @@ class Investigator:
     @staticmethod
     def _is_bookmaker_first_context(text: str | None) -> bool:
         return bool(BOOKMAKER_FIRST_RE.search(text or ""))
+
+    @staticmethod
+    def _is_official_bookmaker_domain(domain_or_url: str | None) -> bool:
+        domain = extract_domain(str(domain_or_url or ""))
+        registered = registered_domain(domain)
+        return bool(registered and registered in OFFICIAL_BOOKMAKER_DOMAINS)
+
+    @staticmethod
+    def _looks_like_blocked_page(content_ai: dict[str, Any], evidence: Any) -> bool:
+        quality = content_ai.get("site_quality") or {}
+        text = " ".join(
+            [
+                str(getattr(evidence, "title", "") or ""),
+                str(getattr(evidence, "description", "") or ""),
+                str(getattr(evidence, "text_excerpt", "") or ""),
+                " ".join(str(marker) for marker in quality.get("markers") or []),
+                " ".join(str(signal) for signal in content_ai.get("signals") or []),
+            ]
+        )
+        return bool(BLOCKED_PAGE_SIGNAL_RE.search(text))
 
     @staticmethod
     def _bootstrap_item_category(item: dict[str, Any]) -> str:
@@ -1375,7 +1399,9 @@ class Investigator:
             score = 0
             has_casino_product = Investigator._has_casino_product_signal(product_context)
             bookmaker_first = Investigator._is_bookmaker_first_context(product_context)
-            score += Investigator._casino_kz_relevance_score(candidate.url, context)
+            score += max(0, Investigator._casino_kz_relevance_score(candidate.url, context))
+            if Investigator._is_official_bookmaker_domain(candidate.domain):
+                score -= 500
             if category_tokens & {"casino", "online_casino"}:
                 score += 120
             if has_casino_product:
@@ -1412,7 +1438,7 @@ class Investigator:
         )
         category_tokens = set(re.split(r"[^a-z_]+", candidate.category.lower()))
         if effective_mode == "casino":
-            if Investigator._is_wrong_geo_casino_result(candidate.url, candidate_context):
+            if Investigator._is_official_bookmaker_domain(candidate.domain) or Investigator._is_official_bookmaker_domain(candidate.url):
                 return False
             product_context = " ".join([candidate.domain, candidate.url, candidate.why])
             has_casino_product = Investigator._has_casino_product_signal(product_context)
@@ -1438,9 +1464,10 @@ class Investigator:
             or has_user_risk_search_context(candidate_context)
         )
 
-    def _discover_from_bootstrap(self, seed_query: str | None, limit: int) -> list[Candidate]:
+    def _discover_from_bootstrap(self, seed_query: str | None, limit: int, search_mode: str = "auto") -> list[Candidate]:
         if limit <= 0:
             return []
+        effective_mode = self._effective_search_mode(seed_query, search_mode)
         focus = (seed_query or " ".join(self.settings.seed_queries)).lower()
         normalized_focus = re.sub(r"[^a-zа-я0-9]+", " ", focus)
         wants_gambling = bool(re.search(r"(casino|казино|bet|бет|букмекер|ставк|зеркал|mirror)", normalized_focus))
@@ -1454,6 +1481,8 @@ class Investigator:
                 continue
             domain = extract_domain(str(item["domain"]))
             if not is_candidate_domain(domain):
+                continue
+            if effective_mode == "casino" and self._is_official_bookmaker_domain(domain):
                 continue
             candidates.append(
                 Candidate(
@@ -1477,9 +1506,11 @@ class Investigator:
         seed_query: str | None,
         limit: int,
         excluded_domains: set[str],
+        search_mode: str = "auto",
     ) -> list[Candidate]:
         if limit <= 0:
             return []
+        effective_mode = self._effective_search_mode(seed_query, search_mode)
         focus = (seed_query or " ".join(self.settings.seed_queries)).lower()
         normalized_focus = re.sub(r"[^a-zа-я0-9]+", " ", focus)
         wants_gambling = bool(re.search(r"(casino|казино|bet|бет|букмекер|ставк|зеркал|mirror)", normalized_focus))
@@ -1493,6 +1524,9 @@ class Investigator:
             if not matched:
                 continue
 
+            item_category = self._bootstrap_item_category(item)
+            if effective_mode == "casino" and item_category == "betting":
+                continue
             roots = self._brand_roots(item)
             for root in roots:
                 for domain in self._mirror_domain_variants(root):
@@ -1504,7 +1538,7 @@ class Investigator:
                         Candidate(
                             url=normalize_url(key),
                             domain=key,
-                            category=self._bootstrap_item_category(item),
+                            category=item_category,
                             why=(
                                 "Algorithmic-кандидат: домен похож на зеркало или региональную "
                                 "вариацию известного risky-бренда и отправлен на живую проверку."
@@ -1553,13 +1587,14 @@ class Investigator:
         focus = seed_query.strip() if seed_query else " ; ".join(self.settings.seed_queries)
         prompt = f"""
 Critical local-search behavior:
-- Treat domains like pinco4.aktif.kz and top.45minut.kz only as examples of direct Kazakhstan search-result patterns; do not hardcode them or stop at these examples.
+- Treat domains like pinco4.aktif.kz and top.45minut.kz only as examples of direct search-result patterns; do not hardcode them or filter by Kazakhstan.
 - If Google/Gemini returns a redirect URL, unwrap it and return the real target domain, not google.com or vertexaisearch.cloud.google.com.
 - Do not discard plain-looking .kz subdomains when the title/snippet/query context is casino, slots, mirror, or gambling.
-- Primary task: reproduce what an ordinary Kazakhstan user sees in Google after typing the query. Prefer direct sites from organic/ad-like search results over blacklist feeds, review articles, forums, and complaint databases.
+- Primary task: reproduce what an ordinary browser user sees in search after typing the query. Prefer direct casino/pyramid sites from organic/ad-like search results over blacklist feeds, review articles, forums, and complaint databases.
+- In casino mode, reject official bookmaker home domains unless the page is clearly an illegal mirror or a real casino/slots product; casino and pyramid targets have priority over betting.
 - The target is the source website where a user can register, deposit, play, invest, or send money. A review, Telegram post, YouTube video, article, forum, catalog, or blacklist page is only a source_url, never the candidate.
 
-Ты OSINT-следователь и имитируешь обычный пользовательский поиск из Казахстана. Нужно найти прямые домены сайтов, которые обычный человек реально увидит, если ищет онлайн-казино, слоты, рабочие зеркала, фишинг или инвестиционные пирамиды.
+Ты OSINT-следователь и имитируешь обычный пользовательский поиск в браузере. Нужно найти прямые домены сайтов, которые обычный человек реально увидит, если ищет онлайн-казино, слоты, рабочие зеркала, фишинг или инвестиционные пирамиды.
 Используй Google Search grounding как браузерный поиск. Начинай с пользовательских запросов: "онлайн казино Казахстан", "казино онлайн играть", "слоты на деньги Казахстан", "рабочее зеркало казино", "казино зеркало вход", "инвестиции быстрый доход USDT", "Kaspi фишинг вход". Смотри прежде всего прямые результаты поиска, где пользователь может зайти, зарегистрироваться, внести деньги, играть или отправить деньги.
 Ищи не только по названию бренда, но и по шаблонам "site scam", "withdraw problem", "не выводят деньги", "жалоба", "отзывы", "обман", "blacklist", "complaint", "report".
 Полезные источники для расширения пула: поисковая выдача по пользовательским запросам. Публичные страницы жалоб, ScamAdviser/Trustpilot-style обзоры, форумы пострадавших и blacklist reports используй только как вспомогательные источники для извлечения прямого домена сайта-источника.
@@ -1569,7 +1604,7 @@ Critical local-search behavior:
 3) инвестиционные лохотроны или фишинговые страницы.
 
 Очень важно:
-- Фокус: Казахстан. Нужны домены, которые сейчас открываются у пользователей Казахстана, включая рабочие зеркала.
+- Фокус: глобальный поиск, не только Казахстан. Нужны домены, которые реально открываются в браузере, включая рабочие зеркала.
 - Не возвращай официальные банки, госуслуги, маркетплейсы и крупные легитимные сервисы: kaspi.kz, halykbank.kz, homebank.kz, egov.kz, gov.kz и похожие официальные домены.
 - Если это букмекер без признаков casino/slots/roulette и без подтверждения нелегальности, ставь category="betting", а не "casino".
 - Если это онлайн-казино, должны быть признаки реального игрового продукта: slots, roulette, blackjack, jackpot, live casino, регистрация/депозит/игровое лобби.
@@ -1669,8 +1704,6 @@ Critical local-search behavior:
             if not candidate:
                 continue
             if self._is_informational_search_result(candidate.url, f"{focus} {source_context}", search_mode):
-                continue
-            if search_mode == "casino" and self._is_wrong_geo_casino_result(candidate.url, source_context):
                 continue
             if not gambling_domain_signals(candidate.domain, f"{focus} {source_context}") and candidate.category in {"casino", "gambling"}:
                 candidate.category = "suspicious"
@@ -1942,7 +1975,7 @@ Critical local-search behavior:
         if not evidence.active or not evidence.final_url or status_code < 200 or status_code >= 400:
             skip_reason = "сайт не открылся с нормальным HTTP 2xx/3xx"
             if evidence.blocked_by_policy:
-                skip_reason = "страница похожа на блокировку доступа и не считается рабочей из Казахстана"
+                skip_reason = "blocked/restricted access page; site is not treated as reachable"
             return {
                 "_skip": True,
                 "_skip_reason": skip_reason,
@@ -2152,21 +2185,17 @@ Critical local-search behavior:
                 or gambling_domain_signals(candidate.domain, candidate_context)
             )
         )
+        if getattr(evidence, "blocked_by_policy", False) or quality.get("is_blocked_or_restricted") or Investigator._looks_like_blocked_page(content_ai, evidence):
+            return "blocked/restricted access page; not a reachable user-facing target"
         if quality.get("is_empty_or_parked") and (quality.get("markers") or not has_domain_signals):
             return "страница пустая, parking/placeholder или не содержит полезного контента"
         if search_mode == "casino":
             final_url = str(getattr(evidence, "final_url", "") or "")
-            geo_context = " ".join(
-                [
-                    final_url,
-                    candidate.url if candidate else "",
-                    candidate.domain if candidate else "",
-                    candidate.search_query if candidate else "",
-                    candidate.why if candidate else "",
-                ]
-            )
-            if candidate and Investigator._is_wrong_geo_casino_result(final_url or candidate.url, geo_context):
-                return "режим casino: сайт не похож на результат для Казахстана, найдена чужая география или локаль"
+            if candidate and (
+                Investigator._is_official_bookmaker_domain(candidate.domain)
+                or Investigator._is_official_bookmaker_domain(final_url or candidate.url)
+            ):
+                return "casino mode: official bookmaker domain, not a casino/mirror target"
             content_label = str(content_ai.get("category_hint") or "").lower()
             casino_hits = content_ai.get("casino_keywords") or []
             betting_hits = content_ai.get("betting_keywords") or []

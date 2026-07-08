@@ -36,7 +36,7 @@ services:
       - key: MAX_MIRROR_CHECKS_PER_RUN
         value: "6"
       - key: SCAN_CONCURRENCY
-        value: "2"
+        value: "1"
       - key: CANDIDATE_TIMEOUT_SECONDS
         value: "35"
       - key: SCREENSHOTS_ENABLED
