@@ -98,7 +98,7 @@ def resume_active_runs_after_restart() -> None:
             db.add_log(run_id, "warning", "Проверка остановлена пользователем до перезапуска сервера")
             continue
 
-        max_candidates = min(int(run.get("max_candidates") or 150), settings.max_candidates_per_run)
+        max_candidates = min(int(run.get("max_candidates") or 100), settings.max_candidates_per_run)
         cancel_event = threading.Event()
         cancel_events[run_id] = cancel_event
         db.update_run(run_id, status="queued", finished_at=None, error=None)
@@ -146,7 +146,7 @@ async def api_auth_middleware(request: Request, call_next):
 class RunRequest(BaseModel):
     seed_query: str | None = Field(default=None, max_length=2000)
     search_mode: str = Field(default="casino", max_length=30)
-    max_candidates: int = Field(default=150, ge=1, le=5000)
+    max_candidates: int = Field(default=100, ge=1, le=5000)
     take_screenshots: bool = True
 
 
@@ -217,6 +217,7 @@ def health() -> dict[str, Any]:
         "resume_active_runs": settings.resume_active_runs,
         "gemini_user_search_fallback": settings.gemini_user_search_fallback,
         "candidate_timeout_seconds": settings.candidate_timeout_seconds,
+        "fast_evidence_mode": settings.fast_evidence_mode,
         "screenshot_timeout_seconds": settings.screenshot_timeout_seconds,
         "screenshot_runtime": investigator.screenshots.runtime_status(),
         "ml_enabled": investigator.ml.enabled,

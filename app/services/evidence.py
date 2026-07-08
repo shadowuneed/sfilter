@@ -127,8 +127,9 @@ class EvidenceCollector:
         result = EvidenceResult(requested_url=normalized)
         result.domain = extract_domain(normalized)
         result.access_origin = self.settings.kz_access_label
-        result.dns = self._resolve_dns(result.domain)
-        result.tls = self._tls_certificate(result.domain)
+        result.dns = {"records": [], "mx_records": []} if self.settings.fast_evidence_mode else self._resolve_dns(result.domain)
+        if not self.settings.fast_evidence_mode:
+            result.tls = self._tls_certificate(result.domain)
 
         candidates = self._url_candidates(normalized)
         headers = {"User-Agent": self.settings.user_agent}
@@ -147,8 +148,9 @@ class EvidenceCollector:
             **client_options,
             verify=False,
         ) as insecure_client:
-            result.dns.update(await self._resolve_mx(client, result.domain))
-            result.domain_info = await self._domain_rdap(client, result.domain)
+            if not self.settings.fast_evidence_mode:
+                result.dns.update(await self._resolve_mx(client, result.domain))
+                result.domain_info = await self._domain_rdap(client, result.domain)
             for candidate in candidates:
                 response = None
                 verified_fetch = candidate.startswith("https://")

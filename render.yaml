@@ -34,15 +34,17 @@ services:
       - key: EXPORT_DIR
         value: /var/data/exports
       - key: MAX_CANDIDATES_PER_RUN
-        value: "5000"
+        value: "15000"
       - key: MAX_MIRROR_CHECKS_PER_RUN
         value: "6"
       - key: SCAN_CONCURRENCY
         value: "1"
       - key: REQUEST_TIMEOUT_SECONDS
-        value: "12"
+        value: "6"
       - key: CANDIDATE_TIMEOUT_SECONDS
-        value: "32"
+        value: "15"
+      - key: FAST_EVIDENCE_MODE
+        value: "true"
       - key: SCREENSHOTS_ENABLED
         value: "true"
       - key: BROWSER_SCREENSHOTS_ENABLED
@@ -52,13 +54,15 @@ services:
       - key: SCREENSHOT_CONCURRENCY
         value: "1"
       - key: SCREENSHOT_TIMEOUT_SECONDS
-        value: "8"
+        value: "5"
+      - key: SCREENSHOT_SETTLE_MS
+        value: "250"
       - key: PLAYWRIGHT_BROWSERS_PATH
         value: /ms-playwright
       - key: OSINT_FEEDS_ENABLED
         value: "true"
       - key: OSINT_CANDIDATE_POOL_SIZE
-        value: "5000"
+        value: "15000"
       - key: SEARCH_PAGE_DELAY_SECONDS
         value: "2.5"
       - key: ML_ENABLED

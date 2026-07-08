@@ -823,7 +823,7 @@ class Investigator:
         if available_candidates <= 0:
             return 0
         target_findings = max(1, int(target_findings))
-        multiplier = 10 if self.normalize_search_mode(search_mode) == "casino" else 2
+        multiplier = 50 if self.normalize_search_mode(search_mode) == "casino" else 2
         desired = max(target_findings, target_findings * multiplier)
         return min(available_candidates, self.settings.max_candidates_per_run, desired)
 
@@ -899,7 +899,7 @@ class Investigator:
     ) -> list[Candidate]:
         search_mode = self._effective_search_mode(seed_query, search_mode)
         discovery_limit = min(
-            max(max_candidates * 12, 150),
+            max(max_candidates * 60, 5000),
             max(max_candidates, self.settings.osint_candidate_pool_size),
         )
         candidate_target = max_candidates
@@ -907,7 +907,7 @@ class Investigator:
             candidate_target = min(
                 discovery_limit,
                 self.settings.max_candidates_per_run,
-                max_candidates * 10,
+                max_candidates * 50,
             )
         discovered: list[Candidate] = []
         user_search_mode = self._user_search_mode(seed_query, search_mode)
@@ -1641,7 +1641,7 @@ class Investigator:
                 domains.append(f"{root}-{modifier}.{tld}")
                 domains.append(f"{root}{modifier}.{tld}")
                 domains.append(f"{modifier}-{root}.{tld}")
-        return domains
+        return domains[:36]
 
     def _discover_with_gemini(
         self,

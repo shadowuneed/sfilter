@@ -20,7 +20,7 @@ const state = {
   chartHoverIndex: null,
 };
 
-const DEFAULT_RUN_CANDIDATES = 150;
+const DEFAULT_RUN_CANDIDATES = 100;
 const MAX_RUN_CANDIDATES = 500;
 const CASES_INITIAL_LIMIT = 8;
 const CASES_PAGE_SIZE = 20;
@@ -486,7 +486,7 @@ async function loadHealth() {
         ? "KZ proxy обязателен и не настроен, запуск заблокирован"
         : "KZ proxy не задан: запуск разрешен, но доступность из Казахстана не подтверждена";
     const concurrency = health.scan_concurrency || 3;
-    const timeout = health.candidate_timeout_seconds || 45;
+    const timeout = health.candidate_timeout_seconds || 15;
     const maxRun = Math.min(Number(health.max_candidates_per_run || MAX_RUN_CANDIDATES), MAX_RUN_CANDIDATES);
     els.healthLine.textContent = `${geminiHint}. ${mlHint}. ${cyberHint}. ${kzHint}. Максимум запуска: ${maxRun} сайтов, потоков: ${concurrency}, таймаут сайта: ${timeout} сек.`;
     const actionBlocked = authMissing || !kzReady;

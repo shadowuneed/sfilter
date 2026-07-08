@@ -76,6 +76,7 @@ class ConfigTests(unittest.TestCase):
                 "BROWSER_SCREENSHOTS_ENABLED": "false",
                 "SCREENSHOT_FALLBACK_ENABLED": "true",
                 "RESUME_ACTIVE_RUNS": "true",
+                "FAST_EVIDENCE_MODE": "true",
             },
             clear=False,
         ):
@@ -89,6 +90,7 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(settings.browser_screenshots_enabled)
         self.assertTrue(settings.screenshot_fallback_enabled)
         self.assertTrue(settings.resume_active_runs)
+        self.assertTrue(settings.fast_evidence_mode)
 
     @patch("app.config._load_dotenv", lambda: None)
     def test_user_search_defaults_avoid_gemini_fallback(self) -> None:

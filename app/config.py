@@ -154,11 +154,12 @@ class Settings:
     evidence_dir: Path = Path("evidence")
     export_dir: Path = Path("exports")
 
-    max_candidates_per_run: int = 2000
+    max_candidates_per_run: int = 15000
     max_mirror_checks_per_run: int = 6
     request_timeout_seconds: int = 18
     scan_concurrency: int = 3
-    candidate_timeout_seconds: int = 45
+    candidate_timeout_seconds: int = 15
+    fast_evidence_mode: bool = False
     screenshot_timeout_seconds: int = 10
     screenshot_settle_ms: int = 700
     screenshots_enabled: bool = True
@@ -228,11 +229,12 @@ def get_settings() -> Settings:
         require_postgres=_bool_env("REQUIRE_POSTGRES", False),
         evidence_dir=Path(os.getenv("EVIDENCE_DIR", "evidence")),
         export_dir=Path(os.getenv("EXPORT_DIR", "exports")),
-        max_candidates_per_run=max(1, min(_int_env("MAX_CANDIDATES_PER_RUN", 2000), 5000)),
+        max_candidates_per_run=max(1, min(_int_env("MAX_CANDIDATES_PER_RUN", 15000), 20000)),
         max_mirror_checks_per_run=_int_env("MAX_MIRROR_CHECKS_PER_RUN", 6),
         request_timeout_seconds=_int_env("REQUEST_TIMEOUT_SECONDS", 18),
         scan_concurrency=max(1, min(_int_env("SCAN_CONCURRENCY", 3), 8)),
-        candidate_timeout_seconds=max(10, _int_env("CANDIDATE_TIMEOUT_SECONDS", 45)),
+        candidate_timeout_seconds=max(10, _int_env("CANDIDATE_TIMEOUT_SECONDS", 15)),
+        fast_evidence_mode=_bool_env("FAST_EVIDENCE_MODE", False),
         screenshot_timeout_seconds=max(4, _int_env("SCREENSHOT_TIMEOUT_SECONDS", 10)),
         screenshot_settle_ms=max(0, _int_env("SCREENSHOT_SETTLE_MS", 700)),
         screenshots_enabled=_bool_env("SCREENSHOTS_ENABLED", True),
@@ -243,7 +245,7 @@ def get_settings() -> Settings:
         screenshot_fallback_enabled=_bool_env("SCREENSHOT_FALLBACK_ENABLED", True),
         screenshot_concurrency=max(1, min(_int_env("SCREENSHOT_CONCURRENCY", 1), 2)),
         osint_feeds_enabled=_bool_env("OSINT_FEEDS_ENABLED", True),
-        osint_candidate_pool_size=max(150, min(_int_env("OSINT_CANDIDATE_POOL_SIZE", 1500), 5000)),
+        osint_candidate_pool_size=max(150, min(_int_env("OSINT_CANDIDATE_POOL_SIZE", 1500), 20000)),
         search_pages_enabled=_bool_env("SEARCH_PAGES_ENABLED", True),
         search_page_delay_seconds=max(0.0, min(_float_env("SEARCH_PAGE_DELAY_SECONDS", 0.0), 10.0)),
         resume_active_runs=_bool_env("RESUME_ACTIVE_RUNS", False),
