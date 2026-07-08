@@ -163,7 +163,7 @@ class Settings:
     screenshot_timeout_seconds: int = 10
     screenshot_settle_ms: int = 700
     screenshots_enabled: bool = True
-    browser_screenshots_enabled: bool = False
+    browser_screenshots_enabled: bool = True
     screenshot_fallback_enabled: bool = True
     screenshot_concurrency: int = 1
     osint_feeds_enabled: bool = True
@@ -240,7 +240,7 @@ def get_settings() -> Settings:
         screenshots_enabled=_bool_env("SCREENSHOTS_ENABLED", True),
         browser_screenshots_enabled=_bool_env(
             "BROWSER_SCREENSHOTS_ENABLED",
-            _bool_env("SCREENSHOT_BROWSER_ENABLED", False),
+            _bool_env("SCREENSHOT_BROWSER_ENABLED", True),
         ),
         screenshot_fallback_enabled=_bool_env("SCREENSHOT_FALLBACK_ENABLED", True),
         screenshot_concurrency=max(1, min(_int_env("SCREENSHOT_CONCURRENCY", 1), 2)),

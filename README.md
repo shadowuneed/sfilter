@@ -80,7 +80,7 @@ REQUEST_TIMEOUT_SECONDS=6
 FAST_EVIDENCE_MODE=true
 SCREENSHOT_CONCURRENCY=1
 SCREENSHOT_TIMEOUT_SECONDS=5
-BROWSER_SCREENSHOTS_ENABLED=false
+BROWSER_SCREENSHOTS_ENABLED=true
 SCREENSHOT_FALLBACK_ENABLED=true
 OSINT_FEEDS_ENABLED=true
 MAX_CANDIDATES_PER_RUN=15000
@@ -107,7 +107,7 @@ docker build -t argus-investigator .
 docker run --rm -p 8000:8000 --env-file .env argus-investigator
 ```
 
-The Docker image runs as a non-root `argus` user.
+The Docker image installs Playwright Chromium for real page screenshots and runs as a non-root `argus` user.
 
 ## Tests
 

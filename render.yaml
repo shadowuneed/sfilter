@@ -48,7 +48,7 @@ services:
       - key: SCREENSHOTS_ENABLED
         value: "true"
       - key: BROWSER_SCREENSHOTS_ENABLED
-        value: "false"
+        value: "true"
       - key: SCREENSHOT_FALLBACK_ENABLED
         value: "true"
       - key: SCREENSHOT_CONCURRENCY
@@ -57,6 +57,8 @@ services:
         value: "5"
       - key: SCREENSHOT_SETTLE_MS
         value: "250"
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: /ms-playwright
       - key: OSINT_FEEDS_ENABLED
         value: "true"
       - key: OSINT_CANDIDATE_POOL_SIZE

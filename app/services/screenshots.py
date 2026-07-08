@@ -110,6 +110,7 @@ class ScreenshotService:
             )
 
         browser = None
+        context = None
         acquired = False
         try:
             while not self._browser_slots.acquire(blocking=False):
@@ -144,20 +145,20 @@ class ScreenshotService:
                     proxy={"server": self.settings.kz_proxy_url} if self.settings.kz_proxy_url else None,
                 )
                 page = await context.new_page()
-                timeout_ms = max(4_000, int(self.settings.screenshot_timeout_seconds * 1000))
+                timeout_ms = max(2_500, int(self.settings.screenshot_timeout_seconds * 1000))
                 settle_ms = max(0, int(self.settings.screenshot_settle_ms))
                 page.set_default_timeout(timeout_ms)
                 navigation_error = None
                 try:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms + 3_000)
+                    await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
                 except Exception as exc:  # noqa: BLE001
                     navigation_error = exc
                     try:
-                        await page.goto(url, wait_until="commit", timeout=max(3_000, timeout_ms // 2))
+                        await page.goto(url, wait_until="commit", timeout=max(1_500, timeout_ms // 2))
                     except Exception:
                         pass
                 try:
-                    await page.wait_for_load_state("networkidle", timeout=min(3_000, timeout_ms))
+                    await page.wait_for_load_state("load", timeout=min(750, timeout_ms))
                 except Exception:
                     pass
                 if settle_ms:
@@ -166,7 +167,7 @@ class ScreenshotService:
                     await page.screenshot(
                         path=str(output),
                         full_page=False,
-                        timeout=timeout_ms,
+                        timeout=max(2_000, min(timeout_ms, 3_000)),
                         animations="disabled",
                         caret="hide",
                     )
@@ -192,7 +193,7 @@ class ScreenshotService:
                         await page.screenshot(
                             path=str(output),
                             full_page=False,
-                            timeout=max(3_000, timeout_ms // 2),
+                            timeout=max(1_500, min(timeout_ms // 2, 2_500)),
                             animations="disabled",
                             caret="hide",
                         )
@@ -231,6 +232,11 @@ class ScreenshotService:
                 error=f"{type(exc).__name__}: {exc}",
             )
         finally:
+            if context:
+                try:
+                    await context.close()
+                except Exception:
+                    pass
             if browser:
                 try:
                     await browser.close()

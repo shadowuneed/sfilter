@@ -913,9 +913,12 @@ class Investigator:
             )
             mirror_group = self._mirror_group_for(candidate, all_candidates, mirror_groups)
             try:
+                inspection_timeout = self.settings.candidate_timeout_seconds
+                if take_screenshots:
+                    inspection_timeout += self.settings.screenshot_timeout_seconds + 2
                 finding = await asyncio.wait_for(
                     self._build_finding(run_id, candidate, mirror_group, take_screenshots, search_mode),
-                    timeout=self.settings.candidate_timeout_seconds,
+                    timeout=inspection_timeout,
                 )
             except asyncio.TimeoutError:
                 return {
