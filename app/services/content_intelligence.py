@@ -60,6 +60,7 @@ BETTING_KEYWORDS = [
     "parimatch",
     "fonbet",
     "olimpbet",
+    "1win",
     "1xbet",
     "mostbet",
     "melbet",
@@ -210,9 +211,9 @@ class ContentIntelligence:
         domain_gambling_signals = gambling_domain_signals(domain, f"{final_url} {text_lower[:4000]} {html_lower[:4000]}")
         has_casino_in_url = any(
             token in url_lower
-            for token in ["casino", "kazino", "vulkan", "slot", "slots", "1xslots", "pinco", "pinup", "1win"]
+            for token in ["casino", "kazino", "vulkan", "slot", "slots", "1xslots", "pinco", "pinup"]
         ) or bool(domain_gambling_signals)
-        has_betting_in_url = any(token in url_lower for token in ["bookmaker", "sportsbook", "1xbet", "mostbet", "fonbet", "olimpbet", "melbet", "linebet", "bet365"])
+        has_betting_in_url = any(token in url_lower for token in ["bookmaker", "sportsbook", "1win", "1xbet", "mostbet", "fonbet", "olimpbet", "melbet", "linebet", "bet365"])
         casino_confidence_score = self._casino_confidence(casino_hits, form_stats, has_casino_in_url)
         betting_confidence_score = self._betting_confidence(betting_hits, has_betting_in_url)
         credential_risk = self._credential_risk(form_stats, brand_hits)

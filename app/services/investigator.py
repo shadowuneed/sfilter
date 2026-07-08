@@ -89,6 +89,24 @@ BOOTSTRAP_CANDIDATES = [
     {"domain": "vulkanvegas.com", "category": "casino", "brand": "Vulkan Vegas", "aliases": ["vulkan", "vulkan vegas"]},
     {"domain": "joycasino.com", "category": "casino", "brand": "JoyCasino", "aliases": ["joycasino", "joy casino"]},
     {"domain": "playfortuna.com", "category": "casino", "brand": "Play Fortuna", "aliases": ["playfortuna", "play fortuna"]},
+    {"domain": "mrbit.com", "category": "casino", "brand": "Mr Bit", "aliases": ["mrbit", "mr bit"]},
+    {"domain": "casinia.com", "category": "casino", "brand": "Casinia", "aliases": ["casinia"]},
+    {"domain": "ninecasino.com", "category": "casino", "brand": "NineCasino", "aliases": ["ninecasino", "nine casino"]},
+    {"domain": "playamo.com", "category": "casino", "brand": "PlayAmo", "aliases": ["playamo", "play amo"]},
+    {"domain": "bitcasino.io", "category": "casino", "brand": "Bitcasino", "aliases": ["bitcasino", "bit casino"]},
+    {"domain": "bitstarz.com", "category": "casino", "brand": "BitStarz", "aliases": ["bitstarz", "bit starz"]},
+    {"domain": "fortunejack.com", "category": "casino", "brand": "FortuneJack", "aliases": ["fortunejack", "fortune jack"]},
+    {"domain": "7bitcasino.com", "category": "casino", "brand": "7BitCasino", "aliases": ["7bitcasino", "7bit casino"]},
+    {"domain": "casino-x.com", "category": "casino", "brand": "Casino X", "aliases": ["casino-x", "casino x", "casinox"]},
+    {"domain": "boomerang-casino.com", "category": "casino", "brand": "Boomerang Casino", "aliases": ["boomerang casino", "boomerang"]},
+    {"domain": "spinanga.com", "category": "casino", "brand": "Spinanga", "aliases": ["spinanga"]},
+    {"domain": "nomini.com", "category": "casino", "brand": "Nomini", "aliases": ["nomini"]},
+    {"domain": "slottica.com", "category": "casino", "brand": "Slottica", "aliases": ["slottica"]},
+    {"domain": "wildz.com", "category": "casino", "brand": "Wildz", "aliases": ["wildz"]},
+    {"domain": "n1casino.com", "category": "casino", "brand": "N1 Casino", "aliases": ["n1casino", "n1 casino"]},
+    {"domain": "rocketplay.com", "category": "casino", "brand": "RocketPlay", "aliases": ["rocketplay", "rocket play"]},
+    {"domain": "hellspin.com", "category": "casino", "brand": "HellSpin", "aliases": ["hellspin", "hell spin"]},
+    {"domain": "mystake.com", "category": "casino", "brand": "MyStake", "aliases": ["mystake", "my stake"]},
     {"domain": "ggbet.com", "category": "casino", "brand": "GG.Bet", "aliases": ["ggbet", "gg bet"]},
     {"domain": "stake.com", "category": "casino", "brand": "Stake", "aliases": ["stake"]},
     {"domain": "bc.game", "category": "casino", "brand": "BC.Game", "aliases": ["bcgame", "bc game"]},
@@ -128,6 +146,7 @@ BOOTSTRAP_CANDIDATES = [
 
 BOOKMAKER_FIRST_BRANDS = {
     "1xbet",
+    "1win",
     "22bet",
     "bet365",
     "betano",
@@ -135,6 +154,7 @@ BOOKMAKER_FIRST_BRANDS = {
     "betway",
     "betwinner",
     "bwin",
+    "cloudbet",
     "coral",
     "fonbet",
     "ggbet",
@@ -149,6 +169,7 @@ BOOKMAKER_FIRST_BRANDS = {
     "parimatch",
     "rabona",
     "sportsbet",
+    "stake",
     "tennisi",
     "unibet",
     "williamhill",
@@ -159,6 +180,7 @@ BOOKMAKER_FIRST_BRANDS = {
 OFFICIAL_BOOKMAKER_DOMAINS = {
     "1xbet.com",
     "1xbet.kz",
+    "1win.com",
     "22bet.com",
     "bet365.com",
     "betano.com",
@@ -197,7 +219,9 @@ CASINO_PRODUCT_SIGNAL_RE = re.compile(
     r"(?i)(casino|kazino|казино|slots?|слот|слоты|slot\s*games?|live\s+casino|roulette|рулет|"
     r"blackjack|блэкджек|poker|покер|jackpot|джекпот|free\s*spins?|фриспин|"
     r"игровые\s+автоматы|автоматы|1xslots|vulkan|joycasino|playfortuna|888casino|pinco|"
-    r"pin[-_\s]?up|vavada|wazamba|leovegas|fairspin|zotabet|roobet|rollbit|bc\.?game|stake)"
+    r"pin[-_\s]?up|vavada|wazamba|leovegas|fairspin|zotabet|mrbit|casinia|ninecasino|playamo|"
+    r"bitcasino|bitstarz|fortunejack|7bitcasino|casino[-_\s]?x|boomerang[-_\s]?casino|spinanga|"
+    r"nomini|slottica|wildz|n1casino|rocketplay|hellspin|mystake|roobet|rollbit|bc\.?game|stake)"
 )
 
 BLOCKED_PAGE_SIGNAL_RE = re.compile(
@@ -291,17 +315,17 @@ USER_SEARCH_ENGINES = [
     {
         "name": "duckduckgo",
         "url": "https://html.duckduckgo.com/html/",
-        "params": {"kl": "kz-ru"},
+        "params": {"kl": "wt-wt"},
     },
     {
         "name": "google",
         "url": "https://www.google.com/search",
-        "params": {"hl": "ru", "gl": "kz", "num": "20", "pws": "0", "gbv": "1"},
+        "params": {"hl": "ru", "num": "20", "pws": "0", "gbv": "1"},
     },
     {
         "name": "bing",
         "url": "https://www.bing.com/search",
-        "params": {"setlang": "ru-RU", "cc": "KZ", "count": "20"},
+        "params": {"setlang": "ru-RU", "count": "20"},
     },
     {
         "name": "yandex_kz",
@@ -322,16 +346,16 @@ SEARCH_MODE_LABELS = {
 }
 
 CASINO_SEARCH_QUERIES = [
-    "site:.kz онлайн казино играть на деньги",
-    "site:.kz казино регистрация бонус",
-    "онлайн казино играть на деньги Казахстан",
-    "казино онлайн регистрация бонус Казахстан",
-    "слоты на деньги играть Казахстан",
-    "рабочее зеркало казино вход Казахстан",
-    "казино зеркало рабочий вход Казахстан",
-    "онлайн казино депозит Казахстан",
-    "казино бонус регистрация Казахстан",
-    "онлайн казино без блокировки Казахстан",
+    "онлайн казино играть на деньги",
+    "казино онлайн регистрация бонус",
+    "слоты на деньги играть",
+    "live casino roulette blackjack бонус",
+    "казино зеркало рабочий вход",
+    "онлайн казино без блокировки зеркало",
+    "online casino slots bonus registration",
+    "play online casino slots real money",
+    "casino mirror login bonus slots",
+    "vavada joycasino playfortuna vulkan casino зеркало",
 ]
 
 SCAM_SEARCH_QUERIES = [
@@ -1306,7 +1330,7 @@ class Investigator:
             if normalized and normalized not in clean:
                 clean.append(normalized)
         if effective_mode == "casino":
-            return clean[:6]
+            return clean[:10]
         if effective_mode in {"phishing", "scam"}:
             return clean[:8]
         return clean[:10]
@@ -1402,6 +1426,8 @@ class Investigator:
             score += max(0, Investigator._casino_kz_relevance_score(candidate.url, context))
             if Investigator._is_official_bookmaker_domain(candidate.domain):
                 score -= 500
+            if bookmaker_first:
+                score -= 500
             if category_tokens & {"casino", "online_casino"}:
                 score += 120
             if has_casino_product:
@@ -1443,6 +1469,8 @@ class Investigator:
             product_context = " ".join([candidate.domain, candidate.url, candidate.why])
             has_casino_product = Investigator._has_casino_product_signal(product_context)
             bookmaker_first = Investigator._is_bookmaker_first_context(product_context)
+            if bookmaker_first:
+                return False
             if category_tokens & {"casino", "online_casino"}:
                 return not bookmaker_first or has_casino_product
             if has_casino_product:
@@ -1482,13 +1510,14 @@ class Investigator:
             domain = extract_domain(str(item["domain"]))
             if not is_candidate_domain(domain):
                 continue
-            if effective_mode == "casino" and self._is_official_bookmaker_domain(domain):
+            item_category = self._bootstrap_item_category(item)
+            if effective_mode == "casino" and item_category == "betting":
                 continue
             candidates.append(
                 Candidate(
                     url=normalize_url(domain),
                     domain=domain,
-                    category=self._bootstrap_item_category(item),
+                    category=item_category,
                     why=(
                         "Bootstrap-кандидат: внешний поиск не дал достаточно доменов, "
                         "поэтому известный бренд/домен отправлен на техническую проверку."
@@ -1887,8 +1916,10 @@ Critical local-search behavior:
             if candidate.category.lower() in {"casino", "gambling", "betting", "suspicious"}
             and (
                 effective_mode != "casino"
-                or candidate.category.lower() != "betting"
-                or self._has_casino_product_signal(" ".join([candidate.domain, candidate.url, candidate.why]))
+                or (
+                    candidate.category.lower() != "betting"
+                    and not self._is_bookmaker_first_context(" ".join([candidate.domain, candidate.url, candidate.why]))
+                )
             )
         ][: self.settings.max_mirror_checks_per_run]
 
@@ -2196,6 +2227,10 @@ Critical local-search behavior:
                 or Investigator._is_official_bookmaker_domain(final_url or candidate.url)
             ):
                 return "casino mode: official bookmaker domain, not a casino/mirror target"
+            if candidate and Investigator._is_bookmaker_first_context(
+                " ".join([candidate.domain, candidate.url, candidate.why, final_url])
+            ):
+                return "casino mode: betting-first brand, not a pure casino target"
             content_label = str(content_ai.get("category_hint") or "").lower()
             casino_hits = content_ai.get("casino_keywords") or []
             betting_hits = content_ai.get("betting_keywords") or []

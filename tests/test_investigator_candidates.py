@@ -475,9 +475,12 @@ class InvestigatorCandidateTests(unittest.TestCase):
     def test_casino_mode_queries_do_not_include_easy_money(self) -> None:
         queries = Investigator._user_search_queries("онлайн казино", "casino")
 
-        self.assertLessEqual(len(queries), 6)
+        self.assertLessEqual(len(queries), 10)
         joined = " ".join(queries).lower()
         self.assertIn("онлайн казино", joined)
+        self.assertIn("slots", joined)
+        self.assertNotIn("ставки", joined)
+        self.assertNotIn("букмекер", joined)
         self.assertNotIn("легкие деньги", joined)
         self.assertNotIn("usdt", joined)
 
@@ -514,12 +517,43 @@ class InvestigatorCandidateTests(unittest.TestCase):
 
         self.assertFalse(Investigator._candidate_matches_user_search(candidate, "онлайн казино", "casino"))
 
+    def test_casino_mode_rejects_1win_bonus_mirror(self) -> None:
+        candidate = Candidate(
+            url="https://1win-bonus.vip",
+            domain="1win-bonus.vip",
+            category="casino",
+            why="Algorithmic mirror candidate",
+            search_query="онлайн казино",
+        )
+
+        self.assertFalse(Investigator._candidate_matches_user_search(candidate, "онлайн казино", "casino"))
+
     def test_bookmaker_bootstrap_item_is_not_casino_category(self) -> None:
         one_xbet = {"domain": "1xbet.com", "brand": "1xBet", "aliases": ["1xbet", "1x bet"], "category": "casino"}
+        one_win = {"domain": "1win.com", "brand": "1win", "aliases": ["1win", "1 win"], "category": "casino"}
         vavada = {"domain": "vavada.com", "brand": "Vavada", "aliases": ["vavada"], "category": "casino"}
 
         self.assertEqual(Investigator._bootstrap_item_category(one_xbet), "betting")
+        self.assertEqual(Investigator._bootstrap_item_category(one_win), "betting")
         self.assertEqual(Investigator._bootstrap_item_category(vavada), "casino")
+
+    def test_casino_bootstrap_skips_betting_first_brands(self) -> None:
+        candidates = self.investigator._discover_from_bootstrap("онлайн казино", 12, "casino")
+        domains = [candidate.domain for candidate in candidates]
+
+        self.assertTrue(candidates)
+        self.assertNotIn("1xbet.com", domains)
+        self.assertNotIn("1win.com", domains)
+        self.assertNotIn("mostbet.com", domains)
+        self.assertTrue(all(candidate.category == "casino" for candidate in candidates))
+
+    def test_casino_algorithmic_refill_skips_betting_first_brands(self) -> None:
+        candidates = self.investigator._discover_from_algorithmic_mirrors("онлайн казино", 40, set(), "casino")
+        domains = [candidate.domain for candidate in candidates]
+
+        self.assertTrue(candidates)
+        self.assertFalse(any(domain.startswith(("1xbet", "1win", "mostbet")) for domain in domains))
+        self.assertTrue(any("pinup" in domain or "vavada" in domain or "vulkan" in domain for domain in domains))
 
     def test_casino_mode_keeps_casino_path_candidate(self) -> None:
         candidate = Candidate(
@@ -638,9 +672,9 @@ class InvestigatorCandidateTests(unittest.TestCase):
 
         reason = Investigator._content_skip_reason(content_ai, FakeEvidence(), candidate, "casino")
 
-        self.assertIn("не на casino/slots", reason or "")
+        self.assertIn("betting-first", reason or "")
 
-    def test_casino_mode_content_allows_bookmaker_brand_with_real_casino_product(self) -> None:
+    def test_casino_mode_content_rejects_bookmaker_brand_even_with_casino_product(self) -> None:
         class FakeEvidence:
             final_url = "https://1xbet-kz.net/casino"
 
@@ -660,7 +694,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
 
         reason = Investigator._content_skip_reason(content_ai, FakeEvidence(), candidate, "casino")
 
-        self.assertIsNone(reason)
+        self.assertIn("betting-first", reason or "")
 
     def test_casino_mode_content_allows_global_casino_page(self) -> None:
         class FakeEvidence:
