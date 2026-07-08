@@ -698,7 +698,16 @@ class Investigator:
                 return
 
             mirror_groups = await self._discover_mirrors(run_id, candidates_to_check, search_mode)
-            findings_count = 0
+            findings_count = self.db.count_findings(run_id)
+            if findings_count >= max_candidates:
+                self.db.update_run(run_id, status="completed", finished_at=utc_now(), finding_count=findings_count)
+                self.db.add_log(
+                    run_id,
+                    "info",
+                    "Поиск завершен: выбранная цель уже набрана",
+                    {"findings": findings_count, "target": max_candidates},
+                )
+                return
             concurrency = max(1, min(self.settings.scan_concurrency, max_candidates, len(candidates_to_check) or 1))
             self.db.add_log(
                 run_id,
@@ -709,12 +718,52 @@ class Investigator:
                     "target_findings": max_candidates,
                     "candidates": len(candidates_to_check),
                     "concurrency": concurrency,
+                    "already_saved": findings_count,
                 },
             )
             semaphore = asyncio.Semaphore(concurrency)
-            tasks = [
-                asyncio.create_task(
-                    self._inspect_candidate(
+
+            def handle_inspection_result(finding: dict[str, Any]) -> None:
+                nonlocal findings_count
+                if finding.get("_skip"):
+                    self.db.add_log(
+                        run_id,
+                        "warning",
+                        "Сайт пропущен и не показан пользователю",
+                        {
+                            "index": finding.get("_candidate_index"),
+                            "total": finding.get("_candidate_total"),
+                            "domain": finding.get("domain"),
+                            "reason": finding.get("_skip_reason", "не удалось открыть"),
+                            "status_code": finding.get("status_code"),
+                        },
+                    )
+                    return
+
+                self.db.insert_finding(run_id, finding)
+                findings_count += 1
+                self.db.update_run(run_id, finding_count=findings_count)
+                self.db.add_log(
+                    run_id,
+                    "info",
+                    "Сайт добавлен в отчет",
+                    {
+                        "domain": finding.get("domain"),
+                        "risk_score": finding.get("risk_score"),
+                        "findings": findings_count,
+                        "target": max_candidates,
+                    },
+                )
+
+            if concurrency <= 1:
+                for index, candidate in enumerate(candidates_to_check, start=1):
+                    if cancel_event and cancel_event.is_set():
+                        self.db.update_run(run_id, status="canceled", finished_at=utc_now(), finding_count=findings_count)
+                        self.db.add_log(run_id, "warning", "Проверка остановлена пользователем", {"findings": findings_count})
+                        return
+                    if findings_count >= max_candidates:
+                        break
+                    finding = await self._inspect_candidate(
                         run_id,
                         index,
                         len(candidates_to_check),
@@ -726,55 +775,43 @@ class Investigator:
                         cancel_event,
                         search_mode,
                     )
-                )
-                for index, candidate in enumerate(candidates_to_check, start=1)
-            ]
-
-            try:
-                for task in asyncio.as_completed(tasks):
-                    if cancel_event and cancel_event.is_set():
-                        self.db.update_run(run_id, status="canceled", finished_at=utc_now(), finding_count=findings_count)
-                        self.db.add_log(run_id, "warning", "Проверка остановлена пользователем", {"findings": findings_count})
-                        return
-                    if findings_count >= max_candidates:
-                        break
-
-                    finding = await task
-                    if finding.get("_skip"):
-                        self.db.add_log(
+                    handle_inspection_result(finding)
+            else:
+                tasks = [
+                    asyncio.create_task(
+                        self._inspect_candidate(
                             run_id,
-                            "warning",
-                            "Сайт пропущен и не показан пользователю",
-                            {
-                                "index": finding.get("_candidate_index"),
-                                "total": finding.get("_candidate_total"),
-                                "domain": finding.get("domain"),
-                                "reason": finding.get("_skip_reason", "не удалось открыть"),
-                                "status_code": finding.get("status_code"),
-                            },
+                            index,
+                            len(candidates_to_check),
+                            candidate,
+                            candidates_to_check,
+                            mirror_groups,
+                            take_screenshots,
+                            semaphore,
+                            cancel_event,
+                            search_mode,
                         )
-                        continue
-
-                    self.db.insert_finding(run_id, finding)
-                    findings_count += 1
-                    self.db.update_run(run_id, finding_count=findings_count)
-                    self.db.add_log(
-                        run_id,
-                        "info",
-                        "Сайт добавлен в отчет",
-                        {
-                            "domain": finding.get("domain"),
-                            "risk_score": finding.get("risk_score"),
-                            "findings": findings_count,
-                            "target": max_candidates,
-                        },
                     )
-            finally:
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-                if tasks:
-                    await asyncio.gather(*tasks, return_exceptions=True)
+                    for index, candidate in enumerate(candidates_to_check, start=1)
+                ]
+
+                try:
+                    for task in asyncio.as_completed(tasks):
+                        if cancel_event and cancel_event.is_set():
+                            self.db.update_run(run_id, status="canceled", finished_at=utc_now(), finding_count=findings_count)
+                            self.db.add_log(run_id, "warning", "Проверка остановлена пользователем", {"findings": findings_count})
+                            return
+                        if findings_count >= max_candidates:
+                            break
+
+                        finding = await task
+                        handle_inspection_result(finding)
+                finally:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    if tasks:
+                        await asyncio.gather(*tasks, return_exceptions=True)
 
             self.db.update_run(run_id, status="completed", finished_at=utc_now(), finding_count=findings_count)
             self.db.add_log(run_id, "info", "Поиск завершен", {"findings": findings_count})
@@ -786,7 +823,7 @@ class Investigator:
         if available_candidates <= 0:
             return 0
         target_findings = max(1, int(target_findings))
-        multiplier = 5 if self.normalize_search_mode(search_mode) == "casino" else 2
+        multiplier = 10 if self.normalize_search_mode(search_mode) == "casino" else 2
         desired = max(target_findings, target_findings * multiplier)
         return min(available_candidates, self.settings.max_candidates_per_run, desired)
 
@@ -862,7 +899,7 @@ class Investigator:
     ) -> list[Candidate]:
         search_mode = self._effective_search_mode(seed_query, search_mode)
         discovery_limit = min(
-            max(max_candidates * 7, 150),
+            max(max_candidates * 12, 150),
             max(max_candidates, self.settings.osint_candidate_pool_size),
         )
         candidate_target = max_candidates
@@ -870,7 +907,7 @@ class Investigator:
             candidate_target = min(
                 discovery_limit,
                 self.settings.max_candidates_per_run,
-                max_candidates * 5,
+                max_candidates * 10,
             )
         discovered: list[Candidate] = []
         user_search_mode = self._user_search_mode(seed_query, search_mode)

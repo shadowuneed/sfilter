@@ -175,6 +175,32 @@ class DatabaseBackendTests(unittest.TestCase):
             self.assertEqual(run["status"], "interrupted")
             self.assertIn("прерван", run["error"])
 
+    def test_active_runs_and_existing_findings_can_be_counted_for_resume(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "argus.db")
+            db.init()
+            run_id = db.create_run(seed_query="casino", max_candidates=150, take_screenshots=True)
+            db.update_run(run_id, status="running")
+            db.insert_finding(
+                run_id,
+                {
+                    "url": "https://casino-resume.example",
+                    "final_url": "https://casino-resume.example",
+                    "domain": "casino-resume.example",
+                    "normalized_domain": "casino-resume.example",
+                    "category": "casino",
+                    "verdict": "suspicious",
+                    "risk_score": 95,
+                    "active": True,
+                    "status_code": 200,
+                },
+            )
+
+            active_runs = db.list_active_runs()
+
+            self.assertEqual([run["id"] for run in active_runs], [run_id])
+            self.assertEqual(db.count_findings(run_id), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

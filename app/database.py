@@ -414,6 +414,24 @@ class Database:
             )
             return int(cursor.rowcount or 0)
 
+    def list_active_runs(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM runs
+                WHERE status IN ('queued', 'running', 'canceling')
+                ORDER BY id ASC
+                """
+            ).fetchall()
+            return [self._run_to_dict(row) for row in rows]
+
+    def count_findings(self, run_id: int) -> int:
+        with self.connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS count FROM findings WHERE run_id=?", (run_id,)).fetchone()
+            if not row:
+                return 0
+            return int(row["count"] or 0)
+
     def add_log(self, run_id: int, level: str, message: str, meta: Any | None = None) -> None:
         timestamp = utc_now()
         message = redact_string(message)

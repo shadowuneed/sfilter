@@ -75,6 +75,7 @@ class ConfigTests(unittest.TestCase):
                 "SCREENSHOT_CONCURRENCY": "2",
                 "BROWSER_SCREENSHOTS_ENABLED": "false",
                 "SCREENSHOT_FALLBACK_ENABLED": "true",
+                "RESUME_ACTIVE_RUNS": "true",
             },
             clear=False,
         ):
@@ -87,6 +88,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.screenshot_concurrency, 2)
         self.assertFalse(settings.browser_screenshots_enabled)
         self.assertTrue(settings.screenshot_fallback_enabled)
+        self.assertTrue(settings.resume_active_runs)
 
     @patch("app.config._load_dotenv", lambda: None)
     def test_user_search_defaults_avoid_gemini_fallback(self) -> None:

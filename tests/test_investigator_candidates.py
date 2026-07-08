@@ -452,14 +452,14 @@ class InvestigatorCandidateTests(unittest.TestCase):
         candidates = asyncio.run(self.investigator._discover_candidates(1, "онлайн казино", 100, "casino"))
 
         self.assertEqual(len(candidates), 10)
-        self.assertEqual(captured_bootstrap_limits, [490])
+        self.assertEqual(captured_bootstrap_limits, [690])
 
     def test_casino_check_limit_overscans_candidates(self) -> None:
         self.investigator.settings = Settings(max_candidates_per_run=2000)
 
         limit = self.investigator._candidate_check_limit(100, 700, "casino")
 
-        self.assertEqual(limit, 500)
+        self.assertEqual(limit, 700)
 
     def test_user_search_filter_rejects_unrelated_suspicious_domain(self) -> None:
         candidate = Candidate(

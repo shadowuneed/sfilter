@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
-from app.database import Database
+from app.database import Database, utc_now
 from app.services.exporter import Exporter
 from app.services.gemini import GeminiClient
 from app.services.investigator import Investigator
@@ -21,7 +21,6 @@ from app.services.kz_access import check_kz_proxy
 settings = get_settings()
 db = Database(settings.database_url or settings.database_path)
 db.init()
-db.mark_stale_runs_interrupted()
 gemini = GeminiClient(settings, db)
 investigator = Investigator(settings, db, gemini)
 exporter = Exporter(settings, db)
@@ -83,6 +82,43 @@ def _start_run_thread(run_id: int, name: str, target: Any, *args: Any) -> None:
         name=name,
     )
     thread.start()
+
+
+@app.on_event("startup")
+def resume_active_runs_after_restart() -> None:
+    if not settings.resume_active_runs:
+        db.mark_stale_runs_interrupted()
+        return
+    for run in db.list_active_runs():
+        run_id = int(run["id"])
+        if run_id in cancel_events:
+            continue
+        if run.get("status") == "canceling":
+            db.update_run(run_id, status="canceled", finished_at=utc_now(), error=None)
+            db.add_log(run_id, "warning", "Проверка остановлена пользователем до перезапуска сервера")
+            continue
+
+        max_candidates = min(int(run.get("max_candidates") or 150), settings.max_candidates_per_run)
+        cancel_event = threading.Event()
+        cancel_events[run_id] = cancel_event
+        db.update_run(run_id, status="queued", finished_at=None, error=None)
+        db.add_log(
+            run_id,
+            "warning",
+            "Сервер перезапустился: продолжаю проверку до выбранной цели",
+            {"target_findings": max_candidates, "already_saved": db.count_findings(run_id)},
+        )
+        _start_run_thread(
+            run_id,
+            f"dofilter-resume-{run_id}",
+            investigator.run,
+            run_id,
+            run.get("seed_query"),
+            max_candidates,
+            bool(run.get("take_screenshots")),
+            cancel_event,
+            "casino",
+        )
 
 
 @app.middleware("http")
@@ -178,6 +214,7 @@ def health() -> dict[str, Any]:
         "osint_candidate_pool_size": settings.osint_candidate_pool_size,
         "search_pages_enabled": settings.search_pages_enabled,
         "search_page_delay_seconds": settings.search_page_delay_seconds,
+        "resume_active_runs": settings.resume_active_runs,
         "gemini_user_search_fallback": settings.gemini_user_search_fallback,
         "candidate_timeout_seconds": settings.candidate_timeout_seconds,
         "screenshot_timeout_seconds": settings.screenshot_timeout_seconds,

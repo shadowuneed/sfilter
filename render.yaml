@@ -25,6 +25,8 @@ services:
         sync: false
       - key: REQUIRE_POSTGRES
         value: "true"
+      - key: RESUME_ACTIVE_RUNS
+        value: "true"
       - key: DATABASE_PATH
         value: /var/data/data/argus.db
       - key: EVIDENCE_DIR
@@ -32,13 +34,15 @@ services:
       - key: EXPORT_DIR
         value: /var/data/exports
       - key: MAX_CANDIDATES_PER_RUN
-        value: "2000"
+        value: "5000"
       - key: MAX_MIRROR_CHECKS_PER_RUN
         value: "6"
       - key: SCAN_CONCURRENCY
         value: "1"
+      - key: REQUEST_TIMEOUT_SECONDS
+        value: "12"
       - key: CANDIDATE_TIMEOUT_SECONDS
-        value: "35"
+        value: "32"
       - key: SCREENSHOTS_ENABLED
         value: "true"
       - key: BROWSER_SCREENSHOTS_ENABLED
@@ -48,7 +52,7 @@ services:
       - key: SCREENSHOT_CONCURRENCY
         value: "1"
       - key: SCREENSHOT_TIMEOUT_SECONDS
-        value: "12"
+        value: "8"
       - key: PLAYWRIGHT_BROWSERS_PATH
         value: /ms-playwright
       - key: OSINT_FEEDS_ENABLED
@@ -56,7 +60,7 @@ services:
       - key: OSINT_CANDIDATE_POOL_SIZE
         value: "5000"
       - key: SEARCH_PAGE_DELAY_SECONDS
-        value: "1.5"
+        value: "2.5"
       - key: ML_ENABLED
         value: "true"
       - key: ML_MODEL_PATH
