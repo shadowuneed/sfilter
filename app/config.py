@@ -136,6 +136,9 @@ DEFAULT_USER_AGENT = (
     "contact=security@example.local)"
 )
 
+MIN_TECHNICAL_CANDIDATE_LIMIT = 15000
+MAX_TECHNICAL_CANDIDATE_LIMIT = 20000
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -229,7 +232,10 @@ def get_settings() -> Settings:
         require_postgres=_bool_env("REQUIRE_POSTGRES", False),
         evidence_dir=Path(os.getenv("EVIDENCE_DIR", "evidence")),
         export_dir=Path(os.getenv("EXPORT_DIR", "exports")),
-        max_candidates_per_run=max(1, min(_int_env("MAX_CANDIDATES_PER_RUN", 15000), 20000)),
+        max_candidates_per_run=max(
+            MIN_TECHNICAL_CANDIDATE_LIMIT,
+            min(_int_env("MAX_CANDIDATES_PER_RUN", MIN_TECHNICAL_CANDIDATE_LIMIT), MAX_TECHNICAL_CANDIDATE_LIMIT),
+        ),
         max_mirror_checks_per_run=_int_env("MAX_MIRROR_CHECKS_PER_RUN", 6),
         request_timeout_seconds=_int_env("REQUEST_TIMEOUT_SECONDS", 18),
         scan_concurrency=max(1, min(_int_env("SCAN_CONCURRENCY", 3), 8)),

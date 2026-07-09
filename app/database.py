@@ -187,7 +187,8 @@ class Database:
     def init(self) -> None:
         with self.connect() as conn:
             conn.executescript(self._schema_sql())
-            self._backfill_cases(conn)
+            if self.backend == "sqlite":
+                self._backfill_cases(conn)
 
     def _schema_sql(self) -> str:
         if self.backend == "postgres":

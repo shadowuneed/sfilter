@@ -109,6 +109,13 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(settings.search_page_delay_seconds, 1.5)
 
+    @patch("app.config._load_dotenv", lambda: None)
+    def test_candidate_limit_has_production_floor(self) -> None:
+        with patch.dict(os.environ, {"MAX_CANDIDATES_PER_RUN": "15"}, clear=True):
+            settings = get_settings()
+
+        self.assertEqual(settings.max_candidates_per_run, 15000)
+
 
 if __name__ == "__main__":
     unittest.main()
