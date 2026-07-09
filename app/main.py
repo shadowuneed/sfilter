@@ -30,6 +30,8 @@ app = FastAPI(title="DOFilter", version="1.0.0")
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
+RUN_TARGET_MIN = 100
+RUN_TARGET_MAX = 500
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/evidence", StaticFiles(directory=settings.evidence_dir), name="evidence")
@@ -84,6 +86,11 @@ def _start_run_thread(run_id: int, name: str, target: Any, *args: Any) -> None:
     thread.start()
 
 
+def _normalize_run_target(max_candidates: int) -> int:
+    requested = max(RUN_TARGET_MIN, min(int(max_candidates), RUN_TARGET_MAX))
+    return min(requested, settings.max_candidates_per_run)
+
+
 @app.on_event("startup")
 def resume_active_runs_after_restart() -> None:
     if not settings.resume_active_runs:
@@ -98,10 +105,10 @@ def resume_active_runs_after_restart() -> None:
             db.add_log(run_id, "warning", "Проверка остановлена пользователем до перезапуска сервера")
             continue
 
-        max_candidates = min(int(run.get("max_candidates") or 100), settings.max_candidates_per_run)
+        max_candidates = _normalize_run_target(int(run.get("max_candidates") or RUN_TARGET_MIN))
         cancel_event = threading.Event()
         cancel_events[run_id] = cancel_event
-        db.update_run(run_id, status="queued", finished_at=None, error=None)
+        db.update_run(run_id, max_candidates=max_candidates, status="queued", finished_at=None, error=None)
         db.add_log(
             run_id,
             "warning",
@@ -211,6 +218,8 @@ def health() -> dict[str, Any]:
         "screenshots_enabled": settings.screenshots_enabled,
         "scan_concurrency": settings.scan_concurrency,
         "max_candidates_per_run": settings.max_candidates_per_run,
+        "run_target_min": RUN_TARGET_MIN,
+        "run_target_max": RUN_TARGET_MAX,
         "osint_candidate_pool_size": settings.osint_candidate_pool_size,
         "search_pages_enabled": settings.search_pages_enabled,
         "search_page_delay_seconds": settings.search_page_delay_seconds,
@@ -247,7 +256,7 @@ def health() -> dict[str, Any]:
 @app.post("/api/runs")
 def create_run(request: RunRequest) -> dict[str, Any]:
     _ensure_kz_proxy_ready()
-    max_candidates = min(request.max_candidates, settings.max_candidates_per_run)
+    max_candidates = _normalize_run_target(request.max_candidates)
     search_mode = investigator.normalize_search_mode(request.search_mode)
     run_id = db.create_run(
         seed_query=request.seed_query,
