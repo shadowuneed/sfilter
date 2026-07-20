@@ -59,25 +59,32 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   display: inline-flex;
   align-items: center;
   gap: 12px;
-  min-width: 210px;
+  min-width: 240px;
 }
 
-.brand-mark {
-  width: 42px;
-  height: 42px;
-  border-radius: 8px;
-  display: grid;
-  place-items: center;
-  background: var(--blue);
-  color: #fff;
-  font-weight: 900;
-  font-size: 22px;
+.brand-logos {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
 }
 
-.brand strong,
-.brand small { display: block; }
-.brand strong { font-size: 18px; line-height: 1.2; }
-.brand small { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.brand-logo {
+  width: 46px;
+  height: 46px;
+  display: block;
+  object-fit: contain;
+}
+
+.brand-logo-afm {
+  border-radius: 50%;
+}
+
+.brand strong {
+  display: block;
+  font-size: 20px;
+  line-height: 1.2;
+}
 
 .topnav {
   display: flex;
@@ -1574,6 +1581,8 @@ a.evidence-link:hover,
   body { font-size: 14px; }
   .workspace { padding: 14px; gap: 14px; }
   .topbar { padding: 12px 14px; gap: 12px; }
+  .brand { min-width: 0; }
+  .brand-logo { width: 40px; height: 40px; }
   .scan-band,
   .trend-band,
   .domain-band,
