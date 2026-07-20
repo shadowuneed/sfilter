@@ -29,6 +29,8 @@ const POLL_INTERVAL_MS = 3000;
 const els = {
   scanForm: document.getElementById("scanForm"),
   healthLine: document.getElementById("healthLine"),
+  healthToggle: document.getElementById("healthToggle"),
+  healthDetails: document.getElementById("healthDetails"),
   geminiPill: document.getElementById("geminiPill"),
   kzAccessPill: document.getElementById("kzAccessPill"),
   runBtn: document.getElementById("runBtn"),
@@ -440,6 +442,12 @@ function runStatusLabel(run) {
 function renderPill(el, text, cls) {
   el.textContent = text;
   el.className = `health-pill ${cls}`;
+}
+
+function setHealthDetailsOpen(open) {
+  if (!els.healthToggle || !els.healthDetails) return;
+  els.healthToggle.setAttribute("aria-expanded", String(open));
+  els.healthDetails.hidden = !open;
 }
 
 async function loadHealth() {
@@ -1529,6 +1537,13 @@ async function pollSelectedRun() {
 }
 
 els.scanForm.addEventListener("submit", startRun);
+els.healthToggle?.addEventListener("click", () => {
+  const open = els.healthToggle.getAttribute("aria-expanded") !== "true";
+  setHealthDetailsOpen(open);
+});
+document.addEventListener("click", (event) => {
+  if (!event.target.closest(".health")) setHealthDetailsOpen(false);
+});
 els.manualBtn?.addEventListener("click", startManualCheck);
 els.manualTarget?.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
@@ -1552,7 +1567,10 @@ els.drawerOverlay.addEventListener("click", (event) => {
   if (event.target === els.drawerOverlay) closeDrawer();
 });
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") closeDrawer();
+  if (event.key === "Escape") {
+    closeDrawer();
+    setHealthDetailsOpen(false);
+  }
 });
 window.addEventListener("resize", () => drawTrend(state.cases));
 els.trendChart?.addEventListener("mousemove", handleChartMove);

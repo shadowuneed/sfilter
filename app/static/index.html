@@ -5,16 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Qalqan</title>
   <link rel="icon" type="image/png" href="/static/afmlogo.png?v=20260720-qalqan">
-  <link rel="stylesheet" href="/static/styles.css?v=20260720-qalqan">
+  <link rel="stylesheet" href="/static/styles.css?v=20260720-status-menu">
 </head>
 <body>
   <div class="app-shell">
     <header class="topbar">
       <a class="brand" href="/monitor" aria-label="Qalqan">
-        <span class="brand-logos" aria-hidden="true">
-          <img class="brand-logo brand-logo-university" src="/static/Emblem_mktu.png?v=20260720-qalqan" alt="">
-          <img class="brand-logo brand-logo-afm" src="/static/afmlogo.png?v=20260720-qalqan" alt="">
-        </span>
         <strong>Qalqan</strong>
       </a>
 
@@ -26,8 +22,17 @@
       </nav>
 
       <div class="health">
-        <span id="kzAccessPill" class="health-pill">KZ: проверка</span>
-        <span id="geminiPill" class="health-pill">AI: проверка</span>
+        <button id="healthToggle" class="health-toggle" type="button" aria-expanded="false" aria-controls="healthDetails">
+          <span>Состояние</span>
+          <i aria-hidden="true"></i>
+        </button>
+        <div id="healthDetails" class="health-details" hidden>
+          <div class="health-pills">
+            <span id="kzAccessPill" class="health-pill">KZ: проверка</span>
+            <span id="geminiPill" class="health-pill">AI: проверка</span>
+          </div>
+          <p id="healthLine" class="health-summary">Проверяю готовность платформы...</p>
+        </div>
       </div>
     </header>
 
@@ -36,7 +41,10 @@
         <div class="scan-copy">
           <span class="eyebrow">Автоматический мониторинг</span>
           <h1>Поиск подозрительных доменов и рабочих зеркал</h1>
-          <p id="healthLine">Проверяю готовность платформы...</p>
+          <div class="partner-logos" aria-label="Партнеры Qalqan">
+            <img class="partner-logo" src="/static/Emblem_mktu.png?v=20260720-qalqan" alt="Ахмет Ясауи университеті">
+            <img class="partner-logo partner-logo-afm" src="/static/afmlogo.png?v=20260720-qalqan" alt="Агентство Республики Казахстан по финансовому мониторингу">
+          </div>
           <div class="source-strip" aria-label="Этапы анализа">
             <div>
               <strong>Web Search</strong>
@@ -260,6 +268,6 @@
     </form>
   </div>
 
-  <script src="/static/app.js?v=20260709-run-target"></script>
+  <script src="/static/app.js?v=20260720-status-menu"></script>
 </body>
 </html>

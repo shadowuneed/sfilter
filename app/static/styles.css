@@ -58,26 +58,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: 12px;
-  min-width: 240px;
-}
-
-.brand-logos {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  flex: 0 0 auto;
-}
-
-.brand-logo {
-  width: 46px;
-  height: 46px;
-  display: block;
-  object-fit: contain;
-}
-
-.brand-logo-afm {
-  border-radius: 50%;
+  min-width: 150px;
 }
 
 .brand strong {
@@ -110,10 +91,73 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 
 .health {
+  position: relative;
   display: flex;
   justify-content: flex-end;
+}
+
+.health-toggle {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--panel);
+  font-weight: 800;
+}
+
+.health-toggle:hover,
+.health-toggle[aria-expanded="true"] {
+  border-color: var(--blue);
+  background: var(--panel-soft);
+}
+
+.health-toggle i {
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform 160ms ease;
+}
+
+.health-toggle[aria-expanded="true"] i {
+  transform: rotate(225deg) translate(-1px, -1px);
+}
+
+.health-details {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 30;
+  width: min(560px, calc(100vw - 28px));
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.health-details[hidden] {
+  display: none;
+}
+
+.health-pills {
+  display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.health-summary {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .health-pill {
@@ -195,6 +239,24 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   color: var(--muted);
   line-height: 1.55;
   margin: 0;
+}
+
+.partner-logos {
+  min-height: 94px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.partner-logo {
+  width: 94px;
+  height: 94px;
+  display: block;
+  object-fit: contain;
+}
+
+.partner-logo-afm {
+  border-radius: 50%;
 }
 
 .source-strip {
@@ -1556,6 +1618,7 @@ a.evidence-link:hover,
   .topbar { grid-template-columns: 1fr; }
   .topnav { justify-content: flex-start; overflow-x: auto; }
   .health { justify-content: flex-start; }
+  .health-details { right: auto; left: 0; }
   .activity-panel {
     grid-template-columns: 1fr;
   }
@@ -1582,7 +1645,8 @@ a.evidence-link:hover,
   .workspace { padding: 14px; gap: 14px; }
   .topbar { padding: 12px 14px; gap: 12px; }
   .brand { min-width: 0; }
-  .brand-logo { width: 40px; height: 40px; }
+  .partner-logos { min-height: 78px; }
+  .partner-logo { width: 78px; height: 78px; }
   .scan-band,
   .trend-band,
   .domain-band,
