@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Qalqan</title>
   <link rel="icon" type="image/png" href="/static/afmlogo.png?v=20260720-qalqan">
-  <link rel="stylesheet" href="/static/styles.css?v=20260720-status-menu">
+  <link rel="stylesheet" href="/static/styles.css?v=20260724-run-folders">
 </head>
 <body>
   <div class="app-shell">
@@ -160,11 +160,18 @@
       </section>
 
       <section id="domainsPanel" class="domain-band">
-        <div class="section-head table-tools">
+        <div class="section-head registry-head">
           <div>
             <span class="eyebrow">Реестр</span>
             <h2>Рабочие подозрительные домены</h2>
           </div>
+          <div class="registry-actions">
+            <span id="registrySummary" class="summary-pill">0 доменов</span>
+            <button id="toggleRegistryBtn" class="secondary-btn" type="button" aria-expanded="false" aria-controls="registryDetails">Открыть реестр</button>
+          </div>
+        </div>
+
+        <div id="registryDetails" class="registry-details" hidden>
           <div class="filters">
             <input id="caseSearch" type="search" placeholder="Домен или заголовок">
             <select id="categoryFilter" aria-label="Категория">
@@ -180,19 +187,19 @@
             <button id="exportCasesCsvBtn" class="ghost-btn" type="button">CSV</button>
             <button id="exportCasesXlsxBtn" class="ghost-btn" type="button">Excel</button>
           </div>
-        </div>
 
-        <div class="domain-table" role="table" aria-label="Список доменов">
-          <div class="domain-head" role="row">
-            <span role="columnheader">Домен</span>
-            <span role="columnheader">Категория</span>
-            <span role="columnheader">Уровень риска</span>
-            <span role="columnheader">Обнаружен</span>
-            <span role="columnheader">Последняя проверка</span>
-            <span role="columnheader">Действия</span>
-          </div>
-          <div id="casesList" class="domain-body">
-            <div class="empty-state">Загрузка реестра...</div>
+          <div class="domain-table" role="table" aria-label="Список доменов">
+            <div class="domain-head" role="row">
+              <span role="columnheader">Домен</span>
+              <span role="columnheader">Категория</span>
+              <span role="columnheader">Уровень риска</span>
+              <span role="columnheader">Обнаружен</span>
+              <span role="columnheader">Последняя проверка</span>
+              <span role="columnheader">Действия</span>
+            </div>
+            <div id="casesList" class="domain-body">
+              <div class="empty-state">Загрузка реестра...</div>
+            </div>
           </div>
         </div>
       </section>
@@ -200,18 +207,13 @@
       <section id="runFindingsPanel" class="run-findings-band">
         <div class="section-head">
           <div>
-            <span class="eyebrow">Результаты запуска</span>
-            <h2>Домены выбранной проверки</h2>
+            <span class="eyebrow">Архив запусков</span>
+            <h2>Домены по запускам</h2>
           </div>
-          <div class="section-actions">
-            <span id="runFindingsCount" class="summary-pill">0 находок</span>
-            <button id="toggleRunFindingsBtn" class="ghost-btn" type="button">Показать список</button>
-            <button id="exportRunCsvBtn" class="ghost-btn" type="button">CSV запуска</button>
-            <button id="exportRunXlsxBtn" class="ghost-btn" type="button">Excel запуска</button>
-          </div>
+          <span id="runFoldersCount" class="summary-pill">0 запусков</span>
         </div>
-        <div id="runFindingsList" class="run-findings-list">
-          <div class="empty-state">Выберите запуск в истории, чтобы увидеть найденные в нем домены.</div>
+        <div id="runFoldersList" class="run-folders-list">
+          <div class="empty-state">Загрузка запусков...</div>
         </div>
       </section>
 
@@ -268,6 +270,6 @@
     </form>
   </div>
 
-  <script src="/static/app.js?v=20260720-status-menu"></script>
+  <script src="/static/app.js?v=20260724-run-folders"></script>
 </body>
 </html>

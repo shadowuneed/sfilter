@@ -13,17 +13,17 @@ const state = {
   caseDetails: new Map(),
   runDetails: new Map(),
   runStatuses: new Map(),
-  runFindingsExpanded: false,
+  registryExpanded: false,
+  expandedRunFolderId: null,
+  runFolderLoadingId: null,
+  runFolderErrors: new Map(),
   lastLiveFindingCount: 0,
-  visibleCasesLimit: 8,
   chartPoints: [],
   chartHoverIndex: null,
 };
 
 const DEFAULT_RUN_CANDIDATES = 100;
 const MAX_RUN_CANDIDATES = 500;
-const CASES_INITIAL_LIMIT = 8;
-const CASES_PAGE_SIZE = 20;
 const POLL_INTERVAL_MS = 3000;
 
 const els = {
@@ -58,12 +58,12 @@ const els = {
   caseFilterBtn: document.getElementById("caseFilterBtn"),
   exportCasesCsvBtn: document.getElementById("exportCasesCsvBtn"),
   exportCasesXlsxBtn: document.getElementById("exportCasesXlsxBtn"),
-  exportRunCsvBtn: document.getElementById("exportRunCsvBtn"),
-  exportRunXlsxBtn: document.getElementById("exportRunXlsxBtn"),
-  toggleRunFindingsBtn: document.getElementById("toggleRunFindingsBtn"),
+  registrySummary: document.getElementById("registrySummary"),
+  toggleRegistryBtn: document.getElementById("toggleRegistryBtn"),
+  registryDetails: document.getElementById("registryDetails"),
   casesList: document.getElementById("casesList"),
-  runFindingsList: document.getElementById("runFindingsList"),
-  runFindingsCount: document.getElementById("runFindingsCount"),
+  runFoldersList: document.getElementById("runFoldersList"),
+  runFoldersCount: document.getElementById("runFoldersCount"),
   runsList: document.getElementById("runsList"),
   methodologyList: document.getElementById("methodologyList"),
   logsList: document.getElementById("logsList"),
@@ -535,7 +535,6 @@ async function startRun(event) {
     };
     const result = await api("/api/runs", { method: "POST", body: JSON.stringify(payload) });
     state.selectedRunId = result.run_id;
-    state.runFindingsExpanded = false;
     state.lastLiveFindingCount = 0;
     state.runDetails.delete(result.run_id);
     primeActivity(result.run_id, "auto");
@@ -570,7 +569,6 @@ async function startManualCheck() {
     };
     const result = await api("/api/manual-check", { method: "POST", body: JSON.stringify(payload) });
     state.selectedRunId = result.run_id;
-    state.runFindingsExpanded = false;
     state.lastLiveFindingCount = 0;
     state.runDetails.delete(result.run_id);
     primeActivity(result.run_id, "manual");
@@ -592,6 +590,7 @@ async function stopRun(runId = state.selectedRunId) {
   if (runIndex >= 0) {
     state.runs[runIndex] = { ...state.runs[runIndex], status: "canceling" };
     renderRuns();
+    renderRunFolders();
   }
   await api(`/api/runs/${runId}/cancel`, { method: "POST" });
   state.runDetails.delete(runId);
@@ -600,22 +599,26 @@ async function stopRun(runId = state.selectedRunId) {
 }
 
 async function loadRuns() {
-  const data = await api("/api/runs?limit=40");
+  const data = await api("/api/runs?limit=100");
   state.runs = data.runs || [];
   const runIds = new Set(state.runs.map((run) => run.id));
+  if (state.expandedRunFolderId && !runIds.has(state.expandedRunFolderId)) {
+    state.expandedRunFolderId = null;
+  }
   Array.from(state.runStatuses.keys()).forEach((runId) => {
     if (!runIds.has(runId) && runId !== state.selectedRunId) state.runStatuses.delete(runId);
   });
   state.runs.forEach((run) => state.runStatuses.set(run.id, run.status));
   if (!state.selectedRunId && state.runs.length) state.selectedRunId = state.runs[0].id;
   renderRuns();
+  renderRunFolders();
 }
 
 async function loadRun(runId, options = {}) {
   if (!runId) return;
   const cached = state.runDetails.get(runId);
   const canUseCache = cached && !options.force && !runningStatus(cached.run?.status);
-  const includeFindings = Boolean(options.includeFindings || state.runFindingsExpanded);
+  const includeFindings = Boolean(options.includeFindings);
   const suffix = includeFindings ? "?include_findings=true" : "";
   const data = canUseCache && (!includeFindings || cached.findings)
     ? cached
@@ -641,8 +644,8 @@ async function loadRun(runId, options = {}) {
   showActivity(run, data.logs || []);
   renderMethodology(run.methodology || []);
   renderLogs(data.logs || []);
-  renderRunFindings(data.findings || [], run, state.runFindingsExpanded);
   renderRuns();
+  renderRunFolders();
 
   if (runningStatus(run.status) && liveFindingCount !== state.lastLiveFindingCount) {
     state.lastLiveFindingCount = liveFindingCount;
@@ -694,13 +697,11 @@ function renderRuns() {
   }).join("");
   document.querySelectorAll("[data-run-id]").forEach((button) => {
     button.addEventListener("click", () => {
-      state.runFindingsExpanded = false;
       loadRun(Number(button.dataset.runId), { force: true }).catch(console.error);
     });
     button.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
-      state.runFindingsExpanded = false;
       loadRun(Number(button.dataset.runId), { force: true }).catch(console.error);
     });
   });
@@ -710,6 +711,132 @@ function renderRuns() {
       stopRun(Number(button.dataset.stopRunId)).catch((error) => alert(`Не удалось остановить запуск: ${error.message}`));
     });
   });
+}
+
+function runFolderBody(run) {
+  const runId = Number(run.id);
+  if (state.runFolderLoadingId === runId) {
+    return '<div class="run-folder-message">Загружаю домены запуска...</div>';
+  }
+  const error = state.runFolderErrors.get(runId);
+  if (error) {
+    return `
+      <div class="run-folder-message error">
+        <span>${escapeHtml(error)}</span>
+        <button class="secondary-btn" data-run-folder-retry="${runId}" type="button">Повторить</button>
+      </div>`;
+  }
+  const details = state.runDetails.get(runId);
+  const findings = Array.isArray(details?.findings) ? details.findings : [];
+  if (!findings.length) {
+    return `<div class="run-folder-message">В запуске #${runId} пока нет доменов.</div>`;
+  }
+  return `
+    <div class="run-folder-toolbar">
+      <span>${findings.length} доменов</span>
+      <div>
+        <button class="ghost-btn" data-run-folder-export="${runId}" data-run-folder-format="csv" type="button">CSV</button>
+        <button class="ghost-btn" data-run-folder-export="${runId}" data-run-folder-format="xlsx" type="button">Excel</button>
+      </div>
+    </div>
+    <div class="run-folder-findings">
+      ${findings.map(runFindingRow).join("")}
+    </div>`;
+}
+
+function renderRunFolders() {
+  if (!els.runFoldersList) return;
+  if (els.runFoldersCount) {
+    els.runFoldersCount.textContent = `${state.runs.length} запусков`;
+  }
+  if (!state.runs.length) {
+    els.runFoldersList.innerHTML = '<div class="empty-state">Запусков пока нет.</div>';
+    return;
+  }
+  els.runFoldersList.innerHTML = state.runs.map((run) => {
+    const runId = Number(run.id);
+    const expanded = state.expandedRunFolderId === runId;
+    const running = runningStatus(run.status);
+    const signal = running ? "live" : run.status === "failed" ? "bad" : run.status === "interrupted" ? "warn" : "done";
+    const count = Number(run.finding_count || 0);
+    return `
+      <article class="run-folder ${expanded ? "expanded" : ""} ${running ? "running" : ""}">
+        <button class="run-folder-toggle" data-run-folder-id="${runId}" type="button" aria-expanded="${expanded}" aria-controls="run-folder-body-${runId}">
+          <span class="folder-icon ${signal}" aria-hidden="true"><i></i></span>
+          <span class="run-folder-title">
+            <strong>Запуск #${runId}</strong>
+            <small>${escapeHtml(formatDateTime(run.started_at))}</small>
+          </span>
+          <span class="run-folder-stats">
+            <strong>${count} доменов</strong>
+            <small>${escapeHtml(runStatusLabel(run))}</small>
+          </span>
+          <span class="folder-chevron" aria-hidden="true"></span>
+        </button>
+        ${expanded ? `<div id="run-folder-body-${runId}" class="run-folder-body">${runFolderBody(run)}</div>` : ""}
+      </article>`;
+  }).join("");
+
+  els.runFoldersList.querySelectorAll("[data-run-folder-id]").forEach((button) => {
+    button.addEventListener("click", () => toggleRunFolder(Number(button.dataset.runFolderId)).catch(console.error));
+  });
+  els.runFoldersList.querySelectorAll("[data-run-folder-retry]").forEach((button) => {
+    button.addEventListener("click", () => loadRunFolder(Number(button.dataset.runFolderRetry), true).catch(console.error));
+  });
+  els.runFoldersList.querySelectorAll("[data-run-folder-export]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const runId = Number(button.dataset.runFolderExport);
+      const format = button.dataset.runFolderFormat;
+      downloadFile(`/api/runs/${runId}/export.${format}`).catch((error) => {
+        alert(`Не удалось скачать отчет запуска #${runId}: ${error.message}`);
+      });
+    });
+  });
+  els.runFoldersList.querySelectorAll("[data-run-finding-domain]").forEach((button) => {
+    button.addEventListener("click", () => openCaseForFinding(
+      button.dataset.runFindingDomain,
+      Number(button.dataset.runFindingCase || 0),
+    ).catch(console.error));
+  });
+}
+
+async function loadRunFolder(runId, force = false) {
+  const cached = state.runDetails.get(runId);
+  const run = state.runs.find((item) => Number(item.id) === runId);
+  const cachedCount = Array.isArray(cached?.findings) ? cached.findings.length : -1;
+  const expectedCount = Number(run?.finding_count || 0);
+  if (!force && cachedCount >= expectedCount && !runningStatus(run?.status)) {
+    renderRunFolders();
+    return;
+  }
+  state.runFolderLoadingId = runId;
+  state.runFolderErrors.delete(runId);
+  renderRunFolders();
+  try {
+    const data = await api(`/api/runs/${runId}?include_findings=true`);
+    const previous = state.runDetails.get(runId) || {};
+    state.runDetails.set(runId, { ...previous, ...data, findings: data.findings || [] });
+    const runIndex = state.runs.findIndex((item) => Number(item.id) === runId);
+    if (runIndex >= 0 && data.run) {
+      state.runs[runIndex] = { ...state.runs[runIndex], ...data.run };
+    }
+  } catch (error) {
+    state.runFolderErrors.set(runId, error.message || "Не удалось загрузить запуск.");
+  } finally {
+    if (state.runFolderLoadingId === runId) state.runFolderLoadingId = null;
+    renderRunFolders();
+  }
+}
+
+async function toggleRunFolder(runId) {
+  if (state.expandedRunFolderId === runId) {
+    state.expandedRunFolderId = null;
+    renderRunFolders();
+    return;
+  }
+  state.expandedRunFolderId = runId;
+  renderRunFolders();
+  await loadRunFolder(runId);
 }
 
 function renderMethodology(items) {
@@ -800,7 +927,6 @@ async function loadCases(options = {}) {
   if (els.caseSearch.value.trim()) params.set("q", els.caseSearch.value.trim());
   if (els.caseMinRisk.value) params.set("min_risk", els.caseMinRisk.value);
   const data = await api(`/api/cases?${params.toString()}`);
-  if (!options.preserveLimit) state.visibleCasesLimit = CASES_INITIAL_LIMIT;
   state.cases = data.cases || [];
   const category = els.categoryFilter.value;
   state.filteredCases = category
@@ -820,14 +946,6 @@ async function exportCurrentCases(format) {
   await downloadFile(`/api/cases/export.${format}?ids=${encodeURIComponent(ids.join(","))}`);
 }
 
-async function exportSelectedRun(format) {
-  if (!state.selectedRunId) {
-    alert("Выберите запуск в истории для экспорта.");
-    return;
-  }
-  await downloadFile(`/api/runs/${state.selectedRunId}/export.${format}`);
-}
-
 function renderCaseStats(cases) {
   els.activeCaseCount.textContent = cases.length;
   els.highRiskCount.textContent = cases.filter((item) => Number(item.best_risk_score || 0) >= 70).length;
@@ -835,88 +953,29 @@ function renderCaseStats(cases) {
 }
 
 function renderCases(cases) {
+  if (els.registrySummary) {
+    const filtered = cases.length !== state.cases.length;
+    els.registrySummary.textContent = filtered ? `${cases.length} из ${state.cases.length} доменов` : `${cases.length} доменов`;
+  }
+  if (!state.registryExpanded) {
+    els.casesList.innerHTML = "";
+    return;
+  }
   if (!cases.length) {
     els.casesList.innerHTML = '<div class="empty-state">В выбранном фильтре нет рабочих доменов.</div>';
     return;
   }
-  const visibleLimit = Math.max(CASES_INITIAL_LIMIT, state.visibleCasesLimit);
-  const visibleCases = cases.slice(0, visibleLimit);
-  const hiddenCount = Math.max(0, cases.length - visibleCases.length);
-  const controls = hiddenCount || visibleCases.length > CASES_INITIAL_LIMIT
-    ? `
-      <div class="case-list-controls">
-        <span>Показано ${visibleCases.length} из ${cases.length}</span>
-        <div>
-          ${hiddenCount ? `<button class="secondary-btn" data-cases-show-more type="button">Показать ещё ${Math.min(CASES_PAGE_SIZE, hiddenCount)}</button>` : ""}
-          ${visibleCases.length > CASES_INITIAL_LIMIT ? '<button class="ghost-btn" data-cases-collapse type="button">Свернуть</button>' : ""}
-        </div>
-      </div>`
-    : "";
-  els.casesList.innerHTML = visibleCases.map(domainRow).join("") + controls;
+  els.casesList.innerHTML = cases.map(domainRow).join("");
   bindCaseOpenButtons(els.casesList);
-  els.casesList.querySelector("[data-cases-show-more]")?.addEventListener("click", () => {
-    state.visibleCasesLimit += CASES_PAGE_SIZE;
-    renderCases(state.filteredCases);
-  });
-  els.casesList.querySelector("[data-cases-collapse]")?.addEventListener("click", () => {
-    state.visibleCasesLimit = CASES_INITIAL_LIMIT;
-    renderCases(state.filteredCases);
-    document.getElementById("domainsPanel")?.scrollIntoView({ block: "start", behavior: "smooth" });
-  });
 }
 
-function renderRunFindings(findings, run, expanded = false) {
-  if (!els.runFindingsList) return;
-  const count = findings.length || Number(run?.finding_count || 0);
-  if (els.runFindingsCount) {
-    const label = count === 1 ? "1 находка" : `${count} находок`;
-    els.runFindingsCount.textContent = run ? `#${run.id} · ${label}` : label;
-  }
-  if (els.toggleRunFindingsBtn) {
-    els.toggleRunFindingsBtn.textContent = expanded ? "Скрыть список" : "Показать список";
-    els.toggleRunFindingsBtn.disabled = !run;
-  }
-  if (!expanded) {
-    const status = run ? statusLabel(run.status) : "ожидание";
-    const progress = run ? `${run.finding_count || 0}/${run.max_candidates || DEFAULT_RUN_CANDIDATES}` : "0/0";
-    els.runFindingsList.innerHTML = `
-      <div class="collapsed-results">
-        <div>
-          <span>Список результатов скрыт</span>
-          <strong>${escapeHtml(count)} найдено · ${escapeHtml(status)} · ${escapeHtml(progress)}</strong>
-          <p>Полные карточки доменов, SSL/DNS/HTTP и причины риска загружаются только по запросу, чтобы старые запуски открывались быстро.</p>
-        </div>
-        <button class="secondary-btn" data-expand-run-findings type="button">Открыть список</button>
-      </div>`;
-    els.runFindingsList.querySelector("[data-expand-run-findings]")?.addEventListener("click", () => {
-      toggleRunFindings().catch(console.error);
-    });
-    return;
-  }
-  if (!findings.length) {
-    const status = run ? statusLabel(run.status) : "ожидание";
-    els.runFindingsList.innerHTML = `
-      <div class="empty-state">
-        В выбранном запуске пока нет доменов в отчете. Статус: ${escapeHtml(status)}.
-      </div>`;
-    return;
-  }
-  els.runFindingsList.innerHTML = findings.map(runFindingRow).join("");
-  els.runFindingsList.querySelectorAll("[data-run-finding-domain]").forEach((button) => {
-    button.addEventListener("click", () => openCaseForFinding(
-      button.dataset.runFindingDomain,
-      Number(button.dataset.runFindingCase || 0),
-    ).catch(console.error));
-  });
-}
-
-async function toggleRunFindings() {
-  state.runFindingsExpanded = !state.runFindingsExpanded;
-  const cached = state.selectedRunId ? state.runDetails.get(state.selectedRunId) : null;
-  renderRunFindings(cached?.findings || [], cached?.run || null, state.runFindingsExpanded);
-  if (state.runFindingsExpanded && state.selectedRunId) {
-    await loadRun(state.selectedRunId, { force: true, includeFindings: true });
-  }
+function setRegistryExpanded(open) {
+  state.registryExpanded = Boolean(open);
+  if (!els.toggleRegistryBtn || !els.registryDetails) return;
+  els.toggleRegistryBtn.setAttribute("aria-expanded", String(state.registryExpanded));
+  els.toggleRegistryBtn.textContent = state.registryExpanded ? "Скрыть реестр" : "Открыть реестр";
+  els.registryDetails.hidden = !state.registryExpanded;
+  renderCases(state.filteredCases);
 }
 
 function runFindingRow(item) {
@@ -1559,9 +1618,9 @@ els.caseSearch.addEventListener("keydown", (event) => {
 });
 els.exportCasesCsvBtn?.addEventListener("click", () => exportCurrentCases("csv").catch((error) => alert(`Не удалось скачать CSV: ${error.message}`)));
 els.exportCasesXlsxBtn?.addEventListener("click", () => exportCurrentCases("xlsx").catch((error) => alert(`Не удалось скачать Excel: ${error.message}`)));
-els.exportRunCsvBtn?.addEventListener("click", () => exportSelectedRun("csv").catch((error) => alert(`Не удалось скачать CSV запуска: ${error.message}`)));
-els.exportRunXlsxBtn?.addEventListener("click", () => exportSelectedRun("xlsx").catch((error) => alert(`Не удалось скачать Excel запуска: ${error.message}`)));
-els.toggleRunFindingsBtn?.addEventListener("click", () => toggleRunFindings().catch(console.error));
+els.toggleRegistryBtn?.addEventListener("click", () => {
+  setRegistryExpanded(!state.registryExpanded);
+});
 els.drawerClose.addEventListener("click", closeDrawer);
 els.drawerOverlay.addEventListener("click", (event) => {
   if (event.target === els.drawerOverlay) closeDrawer();
