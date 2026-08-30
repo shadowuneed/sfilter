@@ -8,6 +8,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from io import StringIO
+from pathlib import Path
 from threading import Event, Lock
 from typing import Any, Iterable, Iterator
 from urllib.parse import urlencode, urljoin
@@ -2920,11 +2921,37 @@ Critical local-search behavior:
 
     def _pending_screenshot_queue(self, run_id: int, limit: int) -> list[tuple[int, dict[str, Any]]]:
         queue: list[tuple[int, dict[str, Any]]] = []
-        for finding in self.db.list_pending_screenshot_findings(run_id, limit=max(1, limit)):
+        requested = max(1, min(int(limit), 500))
+        for finding in self.db.list_findings(run_id=run_id, limit=500):
+            evidence = finding.get("evidence") or {}
+            screenshot_path = str(finding.get("screenshot_path") or "").strip()
+            is_pending = not screenshot_path and bool(evidence.get("screenshot_pending"))
+            is_missing = bool(screenshot_path) and not self._screenshot_file_exists(screenshot_path)
+            if not is_pending and not is_missing:
+                continue
             item = self._screenshot_queue_item(finding)
             if item:
                 queue.append(item)
+            if len(queue) >= requested:
+                break
         return queue
+
+    def has_recoverable_screenshots(self, run_id: int) -> bool:
+        return bool(self._pending_screenshot_queue(run_id, 1))
+
+    def _screenshot_file_exists(self, screenshot_path: str) -> bool:
+        normalized = str(screenshot_path or "").strip().replace("\\", "/")
+        if not normalized:
+            return False
+        path = Path(normalized)
+        if not path.is_absolute():
+            if normalized == "evidence" or normalized.startswith("evidence/"):
+                normalized = normalized.removeprefix("evidence").lstrip("/")
+            path = self.settings.evidence_dir / normalized
+        try:
+            return path.is_file() and path.stat().st_size > 0
+        except OSError:
+            return False
 
     async def _drain_screenshot_queue(
         self,

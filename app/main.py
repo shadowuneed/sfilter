@@ -177,7 +177,7 @@ def resume_active_runs_after_restart() -> None:
         if not bool(run.get("take_screenshots")):
             continue
         run_id = int(run["id"])
-        if not db.list_pending_screenshot_findings(run_id, limit=1):
+        if not investigator.has_recoverable_screenshots(run_id):
             continue
         db.add_log(
             run_id,

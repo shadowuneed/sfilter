@@ -165,6 +165,10 @@ class InvestigatorRunTargetTests(unittest.TestCase):
 
     def test_completed_run_repairs_only_pending_screenshots(self) -> None:
         with TemporaryDirectory() as tmp:
+            evidence_dir = Path(tmp) / "evidence"
+            existing_screenshot = evidence_dir / "screenshots" / "existing.png"
+            existing_screenshot.parent.mkdir(parents=True)
+            existing_screenshot.write_bytes(b"existing screenshot")
             db = Database(Path(tmp) / "argus.db")
             db.init()
             run_id = db.create_run(seed_query="онлайн казино", max_candidates=2, take_screenshots=True)
@@ -198,6 +202,7 @@ class InvestigatorRunTargetTests(unittest.TestCase):
             investigator = object.__new__(Investigator)
             investigator.settings = Settings(
                 database_path=Path(tmp) / "argus.db",
+                evidence_dir=evidence_dir,
                 screenshot_concurrency=1,
             )
             investigator.db = db
@@ -222,6 +227,56 @@ class InvestigatorRunTargetTests(unittest.TestCase):
             self.assertEqual(captured, [finding_ids[1]])
             self.assertEqual(db.list_pending_screenshot_findings(run_id), [])
             self.assertEqual(db.get_run(run_id)["status"], "completed")
+
+    def test_completed_run_recaptures_screenshot_missing_from_disk(self) -> None:
+        with TemporaryDirectory() as tmp:
+            evidence_dir = Path(tmp) / "evidence"
+            db = Database(Path(tmp) / "argus.db")
+            db.init()
+            run_id = db.create_run(seed_query="online casino", max_candidates=1, take_screenshots=True)
+            finding_id = db.insert_finding(
+                run_id,
+                {
+                    "url": "https://casino.example",
+                    "final_url": "https://casino.example",
+                    "domain": "casino.example",
+                    "normalized_domain": "casino.example",
+                    "title": "Casino",
+                    "category": "casino",
+                    "verdict": "high",
+                    "risk_score": 90,
+                    "active": True,
+                    "status_code": 200,
+                    "screenshot_path": "evidence/screenshots/lost-after-restart.png",
+                    "evidence_json": {"screenshot_pending": False},
+                },
+            )
+            db.update_run(run_id, status="completed", finding_count=1)
+
+            investigator = object.__new__(Investigator)
+            investigator.settings = Settings(
+                database_path=Path(tmp) / "argus.db",
+                evidence_dir=evidence_dir,
+                screenshot_concurrency=1,
+            )
+            investigator.db = db
+            captured: list[int] = []
+
+            async def capture(
+                current_run_id: int,
+                current_finding_id: int,
+                finding: dict,
+                semaphore: asyncio.Semaphore,
+            ) -> None:
+                self.assertEqual(current_run_id, run_id)
+                captured.append(current_finding_id)
+
+            investigator._capture_and_store_screenshot = capture
+
+            self.assertTrue(investigator.has_recoverable_screenshots(run_id))
+            investigator.repair_pending_screenshots(run_id)
+
+            self.assertEqual(captured, [finding_id])
 
     def test_arbitrary_text_uses_search_pages_without_category_selector(self) -> None:
         self.assertTrue(Investigator._user_search_mode("подозрительные магазины Алматы", "auto"))
