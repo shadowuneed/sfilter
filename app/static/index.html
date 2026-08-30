@@ -9,10 +9,18 @@
 </head>
 <body data-page="monitor">
   <div class="app-shell">
-    <header class="topbar topbar-simple">
+    <header class="topbar">
       <a class="brand" href="/monitor" aria-label="Qalqan">
         <strong>Qalqan</strong>
       </a>
+
+      <nav class="topnav" aria-label="Разделы">
+        <a class="active" href="/monitor" aria-current="page">Поиск</a>
+        <a href="#trendPanel">Динамика</a>
+        <a href="#auditPanel">Журнал</a>
+        <a href="/registry">Реестр</a>
+        <a href="/runs">Запуски</a>
+      </nav>
 
       <div class="health">
         <button id="healthToggle" class="health-toggle" type="button" aria-expanded="false" aria-controls="healthDetails">

@@ -66,7 +66,12 @@ class ApiAuthTests(unittest.TestCase):
         monitor = self.client.get("/monitor")
         self.assertIn('id="runHistoryToggle"', monitor.text)
         self.assertIn('id="runHistoryContent"', monitor.text)
-        self.assertNotIn('<nav class="topnav"', monitor.text)
+        self.assertIn('<nav class="topnav"', monitor.text)
+        self.assertIn('href="/monitor" aria-current="page">Поиск</a>', monitor.text)
+        self.assertIn('href="#trendPanel">Динамика</a>', monitor.text)
+        self.assertIn('href="#auditPanel">Журнал</a>', monitor.text)
+        self.assertIn('href="/registry">Реестр</a>', monitor.text)
+        self.assertIn('href="/runs">Запуски</a>', monitor.text)
 
     def test_protected_api_rejects_missing_token(self) -> None:
         response = self.client.get("/api/runs")
