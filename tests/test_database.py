@@ -49,6 +49,19 @@ class DatabaseBackendTests(unittest.TestCase):
         self.assertEqual(values[active_index], 1)
         self.assertIs(type(values[active_index]), int)
 
+    def test_run_attempts_are_persisted_without_duplicates(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "argus.db")
+            db.init()
+            run_id = db.create_run(seed_query="casino", max_candidates=100, take_screenshots=False)
+
+            first = db.mark_run_attempted_domains(run_id, {"alpha.example", "beta.example"})
+            second = db.mark_run_attempted_domains(run_id, {"alpha.example"})
+
+            self.assertEqual(first, 2)
+            self.assertEqual(second, 0)
+            self.assertEqual(db.list_run_attempted_domains(run_id), {"alpha.example", "beta.example"})
+
     def test_case_lookup_is_direct_and_finding_history_is_limited(self) -> None:
         with TemporaryDirectory() as tmp:
             db = Database(Path(tmp) / "argus.db")

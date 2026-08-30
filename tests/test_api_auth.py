@@ -77,6 +77,7 @@ class ApiAuthTests(unittest.TestCase):
         self.assertIn('id="journalRunContext"', monitor.text)
         self.assertIn('<option value="100" selected>100 находок</option>', monitor.text)
         self.assertIn('<option value="500">500 находок</option>', monitor.text)
+        self.assertNotIn('id="searchMode"', monitor.text)
 
     def test_automatic_run_targets_keep_100_and_500_modes(self) -> None:
         self.assertEqual(main._normalize_run_target(100), 100)

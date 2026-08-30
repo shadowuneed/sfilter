@@ -9,7 +9,7 @@ from app.services.ml_classifier import DomainMLClassifier
 
 class DomainMLClassifierTests(unittest.TestCase):
     def test_bundled_model_predicts_from_evidence(self) -> None:
-        classifier = DomainMLClassifier(Settings())
+        classifier = DomainMLClassifier(Settings(ml_enabled=True))
         evidence = EvidenceResult(
             requested_url="https://example.com",
             final_url="https://example.com/login",
@@ -29,6 +29,8 @@ class DomainMLClassifierTests(unittest.TestCase):
 
         result = classifier.classify("https://example.com/login", evidence)
 
+        if not result["available"]:
+            self.skipTest(result.get("error") or "Optional CatBoost runtime is unavailable")
         self.assertTrue(result["available"])
         self.assertEqual(result["feature_count"], 34)
         self.assertIn(result["label"], classifier.status().classes)

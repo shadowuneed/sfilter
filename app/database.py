@@ -272,11 +272,19 @@ class Database:
                     minute_count INTEGER NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS run_attempts (
+                    run_id BIGINT NOT NULL REFERENCES runs(id),
+                    normalized_domain TEXT NOT NULL,
+                    attempted_at TEXT NOT NULL,
+                    PRIMARY KEY (run_id, normalized_domain)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_findings_run ON findings(run_id);
                 CREATE INDEX IF NOT EXISTS idx_findings_domain ON findings(normalized_domain);
                 CREATE INDEX IF NOT EXISTS idx_cases_domain ON cases(normalized_domain);
                 CREATE INDEX IF NOT EXISTS idx_cases_status ON cases(status, archived, saved);
                 CREATE INDEX IF NOT EXISTS idx_logs_run ON logs(run_id);
+                CREATE INDEX IF NOT EXISTS idx_run_attempts_run ON run_attempts(run_id);
             """
 
         return """
@@ -358,11 +366,20 @@ class Database:
                 minute_count INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS run_attempts (
+                run_id INTEGER NOT NULL,
+                normalized_domain TEXT NOT NULL,
+                attempted_at TEXT NOT NULL,
+                PRIMARY KEY (run_id, normalized_domain),
+                FOREIGN KEY(run_id) REFERENCES runs(id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_findings_run ON findings(run_id);
             CREATE INDEX IF NOT EXISTS idx_findings_domain ON findings(normalized_domain);
             CREATE INDEX IF NOT EXISTS idx_cases_domain ON cases(normalized_domain);
             CREATE INDEX IF NOT EXISTS idx_cases_status ON cases(status, archived, saved);
             CREATE INDEX IF NOT EXISTS idx_logs_run ON logs(run_id);
+            CREATE INDEX IF NOT EXISTS idx_run_attempts_run ON run_attempts(run_id);
         """
 
     def _backfill_cases(self, conn: DatabaseConnection) -> None:
@@ -438,6 +455,33 @@ class Database:
             if not row:
                 return 0
             return int(row["count"] or 0)
+
+    def list_run_attempted_domains(self, run_id: int) -> set[str]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT normalized_domain FROM run_attempts WHERE run_id=?",
+                (run_id,),
+            ).fetchall()
+            return {str(row["normalized_domain"]) for row in rows if row["normalized_domain"]}
+
+    def mark_run_attempted_domains(self, run_id: int, domains: list[str] | set[str]) -> int:
+        normalized = sorted({domain.strip().lower() for domain in domains if domain and domain.strip()})
+        if not normalized:
+            return 0
+        inserted = 0
+        attempted_at = utc_now()
+        with self.connect() as conn:
+            for domain in normalized:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO run_attempts (run_id, normalized_domain, attempted_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(run_id, normalized_domain) DO NOTHING
+                    """,
+                    (run_id, domain, attempted_at),
+                )
+                inserted += int(cursor.rowcount or 0)
+        return inserted
 
     def add_log(self, run_id: int, level: str, message: str, meta: Any | None = None) -> None:
         timestamp = utc_now()

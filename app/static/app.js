@@ -52,7 +52,6 @@ const els = {
   runBtn: document.getElementById("runBtn"),
   stopBtn: document.getElementById("stopBtn"),
   seedQuery: document.getElementById("seedQuery"),
-  searchMode: document.getElementById("searchMode"),
   runSize: document.getElementById("runSize"),
   takeScreenshots: document.getElementById("takeScreenshots"),
   manualTarget: document.getElementById("manualTarget"),
@@ -461,10 +460,10 @@ function runDiagnostic(run = {}, stats = {}) {
   if (activeCount > 1 && runningStatus(run.status)) {
     return `Одновременно работают ${activeCount} запуска: они делят сетевые и браузерные ресурсы. Остановите лишний запуск для максимальной скорости.`;
   }
-  if (run.status === "queued") return "Запуск поставлен в очередь. Формируется один начальный пул реальных доменов.";
+  if (run.status === "queued") return "Запуск поставлен в очередь. Формируется первая партия реальных доменов.";
   if (runningStatus(run.status) && checked === 0) {
     const source = state.groqConfigured ? "Groq Compound, поисковые страницы, форумы и OSINT" : "поисковые страницы, форумы и OSINT";
-    return `Идет начальный сбор через ${source}. После фиксации пула поисковики повторно не вызываются.`;
+    return `Идет сбор через ${source}. Новые проходы будут продолжаться до выбранного количества находок.`;
   }
   if (runningStatus(run.status) && found === 0 && stats.unreachable > 0) {
     return `Поиск не завис: проверка продолжается, но ${stats.unreachable} последних кандидатов не открылись или превысили таймаут.`;
@@ -473,12 +472,12 @@ function runDiagnostic(run = {}, stats = {}) {
     return `Рабочие домены уже поступают в реестр. Проверено или поставлено в текущие пакеты: ${checked}.`;
   }
   if (run.status === "completed" && found < Number(run.max_candidates || DEFAULT_RUN_CANDIDATES)) {
-    return "Начальный пул исчерпан. В реестр попали только открывшиеся сайты, прошедшие контентную и техническую проверку.";
+    return "Этот запуск завершился ниже цели. Новые запуски продолжают поиск до цели либо ручной остановки.";
   }
   if (run.status === "completed") return "Цель запуска набрана; находки сохранены в реестре и папке запуска.";
   if (["canceled", "interrupted"].includes(run.status)) return "Запуск остановлен. Уже подтвержденные находки сохранены.";
   if (run.status === "failed") return run.error || "Запуск завершился ошибкой; подробности доступны в журнале.";
-  return "Система проверяет зафиксированный пул доменов.";
+  return "Система собирает и проверяет очередную партию доменов.";
 }
 
 function renderLiveFindingButtons(container, findings = [], limit = 8) {
@@ -712,7 +711,7 @@ async function startRun(event) {
     const requestedCandidates = Number(els.runSize?.value || DEFAULT_RUN_CANDIDATES);
     const payload = {
       seed_query: els.seedQuery.value.trim() || null,
-      search_mode: els.searchMode?.value || "casino",
+      search_mode: "auto",
       max_candidates: Math.max(1, Math.min(requestedCandidates, MAX_RUN_CANDIDATES)),
       take_screenshots: els.takeScreenshots.checked,
     };

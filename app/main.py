@@ -35,6 +35,7 @@ BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 RUN_TARGET_MIN = 100
 RUN_TARGET_MAX = 500
+DEFAULT_SEED_QUERY = "онлайн казино играть Казахстан"
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/evidence", StaticFiles(directory=settings.evidence_dir), name="evidence")
@@ -166,7 +167,7 @@ def resume_active_runs_after_restart() -> None:
             max_candidates,
             bool(run.get("take_screenshots")),
             cancel_event,
-            "casino",
+            "auto",
         )
 
 
@@ -194,7 +195,7 @@ async def api_auth_middleware(request: Request, call_next):
 
 class RunRequest(BaseModel):
     seed_query: str | None = Field(default=None, max_length=2000)
-    search_mode: str = Field(default="casino", max_length=30)
+    search_mode: str = Field(default="auto", max_length=30)
     max_candidates: int = Field(default=100, ge=1, le=5000)
     take_screenshots: bool = True
 
@@ -325,6 +326,7 @@ def create_run(request: RunRequest) -> dict[str, Any]:
     _ensure_kz_proxy_ready()
     max_candidates = _normalize_run_target(request.max_candidates)
     search_mode = investigator.normalize_search_mode(request.search_mode)
+    seed_query = (request.seed_query or "").strip() or DEFAULT_SEED_QUERY
     with run_launch_lock:
         active_run = next((run for run in reversed(db.list_active_runs()) if _is_automatic_run(run)), None)
         if active_run:
@@ -333,7 +335,7 @@ def create_run(request: RunRequest) -> dict[str, Any]:
                 detail=f"Автоматический запуск #{active_run['id']} уже выполняется.",
             )
         run_id = db.create_run(
-            seed_query=request.seed_query,
+            seed_query=seed_query,
             max_candidates=max_candidates,
             take_screenshots=request.take_screenshots,
         )
@@ -344,7 +346,7 @@ def create_run(request: RunRequest) -> dict[str, Any]:
         f"argus-run-{run_id}",
         investigator.run,
         run_id,
-        request.seed_query,
+        seed_query,
         max_candidates,
         request.take_screenshots,
         cancel_event,
