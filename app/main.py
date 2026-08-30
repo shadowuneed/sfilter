@@ -26,6 +26,7 @@ gemini = GeminiClient(settings, db)
 investigator = Investigator(settings, db, gemini)
 exporter = Exporter(settings, db)
 cancel_events: dict[int, threading.Event] = {}
+run_launch_lock = threading.Lock()
 
 app = FastAPI(title="DOFilter", version="1.0.0")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
@@ -101,18 +102,49 @@ def _normalize_run_target(max_candidates: int) -> int:
     return min(requested, settings.max_candidates_per_run)
 
 
+def _is_automatic_run(run: dict[str, Any]) -> bool:
+    return int(run.get("max_candidates") or 0) > 1
+
+
 @app.on_event("startup")
 def resume_active_runs_after_restart() -> None:
     if not settings.resume_active_runs:
         db.mark_stale_runs_interrupted()
         return
-    for run in db.list_active_runs():
+    active_runs = db.list_active_runs()
+    automatic_run_ids = [int(run["id"]) for run in active_runs if _is_automatic_run(run)]
+    latest_automatic_run_id = max(automatic_run_ids, default=None)
+    for run in active_runs:
         run_id = int(run["id"])
         if run_id in cancel_events:
             continue
         if run.get("status") == "canceling":
             db.update_run(run_id, status="canceled", finished_at=utc_now(), error=None)
             db.add_log(run_id, "warning", "Проверка остановлена пользователем до перезапуска сервера")
+            continue
+
+        if not _is_automatic_run(run):
+            db.update_run(
+                run_id,
+                status="interrupted",
+                finished_at=utc_now(),
+                error="Ручная проверка была прервана перезапуском сервера.",
+            )
+            continue
+
+        if run_id != latest_automatic_run_id:
+            db.update_run(
+                run_id,
+                status="interrupted",
+                finished_at=utc_now(),
+                error="Остановлен дублирующий автоматический запуск; продолжен самый новый запуск.",
+            )
+            db.add_log(
+                run_id,
+                "warning",
+                "Дублирующий запуск не возобновлен после перезапуска сервера",
+                {"continued_run_id": latest_automatic_run_id},
+            )
             continue
 
         max_candidates = _normalize_run_target(int(run.get("max_candidates") or RUN_TARGET_MIN))
@@ -253,8 +285,13 @@ def health() -> dict[str, Any]:
         "osint_candidate_pool_size": settings.osint_candidate_pool_size,
         "search_pages_enabled": settings.search_pages_enabled,
         "search_page_delay_seconds": settings.search_page_delay_seconds,
+        "search_result_pages": settings.search_result_pages,
         "resume_active_runs": settings.resume_active_runs,
         "gemini_user_search_fallback": settings.gemini_user_search_fallback,
+        "groq_configured": investigator.groq.available,
+        "groq_model": settings.groq_model,
+        "groq_model_version": settings.groq_model_version,
+        "groq_requests_per_run": 1 if investigator.groq.available else 0,
         "candidate_timeout_seconds": settings.candidate_timeout_seconds,
         "fast_evidence_mode": settings.fast_evidence_mode,
         "screenshot_timeout_seconds": settings.screenshot_timeout_seconds,
@@ -288,11 +325,18 @@ def create_run(request: RunRequest) -> dict[str, Any]:
     _ensure_kz_proxy_ready()
     max_candidates = _normalize_run_target(request.max_candidates)
     search_mode = investigator.normalize_search_mode(request.search_mode)
-    run_id = db.create_run(
-        seed_query=request.seed_query,
-        max_candidates=max_candidates,
-        take_screenshots=request.take_screenshots,
-    )
+    with run_launch_lock:
+        active_run = next((run for run in reversed(db.list_active_runs()) if _is_automatic_run(run)), None)
+        if active_run:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Автоматический запуск #{active_run['id']} уже выполняется.",
+            )
+        run_id = db.create_run(
+            seed_query=request.seed_query,
+            max_candidates=max_candidates,
+            take_screenshots=request.take_screenshots,
+        )
     cancel_event = threading.Event()
     cancel_events[run_id] = cancel_event
     _start_run_thread(
@@ -356,6 +400,8 @@ def list_runs(limit: int = 25) -> dict[str, Any]:
 def get_run(
     run_id: int,
     include_findings: bool = False,
+    compact_findings: bool = False,
+    finding_limit: int = Query(default=500, ge=1, le=500),
     after_log_id: int | None = None,
     log_limit: int = 300,
 ) -> dict[str, Any]:
@@ -373,7 +419,10 @@ def get_run(
         "log_cursor": logs[-1]["id"] if logs else after_log_id,
     }
     if include_findings:
-        payload["findings"] = db.list_findings(run_id=run_id)
+        if compact_findings:
+            payload["findings"] = db.list_run_findings_summary(run_id, finding_limit)
+        else:
+            payload["findings"] = db.list_findings(run_id=run_id, limit=finding_limit)
     return payload
 
 

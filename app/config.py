@@ -148,6 +148,10 @@ class Settings:
     gemini_rpm_limit: int = 10
     gemini_rpd_limit: int = 250
     gemini_timeout_seconds: int = 90
+    groq_api_key: str | None = None
+    groq_model: str = "groq/compound-mini"
+    groq_model_version: str = "2025-07-23"
+    groq_timeout_seconds: int = 90
     admin_token: str | None = None
     auth_required: bool = True
 
@@ -170,9 +174,10 @@ class Settings:
     screenshot_fallback_enabled: bool = True
     screenshot_concurrency: int = 1
     osint_feeds_enabled: bool = True
-    osint_candidate_pool_size: int = 1500
+    osint_candidate_pool_size: int = 5000
     search_pages_enabled: bool = True
     search_page_delay_seconds: float = 0.0
+    search_result_pages: int = 10
     resume_active_runs: bool = True
     gemini_user_search_fallback: bool = False
     ml_enabled: bool = False
@@ -225,6 +230,10 @@ def get_settings() -> Settings:
         gemini_rpm_limit=_int_env("GEMINI_RPM_LIMIT", _int_env("GEMINI_RPM_PER_KEY", 10)),
         gemini_rpd_limit=_int_env("GEMINI_RPD_LIMIT", _int_env("GEMINI_RPD_PER_KEY", 250)),
         gemini_timeout_seconds=_int_env("GEMINI_TIMEOUT_SECONDS", 90),
+        groq_api_key=_optional_env("GROQ_API_KEY"),
+        groq_model=os.getenv("GROQ_MODEL", "groq/compound-mini").strip() or "groq/compound-mini",
+        groq_model_version=os.getenv("GROQ_MODEL_VERSION", "2025-07-23").strip() or "2025-07-23",
+        groq_timeout_seconds=max(20, min(_int_env("GROQ_TIMEOUT_SECONDS", 90), 180)),
         admin_token=_optional_env("ADMIN_TOKEN") or _optional_env("ARGUS_ADMIN_TOKEN") or _optional_env("DOFILTER_ADMIN_TOKEN"),
         auth_required=_bool_env("AUTH_REQUIRED", True),
         database_url=_optional_env("DATABASE_URL"),
@@ -251,9 +260,10 @@ def get_settings() -> Settings:
         screenshot_fallback_enabled=_bool_env("SCREENSHOT_FALLBACK_ENABLED", True),
         screenshot_concurrency=max(1, min(_int_env("SCREENSHOT_CONCURRENCY", 1), 2)),
         osint_feeds_enabled=_bool_env("OSINT_FEEDS_ENABLED", True),
-        osint_candidate_pool_size=max(150, min(_int_env("OSINT_CANDIDATE_POOL_SIZE", 1500), 20000)),
+        osint_candidate_pool_size=max(150, min(_int_env("OSINT_CANDIDATE_POOL_SIZE", 5000), 20000)),
         search_pages_enabled=_bool_env("SEARCH_PAGES_ENABLED", True),
-        search_page_delay_seconds=max(0.0, min(_float_env("SEARCH_PAGE_DELAY_SECONDS", 0.0), 10.0)),
+        search_page_delay_seconds=max(0.0, min(_float_env("SEARCH_PAGE_DELAY_SECONDS", 1.2), 10.0)),
+        search_result_pages=max(1, min(_int_env("SEARCH_RESULT_PAGES", 10), 12)),
         resume_active_runs=_bool_env("RESUME_ACTIVE_RUNS", True),
         gemini_user_search_fallback=_bool_env("GEMINI_USER_SEARCH_FALLBACK", False),
         ml_enabled=_bool_env("ML_ENABLED", False),

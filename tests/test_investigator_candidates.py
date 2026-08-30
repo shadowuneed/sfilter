@@ -155,6 +155,28 @@ class InvestigatorCandidateTests(unittest.TestCase):
 
         self.assertEqual(candidates, [])
 
+    def test_forum_page_yields_direct_casino_domain_not_forum(self) -> None:
+        html = """
+        <html><body>
+          <article>
+            <p>Жалоба: казино не выводит деньги.</p>
+            <a href="https://play-slots.example/register">Play Slots casino</a>
+          </article>
+          <a href="https://ordinary-news.example/story">обычная новость</a>
+        </body></html>
+        """
+
+        candidates = self.investigator._candidates_from_source_html(
+            query="мошеннические онлайн казино жалобы",
+            html=html,
+            source_url="https://casino-forum.example/complaint/42",
+            limit=10,
+            search_mode="casino",
+        )
+
+        self.assertEqual([candidate.domain for candidate in candidates], ["play-slots.example"])
+        self.assertEqual(candidates[0].source_urls, ["https://casino-forum.example/complaint/42"])
+
     def test_search_html_rejects_informational_money_articles(self) -> None:
         html = """
         <html><body>
@@ -368,7 +390,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
         self.assertEqual(last_log[3]["skipped_known"], 1)
         self.assertEqual(last_log[3]["known_rechecked"], 0)
 
-    def test_user_search_mode_does_not_start_from_feeds_or_bootstrap(self) -> None:
+    def test_user_search_mode_combines_search_results_with_real_osint_feeds(self) -> None:
         class FakeDb:
             def __init__(self) -> None:
                 self.logs = []
@@ -382,8 +404,16 @@ class InvestigatorCandidateTests(unittest.TestCase):
         class FakeGemini:
             available = False
 
-        async def fail_feeds(*args, **kwargs):  # noqa: ANN002, ANN003
-            raise AssertionError("OSINT feeds must not lead user-search discovery")
+        async def fake_feeds(*args, **kwargs):  # noqa: ANN002, ANN003
+            return [
+                Candidate(
+                    url="https://feed-casino.example",
+                    domain="feed-casino.example",
+                    category="casino",
+                    why="Public OSINT feed",
+                    search_query="онлайн казино",
+                )
+            ]
 
         def fail_bootstrap(*args, **kwargs):  # noqa: ANN002, ANN003
             raise AssertionError("Bootstrap candidates must not be mixed into user-search discovery")
@@ -405,17 +435,21 @@ class InvestigatorCandidateTests(unittest.TestCase):
         self.investigator.settings = Settings(osint_feeds_enabled=True, osint_candidate_pool_size=10)
         self.investigator.db = FakeDb()
         self.investigator.gemini = FakeGemini()
-        self.investigator._discover_from_feeds = fail_feeds
+        self.investigator._discover_from_feeds = fake_feeds
         self.investigator._discover_from_bootstrap = fail_bootstrap
         self.investigator._discover_from_algorithmic_mirrors = fail_algorithmic
         self.investigator._discover_with_user_search = fake_user_search
 
         candidates = asyncio.run(self.investigator._discover_candidates(1, "онлайн казино", 1))
 
-        self.assertEqual([candidate.domain for candidate in candidates], ["live-casino.example"])
-        self.assertEqual(candidates[0].search_query, "онлайн казино Казахстан")
+        self.assertEqual(
+            {candidate.domain for candidate in candidates},
+            {"live-casino.example", "feed-casino.example"},
+        )
+        search_candidate = next(candidate for candidate in candidates if candidate.domain == "live-casino.example")
+        self.assertEqual(search_candidate.search_query, "онлайн казино Казахстан")
 
-    def test_empty_casino_user_search_falls_back_to_bootstrap(self) -> None:
+    def test_empty_casino_user_search_falls_back_to_real_osint(self) -> None:
         class FakeDb:
             def __init__(self) -> None:
                 self.logs = []
@@ -429,33 +463,33 @@ class InvestigatorCandidateTests(unittest.TestCase):
         class FakeGemini:
             available = False
 
-        async def fail_feeds(*args, **kwargs):  # noqa: ANN002, ANN003
-            raise AssertionError("OSINT feeds must not lead user-search discovery")
+        async def fake_feeds(*args, **kwargs):  # noqa: ANN002, ANN003
+            return [
+                Candidate(
+                    url="https://feed-casino.example",
+                    domain="feed-casino.example",
+                    category="casino",
+                    why="Public OSINT feed",
+                    search_query="онлайн казино",
+                )
+            ]
 
         def fake_user_search(run_id, seed_query, discovery_limit, max_candidates, search_mode="auto"):  # noqa: ANN001
             return []
 
-        def fake_bootstrap(seed_query, limit, search_mode="auto"):  # noqa: ANN001
-            return [
-                Candidate(
-                    url="https://pin-up.kz",
-                    domain="pin-up.kz",
-                    category="casino",
-                    why="Fallback casino candidate",
-                    search_query=seed_query,
-                )
-            ][:limit]
+        def fail_bootstrap(*args, **kwargs):  # noqa: ANN002, ANN003
+            raise AssertionError("User-search discovery must not generate bootstrap domains")
 
         self.investigator.settings = Settings(osint_feeds_enabled=True, osint_candidate_pool_size=10)
         self.investigator.db = FakeDb()
         self.investigator.gemini = FakeGemini()
-        self.investigator._discover_from_feeds = fail_feeds
+        self.investigator._discover_from_feeds = fake_feeds
         self.investigator._discover_with_user_search = fake_user_search
-        self.investigator._discover_from_bootstrap = fake_bootstrap
+        self.investigator._discover_from_bootstrap = fail_bootstrap
 
         candidates = asyncio.run(self.investigator._discover_candidates(1, "онлайн казино", 1, "casino"))
 
-        self.assertEqual([candidate.domain for candidate in candidates], ["pin-up.kz"])
+        self.assertEqual([candidate.domain for candidate in candidates], ["feed-casino.example"])
 
     def test_large_casino_user_search_refills_partial_results(self) -> None:
         class FakeDb:
@@ -492,7 +526,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
         def fake_algorithmic(seed_query, limit, excluded_domains, search_mode="auto"):  # noqa: ANN001
             return []
 
-        self.investigator.settings = Settings(osint_candidate_pool_size=700)
+        self.investigator.settings = Settings(osint_candidate_pool_size=700, osint_feeds_enabled=False)
         self.investigator.db = FakeDb()
         self.investigator.gemini = FakeGemini()
         self.investigator._discover_with_user_search = fake_user_search
@@ -502,7 +536,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
         candidates = asyncio.run(self.investigator._discover_candidates(1, "онлайн казино", 100, "casino"))
 
         self.assertEqual(len(candidates), 10)
-        self.assertEqual(captured_bootstrap_limits, [690])
+        self.assertEqual(captured_bootstrap_limits, [])
 
     def test_casino_check_limit_overscans_candidates(self) -> None:
         self.investigator.settings = Settings(max_candidates_per_run=2000)
@@ -775,7 +809,16 @@ class InvestigatorCandidateTests(unittest.TestCase):
             def add_log(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
                 self.logs.append((args, kwargs))
 
-        def fake_search_pages(run_id, query, limit, search_mode="auto", disabled_engines=None):  # noqa: ANN001
+        def fake_search_pages(
+            run_id,
+            query,
+            limit,
+            search_mode="auto",
+            search_issues=None,
+            *,
+            page_index=0,
+            search_budget=None,
+        ):  # noqa: ANN001
             return [
                 Candidate(
                     url="https://play-slots.example",
@@ -789,7 +832,11 @@ class InvestigatorCandidateTests(unittest.TestCase):
         def fail_gemini(*args, **kwargs):  # noqa: ANN002, ANN003
             raise AssertionError("Gemini must not be used while GEMINI_USER_SEARCH_FALLBACK=false")
 
-        self.investigator.settings = Settings(search_pages_enabled=True, gemini_user_search_fallback=False)
+        self.investigator.settings = Settings(
+            search_pages_enabled=True,
+            search_result_pages=1,
+            gemini_user_search_fallback=False,
+        )
         self.investigator.db = FakeDb()
         self.investigator._discover_from_search_pages = fake_search_pages
         self.investigator._discover_with_gemini = fail_gemini

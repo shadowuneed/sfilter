@@ -6,7 +6,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from io import StringIO
-from threading import Event
+from threading import Event, Lock
 from typing import Any
 from urllib.parse import urlencode, urljoin
 
@@ -29,12 +29,12 @@ from app.services.domains import (
 from app.services.content_intelligence import ContentIntelligence
 from app.services.cyberscan_classifier import CyberScanClassifier
 from app.services.evidence import EvidenceCollector, score_finding
-from app.services.gemini import GeminiAPIError, GeminiClient, GeminiQuotaError
+from app.services.gemini import GeminiClient
+from app.services.groq_compound import GroqCompoundClient
 from app.services.ml_classifier import DomainMLClassifier
 from app.services.risky_domains import (
     gambling_domain_signals,
     has_casino_context,
-    has_gambling_context,
     has_user_risk_search_context,
 )
 from app.services.screenshots import ScreenshotService
@@ -316,22 +316,34 @@ USER_SEARCH_ENGINES = [
         "name": "duckduckgo",
         "url": "https://html.duckduckgo.com/html/",
         "params": {"kl": "wt-wt"},
+        "page_param": "s",
+        "page_step": 30,
+        "page_origin": 0,
     },
     {
         "name": "google",
         "url": "https://www.google.com/search",
         "params": {"hl": "ru", "num": "20", "pws": "0", "gbv": "1"},
+        "page_param": "start",
+        "page_step": 20,
+        "page_origin": 0,
     },
     {
         "name": "bing",
         "url": "https://www.bing.com/search",
         "params": {"setlang": "ru-RU", "count": "20"},
+        "page_param": "first",
+        "page_step": 20,
+        "page_origin": 1,
     },
     {
         "name": "yandex_kz",
         "url": "https://yandex.kz/search/",
         "query_param": "text",
         "params": {"lr": "162", "lang": "ru"},
+        "page_param": "p",
+        "page_step": 1,
+        "page_origin": 0,
     },
 ]
 
@@ -349,13 +361,13 @@ CASINO_SEARCH_QUERIES = [
     "онлайн казино играть на деньги",
     "казино онлайн регистрация бонус",
     "слоты на деньги играть",
-    "live casino roulette blackjack бонус",
+    "live casino slots roulette blackjack bonus",
     "казино зеркало рабочий вход",
     "онлайн казино без блокировки зеркало",
+    "мошеннические онлайн казино жалобы домен",
+    "онлайн казино отзывы форум рабочий сайт",
+    "список нелегальных онлайн казино зеркала",
     "online casino slots bonus registration",
-    "play online casino slots real money",
-    "casino mirror login bonus slots",
-    "vavada joycasino playfortuna vulkan casino зеркало",
 ]
 
 SCAM_SEARCH_QUERIES = [
@@ -510,16 +522,44 @@ class Candidate:
         return registered_domain(self.domain or extract_domain(self.url))
 
 
+@dataclass
+class SearchRequestBudget:
+    engine_limit: int
+    source_limit: int
+    deadline_at: float
+    engine_used: int = 0
+    source_used: int = 0
+
+    @property
+    def expired(self) -> bool:
+        return time.monotonic() >= self.deadline_at
+
+    def claim_engine(self) -> bool:
+        if self.expired or self.engine_used >= self.engine_limit:
+            return False
+        self.engine_used += 1
+        return True
+
+    def claim_source(self) -> bool:
+        if self.expired or self.source_used >= self.source_limit:
+            return False
+        self.source_used += 1
+        return True
+
+
 class Investigator:
     def __init__(self, settings: Settings, db: Database, gemini: GeminiClient):
         self.settings = settings
         self.db = db
         self.gemini = gemini
+        self.groq = GroqCompoundClient(settings)
         self.evidence = EvidenceCollector(settings)
         self.screenshots = ScreenshotService(settings)
         self.ml = DomainMLClassifier(settings)
         self.content_ai = ContentIntelligence(settings)
         self.cyberscan = CyberScanClassifier(settings)
+        self._search_request_lock = Lock()
+        self._last_search_request_at = 0.0
 
     def run(
         self,
@@ -657,14 +697,15 @@ class Investigator:
 
         methodology = [
             f"Режим поиска: {SEARCH_MODE_LABELS[search_mode]}.",
-            "Ищем подозрительные casino/scam сайты через поисковую выдачу DuckDuckGo/Google/Bing; Gemini используется только как опциональный fallback.",
+            "Один начальный этап собирает реальные домены из поисковой выдачи DuckDuckGo/Google/Bing/Yandex и OSINT-источников; Gemini не используется.",
+            "После фиксации начального пула поисковики повторно не вызываются: все кандидаты проходят локальную проверку небольшими пакетами.",
             "В поисковых запросах берем живые домены, рабочие зеркала и страницы, доступные для пользователей Казахстана.",
             "Открытие кандидатов проверяем через KZ_PROXY_URL; если прокси не задан, фиксируем прямую сеть сервера как ограничение доказательства.",
             "Отбрасываем IP-адреса, localhost, тестовые домены и технические источники.",
             "Домены, уже присутствующие в общем реестре, исключаем до открытия и повторно не добавляем в новый запуск.",
             "Оставляем в таблице только сайты, которые удалось открыть и зафиксировать, а страницы блокировки не показываем как рабочие сайты.",
             "Для каждого открытого сайта сохраняем HTML, SHA-256, DNS/TLS, RDAP, скорость ответа, размер страницы, редиректы и скриншот.",
-            "Зеркала ищем отдельно по найденным доменам и похожести имен.",
+            "Зеркала группируем локально по сходству доменных имен и подтверждаем живой проверкой.",
             "Все ошибки и пропущенные сайты пишем в журнал проверки и терминал.",
         ]
         self.db.update_run(run_id, methodology_json=methodology)
@@ -672,9 +713,7 @@ class Investigator:
         try:
             findings_count = self.db.count_findings(run_id)
             attempted_domains: set[str] = set()
-            discovery_round = 0
             checked_total = 0
-            no_candidate_rounds = 0
             screenshot_tasks: list[asyncio.Task[Any]] = []
             screenshot_semaphore = asyncio.Semaphore(max(1, int(self.settings.screenshot_concurrency)))
 
@@ -719,83 +758,81 @@ class Investigator:
                     },
                 )
 
-            while findings_count < max_candidates:
+            if cancel_event and cancel_event.is_set():
+                self.db.update_run(run_id, status="canceled", finished_at=utc_now(), finding_count=findings_count)
+                self.db.add_log(run_id, "warning", "Проверка остановлена пользователем", {"findings": findings_count})
+                return
+
+            candidates = await self._discover_candidates(run_id, seed_query, max_candidates, search_mode)
+            fresh_candidates = [candidate for candidate in candidates if candidate.key()]
+            candidate_check_limit = self._candidate_check_limit(
+                max(1, max_candidates - findings_count),
+                len(fresh_candidates),
+                search_mode,
+            )
+            candidate_pool = fresh_candidates[:candidate_check_limit]
+            candidate_total = len(candidate_pool)
+            self.db.update_run(run_id, candidate_count=0)
+            self.db.add_log(
+                run_id,
+                "info",
+                "Начальный пул сайтов зафиксирован",
+                {
+                    "discovery_passes": 1,
+                    "candidates": candidate_total,
+                    "target_findings": max_candidates,
+                    "already_saved": findings_count,
+                    "gemini_used": False,
+                },
+            )
+
+            if not candidate_pool:
+                self.db.add_log(
+                    run_id,
+                    "warning",
+                    "Начальный поиск не дал новых доменов для проверки",
+                    {"findings": findings_count, "target": max_candidates},
+                )
+
+            concurrency = max(1, min(self.settings.scan_concurrency, len(candidate_pool) or 1))
+            batch_size = max(12, min(36, concurrency * 8))
+            semaphore = asyncio.Semaphore(concurrency)
+
+            for batch_start in range(0, candidate_total, batch_size):
                 if cancel_event and cancel_event.is_set():
                     self.db.update_run(run_id, status="canceled", finished_at=utc_now(), finding_count=findings_count)
                     self.db.add_log(run_id, "warning", "Проверка остановлена пользователем", {"findings": findings_count})
                     return
+                if findings_count >= max_candidates:
+                    break
 
-                discovery_round += 1
-                remaining = max(1, max_candidates - findings_count)
-                candidates = await self._discover_candidates(
-                    run_id,
-                    seed_query,
-                    max_candidates,
-                    search_mode,
-                    excluded_domains=attempted_domains,
-                )
-                fresh_candidates = [
-                    candidate
-                    for candidate in candidates
-                    if candidate.key() and candidate.key() not in attempted_domains
-                ]
-                candidate_check_limit = self._candidate_check_limit(remaining, len(fresh_candidates), search_mode)
-                candidates_to_check = fresh_candidates[:candidate_check_limit]
-                checked_total += len(candidates_to_check)
-                self.db.update_run(run_id, candidate_count=checked_total)
-                self.db.add_log(
-                    run_id,
-                    "info",
-                    "Список сайтов-кандидатов готов",
-                    {
-                        "round": discovery_round,
-                        "count": len(candidates),
-                        "checking": len(candidates_to_check),
-                        "checked_total": checked_total,
-                        "target_findings": max_candidates,
-                        "already_saved": findings_count,
-                    },
-                )
-
-                if not candidates_to_check:
-                    no_candidate_rounds += 1
-                    self.db.add_log(
-                        run_id,
-                        "warning",
-                        "Новых кандидатов для проверки не осталось",
-                        {
-                            "round": discovery_round,
-                            "findings": findings_count,
-                            "target": max_candidates,
-                            "attempted": len(attempted_domains),
-                        },
-                    )
-                    if no_candidate_rounds >= 2 or len(attempted_domains) >= self.settings.max_candidates_per_run:
-                        break
-                    continue
-                no_candidate_rounds = 0
-
+                candidates_to_check = candidate_pool[batch_start : batch_start + batch_size]
                 mirror_groups = await self._discover_mirrors(run_id, candidates_to_check, search_mode)
-                concurrency = max(1, min(self.settings.scan_concurrency, remaining, len(candidates_to_check) or 1))
                 self.db.add_log(
                     run_id,
                     "info",
                     "Пакетная проверка кандидатов запущена",
                     {
-                        "round": discovery_round,
-                        "target": max_candidates,
+                        "batch": (batch_start // batch_size) + 1,
+                        "checking": len(candidates_to_check),
+                        "checked_total": checked_total,
+                        "candidate_total": candidate_total,
                         "target_findings": max_candidates,
-                        "candidates": len(candidates_to_check),
-                        "concurrency": concurrency,
                         "already_saved": findings_count,
+                        "concurrency": concurrency,
                     },
                 )
-                semaphore = asyncio.Semaphore(concurrency)
 
                 if concurrency <= 1:
-                    for index, candidate in enumerate(candidates_to_check, start=1):
+                    for batch_index, candidate in enumerate(candidates_to_check, start=1):
                         if cancel_event and cancel_event.is_set():
-                            self.db.update_run(run_id, status="canceled", finished_at=utc_now(), finding_count=findings_count)
+                            self.db.update_run(
+                                run_id,
+                                status="canceled",
+                                finished_at=utc_now(),
+                                finding_count=findings_count,
+                                candidate_count=checked_total,
+                            )
                             self.db.add_log(run_id, "warning", "Проверка остановлена пользователем", {"findings": findings_count})
                             return
                         if findings_count >= max_candidates:
@@ -805,8 +842,8 @@ class Investigator:
                             attempted_domains.add(key)
                         finding = await self._inspect_candidate(
                             run_id,
-                            index,
-                            len(candidates_to_check),
+                            batch_start + batch_index,
+                            candidate_total,
                             candidate,
                             candidates_to_check,
                             mirror_groups,
@@ -815,61 +852,69 @@ class Investigator:
                             cancel_event,
                             search_mode,
                         )
+                        checked_total += 1
                         handle_inspection_result(finding)
-                else:
-                    for candidate in candidates_to_check:
-                        key = candidate.key()
-                        if key:
-                            attempted_domains.add(key)
-                    tasks = [
-                        asyncio.create_task(
-                            self._inspect_candidate(
-                                run_id,
-                                index,
-                                len(candidates_to_check),
-                                candidate,
-                                candidates_to_check,
-                                mirror_groups,
-                                take_screenshots,
-                                semaphore,
-                                cancel_event,
-                                search_mode,
-                            )
+                    self.db.update_run(run_id, candidate_count=checked_total)
+                    continue
+
+                for candidate in candidates_to_check:
+                    key = candidate.key()
+                    if key:
+                        attempted_domains.add(key)
+                tasks = [
+                    asyncio.create_task(
+                        self._inspect_candidate(
+                            run_id,
+                            batch_start + batch_index,
+                            candidate_total,
+                            candidate,
+                            candidates_to_check,
+                            mirror_groups,
+                            take_screenshots,
+                            semaphore,
+                            cancel_event,
+                            search_mode,
                         )
-                        for index, candidate in enumerate(candidates_to_check, start=1)
-                    ]
-
-                    try:
-                        for task in asyncio.as_completed(tasks):
-                            if cancel_event and cancel_event.is_set():
-                                self.db.update_run(run_id, status="canceled", finished_at=utc_now(), finding_count=findings_count)
-                                self.db.add_log(run_id, "warning", "Проверка остановлена пользователем", {"findings": findings_count})
-                                return
-                            if findings_count >= max_candidates:
-                                break
-
-                            finding = await task
-                            handle_inspection_result(finding)
-                    finally:
-                        for task in tasks:
-                            if not task.done():
-                                task.cancel()
-                        if tasks:
-                            await asyncio.gather(*tasks, return_exceptions=True)
-
-                if findings_count < max_candidates and len(attempted_domains) >= self.settings.max_candidates_per_run:
-                    self.db.add_log(
-                        run_id,
-                        "warning",
-                        "Достигнут технический лимит проверенных доменов до набора цели",
-                        {
-                            "findings": findings_count,
-                            "target": max_candidates,
-                            "attempted": len(attempted_domains),
-                            "limit": self.settings.max_candidates_per_run,
-                        },
                     )
-                    break
+                    for batch_index, candidate in enumerate(candidates_to_check, start=1)
+                ]
+
+                try:
+                    for task in asyncio.as_completed(tasks):
+                        if cancel_event and cancel_event.is_set():
+                            self.db.update_run(
+                                run_id,
+                                status="canceled",
+                                finished_at=utc_now(),
+                                finding_count=findings_count,
+                                candidate_count=checked_total,
+                            )
+                            self.db.add_log(run_id, "warning", "Проверка остановлена пользователем", {"findings": findings_count})
+                            return
+                        if findings_count >= max_candidates:
+                            break
+                        finding = await task
+                        checked_total += 1
+                        handle_inspection_result(finding)
+                finally:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                self.db.update_run(run_id, candidate_count=checked_total)
+
+            if findings_count < max_candidates and candidate_total:
+                self.db.add_log(
+                    run_id,
+                    "warning",
+                    "Зафиксированный пул кандидатов исчерпан до набора цели",
+                    {
+                        "findings": findings_count,
+                        "target": max_candidates,
+                        "attempted": len(attempted_domains),
+                        "candidate_total": candidate_total,
+                    },
+                )
 
             if screenshot_tasks:
                 pending = sum(1 for task in screenshot_tasks if not task.done())
@@ -899,7 +944,7 @@ class Investigator:
         if available_candidates <= 0:
             return 0
         target_findings = max(1, int(target_findings))
-        multiplier = 50 if self.normalize_search_mode(search_mode) == "casino" else 2
+        multiplier = 10 if self.normalize_search_mode(search_mode) == "casino" else 2
         desired = max(target_findings, target_findings * multiplier)
         return min(available_candidates, self.settings.max_candidates_per_run, desired)
 
@@ -988,29 +1033,48 @@ class Investigator:
             if registered_domain(domain)
         }
         discovery_limit = min(
-            max(max_candidates * 60, 5000),
-            max(max_candidates, self.settings.osint_candidate_pool_size),
+            self.settings.max_candidates_per_run,
+            max(500, max_candidates * 10, self.settings.osint_candidate_pool_size),
         )
-        candidate_target = max_candidates
-        if search_mode == "casino" and max_candidates >= 100:
-            candidate_target = min(
-                discovery_limit,
-                self.settings.max_candidates_per_run,
-                max_candidates * 50,
-            )
+        candidate_target = min(discovery_limit, max(500, max_candidates * 10))
         discovered: list[Candidate] = []
         user_search_mode = self._user_search_mode(seed_query, search_mode)
 
         if user_search_mode:
+            groq = getattr(self, "groq", None)
+            if groq is not None and groq.available:
+                try:
+                    discovered.extend(
+                        self._discover_with_groq(
+                            run_id,
+                            seed_query,
+                            min(80, candidate_target),
+                            search_mode,
+                        )
+                    )
+                except httpx.HTTPStatusError as exc:
+                    self.db.add_log(
+                        run_id,
+                        "warning",
+                        "Groq Compound недоступен, продолжаю без него",
+                        {"status_code": exc.response.status_code, "gemini_used": False},
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    self.db.add_log(
+                        run_id,
+                        "warning",
+                        "Groq Compound не дал кандидатов, продолжаю алгоритмический поиск",
+                        {"error": f"{type(exc).__name__}: {exc}", "gemini_used": False},
+                    )
             try:
-                discovered.extend(self._discover_with_user_search(run_id, seed_query, discovery_limit, max_candidates, search_mode))
-            except GeminiAPIError as exc:
-                level = "warning" if exc.status_code in {401, 403} else "error"
-                self.db.add_log(
-                    run_id,
-                    level,
-                    "Gemini Search недоступен для пользовательского поиска",
-                    {"error": str(exc), "status_code": exc.status_code},
+                discovered.extend(
+                    self._discover_with_user_search(
+                        run_id,
+                        seed_query,
+                        discovery_limit,
+                        max_candidates,
+                        search_mode,
+                    )
                 )
             except Exception as exc:  # noqa: BLE001
                 self.db.add_log(run_id, "warning", "Пользовательский поиск недоступен", {"error": str(exc)})
@@ -1033,27 +1097,12 @@ class Investigator:
             if self.settings.osint_feeds_enabled:
                 feed_candidates = await self._discover_from_feeds(run_id, discovery_limit)
                 discovered.extend(feed_candidates)
-
-            if self.gemini.available:
-                try:
-                    gemini_limit = min(discovery_limit, max(max_candidates * 2, 50))
-                    discovered.extend(self._discover_with_gemini(run_id, seed_query, gemini_limit, search_mode))
-                except GeminiAPIError as exc:
-                    level = "warning" if exc.status_code in {401, 403} else "error"
-                    self.db.add_log(
-                        run_id,
-                        level,
-                        "Gemini Search недоступен, продолжаю через OSINT/ML",
-                        {"error": str(exc), "status_code": exc.status_code},
-                    )
-                    if not discovered and not self.settings.osint_feeds_enabled:
-                        discovered.extend(await self._discover_from_feeds(run_id, discovery_limit))
-                except Exception as exc:  # noqa: BLE001
-                    self.db.add_log(run_id, "warning", "Gemini Search недоступен, продолжаю через OSINT/ML", {"error": str(exc)})
-                    if not discovered and not self.settings.osint_feeds_enabled:
-                        discovered.extend(await self._discover_from_feeds(run_id, discovery_limit))
-            else:
-                self.db.add_log(run_id, "warning", "Gemini ключ не настроен. Автопоиск продолжается через OSINT-фиды.")
+            self.db.add_log(
+                run_id,
+                "info",
+                "Автопоиск работает без Gemini",
+                {"mode": "search-pages-and-osint", "gemini_used": False},
+            )
 
         if seed_query:
             for domain in find_domains(seed_query):
@@ -1070,10 +1119,7 @@ class Investigator:
                 )
 
         seed_domains = set(find_domains(seed_query or ""))
-        allow_synthetic_refill = (
-            not user_search_mode
-            or (search_mode == "casino" and not seed_domains and len(discovered) < candidate_target)
-        )
+        allow_synthetic_refill = not user_search_mode
 
         if allow_synthetic_refill and len(discovered) < candidate_target:
             bootstrap = self._discover_from_bootstrap(seed_query, candidate_target - len(discovered), search_mode)
@@ -1097,9 +1143,13 @@ class Investigator:
 
         if allow_synthetic_refill and len(fresh_candidates) < candidate_target and not seed_domains:
             algorithmic_excluded = known_domains | excluded_domains | {candidate.key() for candidate in candidates}
+            algorithmic_budget = min(
+                candidate_target - len(fresh_candidates),
+                max(50, min(max_candidates * 2, 500)),
+            )
             algorithmic = self._discover_from_algorithmic_mirrors(
                 seed_query,
-                candidate_target - len(fresh_candidates),
+                algorithmic_budget,
                 algorithmic_excluded,
                 search_mode,
             )
@@ -1132,6 +1182,50 @@ class Investigator:
         )
         return self._sort_candidates_for_search_mode(fresh_candidates, search_mode)[:discovery_limit]
 
+    def _discover_with_groq(
+        self,
+        run_id: int,
+        seed_query: str | None,
+        limit: int,
+        search_mode: str,
+    ) -> list[Candidate]:
+        queries = self._user_search_queries(seed_query, search_mode)
+        query = (seed_query or (queries[0] if queries else "онлайн казино играть")).strip()
+        self.db.add_log(
+            run_id,
+            "info",
+            "Groq Compound выполняет один дополнительный поиск",
+            {"model": self.groq.model, "limit": limit, "requests": 1},
+        )
+        items, meta = self.groq.discover(query, limit, search_mode)
+        candidates: list[Candidate] = []
+        for item in items:
+            candidate = self._candidate_from_item(item, default_sources=meta.get("sources") or [])
+            if not candidate:
+                continue
+            context = f"{candidate.domain} {candidate.url} {candidate.why}"
+            if self._is_informational_search_result(candidate.url, context, search_mode):
+                continue
+            if not self._candidate_matches_user_search(candidate, query, search_mode):
+                continue
+            candidates.append(candidate)
+        candidates = self._sort_candidates_for_search_mode(
+            self._dedupe_candidates(candidates, limit),
+            search_mode,
+        )
+        self.db.add_log(
+            run_id,
+            "info",
+            "Groq Compound discovery завершен",
+            {
+                "model": meta.get("model") or self.groq.model,
+                "candidates": len(candidates),
+                "requests": 1,
+                "gemini_used": False,
+            },
+        )
+        return candidates
+
     def _discover_with_user_search(
         self,
         run_id: int,
@@ -1142,10 +1236,19 @@ class Investigator:
     ) -> list[Candidate]:
         search_mode = self._effective_search_mode(seed_query, search_mode)
         queries = self._user_search_queries(seed_query, search_mode)
-        per_query_limit = max(12, min(40, max_candidates))
+        per_page_limit = 40
+        target_candidates = min(discovery_limit, max(100, max_candidates))
         candidates: list[Candidate] = []
         seen: set[str] = set()
         search_issues: list[dict[str, Any]] = []
+        engine_request_limit = max(20, min(64, 16 + (max_candidates // 10)))
+        source_request_limit = max(4, min(16, max_candidates // 25))
+        search_time_limit = max(60, min(120, 50 + (max_candidates // 5)))
+        search_budget = SearchRequestBudget(
+            engine_limit=engine_request_limit,
+            source_limit=source_request_limit,
+            deadline_at=time.monotonic() + search_time_limit,
+        )
         self.db.add_log(
             run_id,
             "info",
@@ -1154,55 +1257,72 @@ class Investigator:
                 "queries": queries,
                 "mode": "search-page-user-results",
                 "search_mode": search_mode,
+                "pages": self.settings.search_result_pages,
+                "target_candidates": target_candidates,
+                "engine_request_limit": engine_request_limit,
+                "source_request_limit": source_request_limit,
+                "time_limit_seconds": search_time_limit,
                 "search_pages_enabled": self.settings.search_pages_enabled,
-                "gemini_fallback": self.settings.gemini_user_search_fallback,
+                "gemini_used": False,
             },
         )
-        for query in queries:
-            if len(candidates) >= discovery_limit:
+        empty_pages = 0
+        for page_index in range(self.settings.search_result_pages):
+            if search_budget.expired or search_budget.engine_used >= search_budget.engine_limit:
                 break
-            batch: list[Candidate] = []
-            if self.settings.search_pages_enabled:
-                batch.extend(
-                    self._discover_from_search_pages(
-                        run_id,
-                        query,
-                        per_query_limit,
-                        search_mode,
-                        search_issues,
-                    )
-                )
-            if len(batch) < max(3, min(per_query_limit, max_candidates)) and self.settings.gemini_user_search_fallback:
-                self.db.add_log(
-                    run_id,
-                    "info",
-                    "Gemini fallback enabled for user-search query",
-                    {"query": query, "search_page_candidates": len(batch)},
-                )
-                try:
-                    batch.extend(self._discover_with_gemini(run_id, query, per_query_limit, search_mode))
-                except GeminiQuotaError:
-                    raise
-                except GeminiAPIError:
-                    raise
-            for candidate in batch:
-                key = candidate.key()
-                if not key or key in seen:
-                    continue
-                if not self._candidate_matches_user_search(candidate, query, search_mode):
-                    continue
-                seen.add(key)
-                if not candidate.search_query:
-                    candidate.search_query = query
-                candidates.append(candidate)
-                if len(candidates) >= discovery_limit:
+            page_added = 0
+            for query in queries:
+                if (
+                    len(candidates) >= target_candidates
+                    or search_budget.expired
+                    or search_budget.engine_used >= search_budget.engine_limit
+                ):
                     break
+                batch: list[Candidate] = []
+                if self.settings.search_pages_enabled:
+                    batch.extend(
+                        self._discover_from_search_pages(
+                            run_id,
+                            query,
+                            per_page_limit,
+                            search_mode,
+                            search_issues,
+                            page_index=page_index,
+                            search_budget=search_budget,
+                        )
+                    )
+                for candidate in batch:
+                    key = candidate.key()
+                    if not key or key in seen:
+                        continue
+                    if not self._candidate_matches_user_search(candidate, query, search_mode):
+                        continue
+                    seen.add(key)
+                    if not candidate.search_query:
+                        candidate.search_query = query
+                    candidates.append(candidate)
+                    page_added += 1
+                    if len(candidates) >= target_candidates:
+                        break
+            if len(candidates) >= target_candidates:
+                break
+            empty_pages = empty_pages + 1 if page_added == 0 else 0
+            if empty_pages >= 2:
+                break
         self._log_search_page_issues(run_id, search_issues, len(queries), len(candidates))
         self.db.add_log(
             run_id,
             "info",
             "User-search discovery finished",
-            {"queries": len(queries), "candidates": len(candidates)},
+            {
+                "queries": len(queries),
+                "candidates": len(candidates),
+                "engine_requests": search_budget.engine_used,
+                "source_requests": search_budget.source_used,
+                "budget_exhausted": search_budget.expired
+                or search_budget.engine_used >= search_budget.engine_limit,
+                "gemini_used": False,
+            },
         )
         return self._sort_candidates_for_search_mode(candidates, search_mode)
 
@@ -1213,6 +1333,9 @@ class Investigator:
         limit: int,
         search_mode: str = "auto",
         search_issues: list[dict[str, Any]] | None = None,
+        *,
+        page_index: int = 0,
+        search_budget: SearchRequestBudget | None = None,
     ) -> list[Candidate]:
         if limit <= 0:
             return []
@@ -1224,6 +1347,7 @@ class Investigator:
         }
         candidates: list[Candidate] = []
         seen: set[str] = set()
+        seen_source_pages: set[str] = set()
         search_issues = search_issues if search_issues is not None else []
         with httpx.Client(
             timeout=timeout,
@@ -1231,16 +1355,15 @@ class Investigator:
             follow_redirects=True,
             proxy=self.settings.kz_proxy_url,
         ) as client:
-            request_count = 0
             for engine in USER_SEARCH_ENGINES:
                 engine_name = str(engine["name"])
                 if len(candidates) >= limit:
                     break
-                url = self._search_engine_url(engine, query)
+                if search_budget is not None and not search_budget.claim_engine():
+                    break
+                url = self._search_engine_url(engine, query, page_index=page_index)
                 try:
-                    if request_count and self.settings.search_page_delay_seconds > 0:
-                        time.sleep(self.settings.search_page_delay_seconds)
-                    request_count += 1
+                    self._throttle_search_request()
                     response = client.get(url)
                     response.raise_for_status()
                 except Exception as exc:  # noqa: BLE001
@@ -1268,20 +1391,97 @@ class Investigator:
                     added += 1
                     if len(candidates) >= limit:
                         break
-                if added:
+                source_added = 0
+                if len(candidates) < limit:
+                    source_pages = self._source_pages_from_search_html(
+                        query=query,
+                        html=response.text,
+                        source_url=str(response.url),
+                        search_mode=search_mode,
+                        limit=2,
+                    )
+                    for source_page in source_pages:
+                        if len(candidates) >= limit:
+                            break
+                        if search_budget is not None and not search_budget.claim_source():
+                            break
+                        if source_page in seen_source_pages:
+                            continue
+                        seen_source_pages.add(source_page)
+                        try:
+                            self._throttle_search_request()
+                            source_response = client.get(source_page)
+                            source_response.raise_for_status()
+                            content_type = str(source_response.headers.get("content-type") or "").lower()
+                            if content_type and "html" not in content_type:
+                                continue
+                        except Exception:  # noqa: BLE001
+                            continue
+                        source_candidates = self._candidates_from_source_html(
+                            query=query,
+                            html=source_response.text,
+                            source_url=str(source_response.url),
+                            limit=limit - len(candidates),
+                            search_mode=search_mode,
+                        )
+                        page_source_added = 0
+                        for candidate in source_candidates:
+                            key = candidate.key()
+                            if not key or key in seen:
+                                continue
+                            seen.add(key)
+                            candidates.append(candidate)
+                            source_added += 1
+                            page_source_added += 1
+                            if len(candidates) >= limit:
+                                break
+                        if page_source_added:
+                            self.db.add_log(
+                                run_id,
+                                "info",
+                                "Страница-источник обработана",
+                                {
+                                    "query": query,
+                                    "source": str(source_response.url),
+                                    "added": page_source_added,
+                                },
+                            )
+                if added or source_added:
                     self.db.add_log(
                         run_id,
                         "info",
                         "Search page processed",
-                        {"engine": engine_name, "query": query, "added": added},
+                        {
+                            "engine": engine_name,
+                            "query": query,
+                            "page": page_index + 1,
+                            "added": added + source_added,
+                            "from_sources": source_added,
+                        },
                     )
         return candidates
 
     @staticmethod
-    def _search_engine_url(engine: dict[str, Any], query: str) -> str:
+    def _search_engine_url(engine: dict[str, Any], query: str, *, page_index: int = 0) -> str:
         query_param = str(engine.get("query_param") or "q")
         params = {**dict(engine.get("params") or {}), query_param: query}
+        page_param = str(engine.get("page_param") or "").strip()
+        if page_param and page_index > 0:
+            page_origin = int(engine.get("page_origin") or 0)
+            page_step = max(1, int(engine.get("page_step") or 1))
+            params[page_param] = page_origin + (page_index * page_step)
         return f"{engine['url']}?{urlencode(params)}"
+
+    def _throttle_search_request(self) -> None:
+        delay = max(0.0, float(self.settings.search_page_delay_seconds or 0.0))
+        if delay <= 0:
+            return
+        with self._search_request_lock:
+            elapsed = time.monotonic() - self._last_search_request_at
+            remaining = delay - elapsed
+            if remaining > 0:
+                time.sleep(remaining)
+            self._last_search_request_at = time.monotonic()
 
     def _log_search_page_issues(self, run_id: int, issues: list[dict[str, Any]], queries: int, candidates: int) -> None:
         if not issues:
@@ -1381,6 +1581,129 @@ class Investigator:
                 continue
             candidates.append(candidate)
         return self._sort_candidates_for_search_mode(self._dedupe_candidates(candidates, limit), search_mode)
+
+    def _source_pages_from_search_html(
+        self,
+        *,
+        query: str,
+        html: str,
+        source_url: str,
+        search_mode: str,
+        limit: int,
+    ) -> list[str]:
+        pages: list[str] = []
+        soup = BeautifulSoup(html or "", "html.parser")
+        for anchor in soup.find_all("a", href=True):
+            href = str(anchor.get("href") or "").strip()
+            if not href or href.startswith(("#", "javascript:", "mailto:")):
+                continue
+            target_url = unwrap_known_redirect_url(urljoin(source_url, href))
+            domain = extract_domain(target_url)
+            if not is_candidate_url(target_url) or not domain or is_technical_url(target_url):
+                continue
+            title = re.sub(r"\s+", " ", anchor.get_text(" ", strip=True))
+            parent = anchor.find_parent(["article", "li", "div"])
+            snippet = re.sub(r"\s+", " ", parent.get_text(" ", strip=True)) if parent else title
+            context = f"{query} {title} {snippet} {target_url}"
+            if not self._is_informational_search_result(target_url, context, search_mode):
+                continue
+            clean_url = normalize_url(target_url)
+            if clean_url not in pages:
+                pages.append(clean_url)
+            if len(pages) >= limit:
+                break
+        return pages
+
+    def _candidates_from_source_html(
+        self,
+        *,
+        query: str,
+        html: str,
+        source_url: str,
+        limit: int,
+        search_mode: str,
+    ) -> list[Candidate]:
+        if limit <= 0:
+            return []
+        source_domain = registered_domain(extract_domain(source_url))
+        soup = BeautifulSoup(html or "", "html.parser")
+        candidates: list[Candidate] = []
+        seen: set[str] = set()
+
+        for anchor in soup.find_all("a", href=True):
+            if len(candidates) >= limit:
+                break
+            href = str(anchor.get("href") or "").strip()
+            if not href or href.startswith(("#", "javascript:", "mailto:")):
+                continue
+            target_url = unwrap_known_redirect_url(urljoin(source_url, href))
+            domain = extract_domain(target_url)
+            key = registered_domain(domain)
+            if (
+                not key
+                or key == source_domain
+                or key in seen
+                or not is_candidate_url(target_url)
+                or is_technical_url(target_url)
+                or self._is_non_target_source_domain(domain)
+            ):
+                continue
+            title = re.sub(r"\s+", " ", anchor.get_text(" ", strip=True))
+            parent = anchor.find_parent(["article", "li", "p", "div"])
+            context = re.sub(r"\s+", " ", parent.get_text(" ", strip=True)) if parent else title
+            item_context = f"{title} {context} {target_url}"
+            category = self._category_from_search_result(item_context)
+            if category == "suspicious" and not gambling_domain_signals(domain, item_context):
+                continue
+            candidate = self._candidate_from_item(
+                {
+                    "url": target_url,
+                    "title": title,
+                    "snippet": context,
+                    "category": category,
+                    "why": "Домен извлечен из публичной страницы жалоб, форума или обзора и отправлен на живую проверку.",
+                    "search_query": query,
+                    "source_urls": [source_url],
+                },
+                default_sources=[],
+            )
+            if not candidate or not self._candidate_matches_user_search(candidate, query, search_mode):
+                continue
+            seen.add(key)
+            candidates.append(candidate)
+
+        if len(candidates) < limit:
+            visible_text = soup.get_text(" ", strip=True)
+            for domain in find_domains(visible_text):
+                key = registered_domain(domain)
+                if (
+                    len(candidates) >= limit
+                    or not key
+                    or key == source_domain
+                    or key in seen
+                    or self._is_non_target_source_domain(domain)
+                ):
+                    continue
+                context = f"{query} {domain} {visible_text[:4000]}"
+                if not gambling_domain_signals(domain, context):
+                    continue
+                candidate = Candidate(
+                    url=normalize_url(domain),
+                    domain=domain,
+                    category=self._category_from_search_result(context),
+                    why="Домен упомянут на публичной странице-источнике и отправлен на живую проверку.",
+                    search_query=query,
+                    source_urls=[source_url],
+                )
+                if not self._candidate_matches_user_search(candidate, query, search_mode):
+                    continue
+                seen.add(key)
+                candidates.append(candidate)
+
+        return self._sort_candidates_for_search_mode(
+            self._dedupe_candidates(candidates, limit),
+            search_mode,
+        )
 
     def _is_informational_search_result(self, url: str, context: str, search_mode: str = "auto") -> bool:
         domain = extract_domain(url)
@@ -1551,8 +1874,18 @@ class Investigator:
         context = " ".join([candidate.domain, candidate.url, candidate.category, candidate.why])
         product_context = " ".join([candidate.domain, candidate.url, candidate.why])
         category_tokens = set(re.split(r"[^a-z_]+", candidate.category.lower()))
+        why_lower = candidate.why.lower()
+        source_score = 0
+        if candidate.source_urls:
+            source_score += 220
+        if "поисковой выдаче" in why_lower or "search page" in why_lower:
+            source_score += 180
+        if "algorithmic" in why_lower or "алгоритми" in why_lower:
+            source_score -= 320
+        elif "bootstrap" in why_lower:
+            source_score -= 120
         if search_mode == "casino":
-            score = 0
+            score = source_score
             has_casino_product = Investigator._has_casino_product_signal(product_context)
             bookmaker_first = Investigator._is_bookmaker_first_context(product_context)
             score += max(0, Investigator._casino_kz_relevance_score(candidate.url, context))
@@ -2053,67 +2386,41 @@ Critical local-search behavior:
                     and not self._is_bookmaker_first_context(" ".join([candidate.domain, candidate.url, candidate.why]))
                 )
             )
-        ][: self.settings.max_mirror_checks_per_run]
+        ]
 
         groups: list[dict[str, Any]] = []
-        if not casino_candidates:
-            return groups
-        if not self.gemini.available:
-            self.db.add_log(run_id, "warning", "Поиск зеркал пропущен: Gemini ключ не настроен")
-            return groups
-
-        domains = [candidate.domain for candidate in casino_candidates if is_candidate_domain(candidate.domain)]
-        if not domains:
-            return groups
-
-        prompt = f"""
-Найди возможные зеркальные домены для этих casino/betting/scam сайтов.
-Используй только публичный поиск. Не возвращай IP, статьи, соцсети и каталоги.
-
-Домены:
-{", ".join(domains)}
-
-Верни только JSON без Markdown:
-{{
-  "mirror_groups": [
-    {{
-      "brand": "brand-or-domain",
-      "domains": ["domain1.com", "domain2.com"],
-      "why": "что связывает домены",
-      "source_urls": ["https://public-source.example"]
-    }}
-  ]
-}}
-"""
-        try:
-            data, meta = self.gemini.generate_json(
-                prompt,
-                use_search=True,
-                temperature=0.1,
-                max_attempts=max(1, len(self.settings.gemini_api_keys) * len(self.settings.gemini_models)),
-                retry_sleep=False,
-            )
-        except GeminiQuotaError as exc:
-            self.db.add_log(run_id, "warning", "Лимит Gemini для поиска зеркал исчерпан", {"error": str(exc)})
-            return groups
-        except Exception as exc:  # noqa: BLE001
-            self.db.add_log(run_id, "warning", "Поиск зеркал не дал результата", {"error": str(exc)})
-            return groups
-
-        grounding_sources = meta.get("grounding_sources", [])
-        for group in data.get("mirror_groups", []) or []:
-            domains = sorted({extract_domain(domain) for domain in group.get("domains", []) if is_candidate_domain(extract_domain(domain))})
-            if not domains:
+        assigned: set[str] = set()
+        for candidate in casino_candidates:
+            key = candidate.key()
+            if not key or key in assigned:
                 continue
-            groups.append(
+            related = sorted(
                 {
-                    "brand": group.get("brand") or domains[0],
-                    "domains": domains,
-                    "why": group.get("why") or "",
-                    "source_urls": group.get("source_urls") or grounding_sources,
+                    other.key()
+                    for other in casino_candidates
+                    if other.key() and likely_related_domains(candidate.domain, other.domain)
                 }
             )
-        self.db.add_log(run_id, "info", "Зеркальные группы проверены", {"count": len(groups), "model": meta.get("model")})
+            if len(related) < 2:
+                continue
+            assigned.update(related)
+            groups.append(
+                {
+                    "brand": candidate.brand or registered_domain(candidate.domain).split(".", 1)[0],
+                    "domains": related,
+                    "why": "Домены сгруппированы локально по сходству имени без обращения к Gemini.",
+                    "source_urls": self._clean_sources(
+                        [source for item in casino_candidates if item.key() in related for source in item.source_urls]
+                    ),
+                }
+            )
+        if groups:
+            self.db.add_log(
+                run_id,
+                "info",
+                "Зеркальные группы определены локальным алгоритмом",
+                {"count": len(groups), "gemini_used": False},
+            )
         return groups
 
     async def _capture_and_store_screenshot(

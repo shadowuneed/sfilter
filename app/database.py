@@ -26,7 +26,7 @@ def utc_now() -> str:
 
 
 SECRET_QUERY_RE = re.compile(r"(?i)([?&](?:key|api_key|token|access_token|auth|authorization)=)[^&\s''\"<>]+")
-API_KEY_RE = re.compile(r"\b(?:AIza|AQ\.)[A-Za-z0-9_-]{12,}\b")
+API_KEY_RE = re.compile(r"\b(?:(?:AIza|AQ\.)[A-Za-z0-9_-]{12,}|gsk_[A-Za-z0-9_-]{20,})\b")
 BEARER_RE = re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._~+/=-]{16,}")
 
 
@@ -628,6 +628,29 @@ class Database:
                     (run_id, limit),
                 ).fetchall()
             return [self._finding_to_dict(row) for row in rows]
+
+    def list_run_findings_summary(self, run_id: int, limit: int = 8) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 50))
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    f.id, f.run_id, f.url, f.final_url, f.domain, f.normalized_domain,
+                    f.title, f.category, f.verdict, f.risk_score, f.active,
+                    f.status_code, f.screenshot_path, f.created_at,
+                    c.id AS case_id
+                FROM findings f
+                LEFT JOIN cases c ON c.normalized_domain=f.normalized_domain
+                WHERE f.run_id=?
+                ORDER BY f.id DESC
+                LIMIT ?
+                """,
+                (run_id, limit),
+            ).fetchall()
+            return [
+                redact_secrets(repair_mojibake({**dict(row), "active": bool(row["active"])}))
+                for row in rows
+            ]
 
     def list_findings_by_ids(self, finding_ids: list[int]) -> list[dict[str, Any]]:
         ids = [int(item) for item in finding_ids if int(item) > 0]

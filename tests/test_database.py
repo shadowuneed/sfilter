@@ -146,6 +146,41 @@ class DatabaseBackendTests(unittest.TestCase):
             self.assertEqual(finding["evidence"]["screenshot_error"], "navigation warning")
             self.assertIn("Screenshot saved with warning: navigation warning", finding["reasons"])
 
+    def test_run_findings_summary_is_compact_and_latest_first(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "argus.db")
+            db.init()
+            run_id = db.create_run(seed_query="casino", max_candidates=2, take_screenshots=True)
+            for index in range(2):
+                db.insert_finding(
+                    run_id,
+                    {
+                        "url": f"https://casino-{index}.example",
+                        "final_url": f"https://casino-{index}.example",
+                        "domain": f"casino-{index}.example",
+                        "normalized_domain": f"casino-{index}.example",
+                        "title": f"Casino {index}",
+                        "category": "casino",
+                        "verdict": "suspicious",
+                        "risk_score": 90 + index,
+                        "active": True,
+                        "status_code": 200,
+                        "dns_json": {"records": ["192.0.2.1"]},
+                        "evidence_json": {"html": "large payload"},
+                        "reasons_json": ["reason"],
+                    },
+                )
+
+            findings = db.list_run_findings_summary(run_id, limit=1)
+
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0]["domain"], "casino-1.example")
+            self.assertTrue(findings[0]["active"])
+            self.assertIn("case_id", findings[0])
+            self.assertNotIn("dns", findings[0])
+            self.assertNotIn("evidence", findings[0])
+            self.assertNotIn("reasons", findings[0])
+
     def test_registry_lists_latest_seen_cases_first(self) -> None:
         with TemporaryDirectory() as tmp:
             db = Database(Path(tmp) / "argus.db")

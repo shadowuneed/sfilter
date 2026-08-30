@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Qalqan</title>
   <link rel="icon" type="image/png" href="/static/afmlogo.png?v=20260720-qalqan">
-  <link rel="stylesheet" href="/static/styles.css?v=20260830-polish">
+  <link rel="stylesheet" href="/static/styles.css?v=20260830-live-run">
 </head>
 <body data-page="monitor">
   <div class="app-shell">
@@ -140,7 +140,22 @@
           </div>
         </div>
         <div id="activitySteps" class="activity-steps"></div>
-        <p id="activityText">После старта здесь будет видно, что именно сейчас делает система.</p>
+        <div class="activity-metrics" aria-label="Прогресс запуска">
+          <div><span>Найдено</span><strong id="activityFound">0 / 100</strong></div>
+          <div><span>Проверено</span><strong id="activityChecked">0</strong></div>
+          <div><span>Не открылись</span><strong id="activityUnreachable">0</strong></div>
+          <div><span>Отсеяно</span><strong id="activityFiltered">0</strong></div>
+        </div>
+        <div class="activity-progress-track" aria-hidden="true"><span id="activityProgressBar"></span></div>
+        <p id="activityDiagnostic" class="activity-diagnostic">Система формирует начальный пул доменов.</p>
+        <div id="activityFindings" class="activity-findings" hidden>
+          <div class="activity-findings-head">
+            <span>Последние находки</span>
+            <strong id="activityFindingsCount">0 доменов</strong>
+          </div>
+          <div id="activityFindingsList" class="activity-findings-list"></div>
+        </div>
+        <p id="activityText" class="activity-log-text">После старта здесь будет видно, что именно сейчас делает система.</p>
       </section>
 
       <nav class="workspace-links workspace-links-compact" aria-label="Отдельные реестры">
@@ -218,6 +233,18 @@
         </section>
 
         <div class="audit-panel">
+          <section id="journalRunContext" class="journal-run-context" hidden aria-live="polite">
+            <div class="journal-run-main">
+              <span>Выбранный запуск</span>
+              <strong id="journalRunLabel">Запуск</strong>
+              <small id="journalRunDiagnostic">Ожидаю события.</small>
+            </div>
+            <div class="journal-run-metrics">
+              <div><span>Найдено</span><strong id="journalRunFound">0 / 100</strong></div>
+              <div><span>Проверено</span><strong id="journalRunChecked">0</strong></div>
+            </div>
+            <div id="journalRunFindings" class="journal-run-findings"></div>
+          </section>
           <div class="section-head journal-head">
             <div>
               <span class="eyebrow">События проверки</span>
@@ -251,6 +278,6 @@
     </form>
   </div>
 
-  <script src="/static/app.js?v=20260830-polish"></script>
+  <script src="/static/app.js?v=20260830-live-run"></script>
 </body>
 </html>

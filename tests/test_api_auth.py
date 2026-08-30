@@ -72,6 +72,15 @@ class ApiAuthTests(unittest.TestCase):
         self.assertIn('href="#auditPanel">Журнал</a>', monitor.text)
         self.assertIn('href="/registry">Реестр</a>', monitor.text)
         self.assertIn('href="/runs">Запуски</a>', monitor.text)
+        self.assertIn('id="activityFound"', monitor.text)
+        self.assertIn('id="activityFindingsList"', monitor.text)
+        self.assertIn('id="journalRunContext"', monitor.text)
+        self.assertIn('<option value="100" selected>100 находок</option>', monitor.text)
+        self.assertIn('<option value="500">500 находок</option>', monitor.text)
+
+    def test_automatic_run_targets_keep_100_and_500_modes(self) -> None:
+        self.assertEqual(main._normalize_run_target(100), 100)
+        self.assertEqual(main._normalize_run_target(500), 500)
 
     def test_protected_api_rejects_missing_token(self) -> None:
         response = self.client.get("/api/runs")
@@ -126,6 +135,17 @@ class ApiAuthTests(unittest.TestCase):
         self.assertEqual(len(response.json()["findings"]), 1)
         self.assertIn("case_id", response.json()["findings"][0])
         self.assertEqual(response.json()["findings"][0]["normalized_domain"], "example.kz")
+
+        response = self.client.get(
+            f"/api/runs/{run_id}?include_findings=true&compact_findings=true&finding_limit=8",
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        compact = response.json()["findings"][0]
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(compact["normalized_domain"], "example.kz")
+        self.assertNotIn("dns", compact)
+        self.assertNotIn("evidence", compact)
+        self.assertNotIn("reasons", compact)
 
     def test_run_detail_returns_only_logs_after_cursor(self) -> None:
         run_id = main.db.create_run(seed_query="log cursor", max_candidates=1, take_screenshots=False)
@@ -188,6 +208,26 @@ class ApiAuthTests(unittest.TestCase):
         set_kz_proxy(required=False, url=None)
 
         main._ensure_kz_proxy_ready()
+
+    def test_second_automatic_run_is_rejected(self) -> None:
+        active_run = {
+            "id": 107,
+            "status": "running",
+            "max_candidates": 500,
+        }
+
+        with (
+            patch("app.main._ensure_kz_proxy_ready"),
+            patch.object(main.db, "list_active_runs", return_value=[active_run]),
+        ):
+            response = self.client.post(
+                "/api/runs",
+                headers={"Authorization": "Bearer test-secret"},
+                json={"max_candidates": 500, "take_screenshots": True},
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("#107", response.json()["detail"])
 
     def test_failed_optional_kz_proxy_falls_back_to_direct(self) -> None:
         set_kz_proxy(required=False, url="http://dead-proxy.kz:8080")

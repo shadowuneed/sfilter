@@ -30,6 +30,10 @@ const state = {
   visibleRunStatus: "",
   runHistoryExpanded: false,
   stoppingRunIds: new Set(),
+  healthActionBlocked: false,
+  healthActionReason: "",
+  kzProxyConfigured: false,
+  groqConfigured: false,
 };
 
 const DEFAULT_RUN_CANDIDATES = 100;
@@ -57,6 +61,21 @@ const els = {
   activityHeadline: document.getElementById("activityHeadline"),
   activitySteps: document.getElementById("activitySteps"),
   activityText: document.getElementById("activityText"),
+  activityFound: document.getElementById("activityFound"),
+  activityChecked: document.getElementById("activityChecked"),
+  activityUnreachable: document.getElementById("activityUnreachable"),
+  activityFiltered: document.getElementById("activityFiltered"),
+  activityProgressBar: document.getElementById("activityProgressBar"),
+  activityDiagnostic: document.getElementById("activityDiagnostic"),
+  activityFindings: document.getElementById("activityFindings"),
+  activityFindingsCount: document.getElementById("activityFindingsCount"),
+  activityFindingsList: document.getElementById("activityFindingsList"),
+  journalRunContext: document.getElementById("journalRunContext"),
+  journalRunLabel: document.getElementById("journalRunLabel"),
+  journalRunDiagnostic: document.getElementById("journalRunDiagnostic"),
+  journalRunFound: document.getElementById("journalRunFound"),
+  journalRunChecked: document.getElementById("journalRunChecked"),
+  journalRunFindings: document.getElementById("journalRunFindings"),
   currentRun: document.getElementById("currentRun"),
   runStatus: document.getElementById("runStatus"),
   activeCaseCount: document.getElementById("activeCaseCount"),
@@ -273,11 +292,26 @@ function hideAuth() {
 }
 
 function setActionLock(locked, reason = "") {
-  [els.runBtn, els.manualBtn].forEach((button) => {
-    if (!button) return;
-    button.disabled = locked;
-    button.title = reason || "";
-  });
+  state.healthActionBlocked = Boolean(locked);
+  state.healthActionReason = reason || "";
+  syncActionButtons();
+}
+
+function syncActionButtons() {
+  const activeRun = hasRunningRuns();
+  if (els.runBtn) {
+    els.runBtn.disabled = state.healthActionBlocked || activeRun;
+    els.runBtn.title = state.healthActionBlocked
+      ? state.healthActionReason
+      : activeRun
+        ? "Сначала остановите или дождитесь завершения текущего запуска"
+        : "";
+    els.runBtn.textContent = activeRun ? "Запуск идет" : "Запустить";
+  }
+  if (els.manualBtn) {
+    els.manualBtn.disabled = state.healthActionBlocked;
+    els.manualBtn.title = state.healthActionReason;
+  }
 }
 
 function escapeHtml(value) {
@@ -398,6 +432,100 @@ function latestLog(logs = []) {
   return logs.length ? logs[logs.length - 1] : null;
 }
 
+function summarizeRunLogs(logs = []) {
+  const stats = { unreachable: 0, filtered: 0, timeouts: 0, searchIssues: 0 };
+  logs.forEach((log) => {
+    const message = String(log.message || "").toLowerCase();
+    const reason = String(log.meta?.reason || log.meta?.error || "").toLowerCase();
+    const text = `${message} ${reason}`;
+    if (/search pages (?:unavailable|degraded)|поисков.*недоступ/.test(text)) stats.searchIssues += 1;
+    if (!/сайт пропущен|пропущен после контентной проверки/.test(message)) return;
+    if (/таймаут|timeout/.test(text)) {
+      stats.timeouts += 1;
+      stats.unreachable += 1;
+      return;
+    }
+    if (/http 2xx\/3xx|не открыл|dns|connection|connect|ssl|tls/.test(text)) {
+      stats.unreachable += 1;
+      return;
+    }
+    stats.filtered += 1;
+  });
+  return stats;
+}
+
+function runDiagnostic(run = {}, stats = {}) {
+  const found = Number(run.finding_count || 0);
+  const checked = Number(run.candidate_count || 0);
+  const activeCount = state.runs.filter((item) => runningStatus(item.status)).length;
+  if (activeCount > 1 && runningStatus(run.status)) {
+    return `Одновременно работают ${activeCount} запуска: они делят сетевые и браузерные ресурсы. Остановите лишний запуск для максимальной скорости.`;
+  }
+  if (run.status === "queued") return "Запуск поставлен в очередь. Формируется один начальный пул реальных доменов.";
+  if (runningStatus(run.status) && checked === 0) {
+    const source = state.groqConfigured ? "Groq Compound, поисковые страницы, форумы и OSINT" : "поисковые страницы, форумы и OSINT";
+    return `Идет начальный сбор через ${source}. После фиксации пула поисковики повторно не вызываются.`;
+  }
+  if (runningStatus(run.status) && found === 0 && stats.unreachable > 0) {
+    return `Поиск не завис: проверка продолжается, но ${stats.unreachable} последних кандидатов не открылись или превысили таймаут.`;
+  }
+  if (runningStatus(run.status) && found > 0) {
+    return `Рабочие домены уже поступают в реестр. Проверено или поставлено в текущие пакеты: ${checked}.`;
+  }
+  if (run.status === "completed" && found < Number(run.max_candidates || DEFAULT_RUN_CANDIDATES)) {
+    return "Начальный пул исчерпан. В реестр попали только открывшиеся сайты, прошедшие контентную и техническую проверку.";
+  }
+  if (run.status === "completed") return "Цель запуска набрана; находки сохранены в реестре и папке запуска.";
+  if (["canceled", "interrupted"].includes(run.status)) return "Запуск остановлен. Уже подтвержденные находки сохранены.";
+  if (run.status === "failed") return run.error || "Запуск завершился ошибкой; подробности доступны в журнале.";
+  return "Система проверяет зафиксированный пул доменов.";
+}
+
+function renderLiveFindingButtons(container, findings = [], limit = 8) {
+  if (!container) return;
+  const rows = findings.slice(0, limit);
+  container.innerHTML = rows.map((item) => {
+    const domain = item.domain || item.normalized_domain || item.url || "-";
+    return `
+      <button class="live-finding" data-live-finding-domain="${escapeHtml(item.normalized_domain || domain)}" data-live-finding-case="${Number(item.case_id || 0)}" type="button">
+        <span>${escapeHtml(domain)}</span>
+        <small>${escapeHtml(categoryLabel(item.category))} · ${Number(item.risk_score || 0)}%</small>
+      </button>`;
+  }).join("");
+  container.querySelectorAll("[data-live-finding-domain]").forEach((button) => {
+    button.addEventListener("click", () => {
+      openCaseForFinding(button.dataset.liveFindingDomain, Number(button.dataset.liveFindingCase || 0)).catch(console.error);
+    });
+  });
+}
+
+function renderRunObserver(run = {}, logs = [], findings = []) {
+  if (!run.id) return;
+  const found = Number(run.finding_count || 0);
+  const target = Math.max(1, Number(run.max_candidates || DEFAULT_RUN_CANDIDATES));
+  const checked = Number(run.candidate_count || 0);
+  const stats = summarizeRunLogs(logs);
+  const diagnostic = runDiagnostic(run, stats);
+  const progress = Math.max(0, Math.min(100, (found / target) * 100));
+
+  if (els.activityFound) els.activityFound.textContent = `${found} / ${target}`;
+  if (els.activityChecked) els.activityChecked.textContent = String(checked);
+  if (els.activityUnreachable) els.activityUnreachable.textContent = String(stats.unreachable);
+  if (els.activityFiltered) els.activityFiltered.textContent = String(stats.filtered);
+  if (els.activityProgressBar) els.activityProgressBar.style.width = `${progress}%`;
+  if (els.activityDiagnostic) els.activityDiagnostic.textContent = diagnostic;
+  if (els.activityFindings) els.activityFindings.hidden = findings.length === 0;
+  if (els.activityFindingsCount) els.activityFindingsCount.textContent = `${found} доменов`;
+  renderLiveFindingButtons(els.activityFindingsList, findings, 8);
+
+  if (els.journalRunContext) els.journalRunContext.hidden = false;
+  if (els.journalRunLabel) els.journalRunLabel.textContent = `Запуск #${run.id} · ${runStatusLabel(run)}`;
+  if (els.journalRunDiagnostic) els.journalRunDiagnostic.textContent = diagnostic;
+  if (els.journalRunFound) els.journalRunFound.textContent = `${found} / ${target}`;
+  if (els.journalRunChecked) els.journalRunChecked.textContent = String(checked);
+  renderLiveFindingButtons(els.journalRunFindings, findings, 6);
+}
+
 function activityStageIndex(run = {}, logs = []) {
   if (terminalStatus(run.status)) {
     return activityStages.length - 1;
@@ -414,15 +542,11 @@ function activityStageIndex(run = {}, logs = []) {
   return 0;
 }
 
-function showActivity(run = {}, logs = []) {
+function showActivity(run = {}, logs = [], findings = []) {
   if (!els.activityPanel) return;
   const active = runningStatus(run.status);
   const done = terminalStatus(run.status);
   if (active && run.id) state.activityRunId = run.id;
-  if (done && run.id && state.activityRunId !== run.id) {
-    els.activityPanel.hidden = true;
-    return;
-  }
   if (!active && !done && !logs.length) {
     els.activityPanel.hidden = true;
     return;
@@ -451,6 +575,7 @@ function showActivity(run = {}, logs = []) {
         <small>${escapeHtml(stage.detail)}</small>
       </div>`;
   }).join("");
+  renderRunObserver(run, logs, findings);
 }
 
 function primeActivity(runId, mode = "auto") {
@@ -513,14 +638,10 @@ async function loadHealth() {
     const health = await api("/api/health");
     state.authRequired = Boolean(health.auth_required);
     state.authConfigured = Boolean(health.auth_configured);
-    const geminiWarnings = Array.isArray(health.gemini_key_warnings) ? health.gemini_key_warnings : [];
-    const geminiOk = Boolean(health.gemini_configured && health.gemini_key_format_ok);
-    const geminiText = !health.gemini_configured
-      ? "AI: нет ключа"
-      : geminiWarnings.length
-        ? "AI: проверь формат"
-        : "AI: ключи загружены";
-    renderPill(els.geminiPill, geminiText, geminiOk ? "ok" : "warn");
+    state.kzProxyConfigured = Boolean(health.kz_proxy_configured);
+    state.groqConfigured = Boolean(health.groq_configured);
+    const discoveryText = health.groq_configured ? "Discovery: Groq + OSINT" : "Discovery: OSINT";
+    renderPill(els.geminiPill, discoveryText, health.groq_configured ? "ok" : "warn");
     const kzReady = Boolean(health.kz_proxy_ready);
     const kzRequired = Boolean(health.kz_proxy_required);
     const kzText = health.kz_proxy_configured ? "KZ: proxy" : kzRequired ? "KZ: нет proxy" : "KZ: direct";
@@ -533,8 +654,11 @@ async function loadHealth() {
       ? health.gemini_models.join(" → ")
       : health.gemini_model;
     const geminiHint = health.gemini_configured
-      ? `${keyCount} ключ(а), модели ${geminiModels}${hashHint}`
-      : "добавьте GEMINI_API_KEYS";
+      ? `Gemini настроен (${keyCount} ключ(а), ${geminiModels}${hashHint}), но в автоматическом поиске не используется`
+      : "Gemini в автоматическом поиске не используется";
+    const groqHint = health.groq_configured
+      ? `Groq Compound: 1 пакетный запрос на запуск (${health.groq_model || "groq/compound-mini"})`
+      : "Groq Compound не настроен: поиск продолжает работать через поисковые страницы и OSINT";
     const mlClasses = Array.isArray(health.ml_classes) && health.ml_classes.length ? ` (${health.ml_classes.join(", ")})` : "";
     const mlHint = health.ml_available
       ? `ML: CatBoost готов${mlClasses}`
@@ -554,7 +678,7 @@ async function loadHealth() {
     const concurrency = health.scan_concurrency || 3;
     const timeout = health.candidate_timeout_seconds || 15;
     const maxRun = Math.min(Number(health.max_candidates_per_run || MAX_RUN_CANDIDATES), MAX_RUN_CANDIDATES);
-    els.healthLine.textContent = `${geminiHint}. ${mlHint}. ${cyberHint}. ${kzHint}. Цель запуска: до ${maxRun} находок, потоков: ${concurrency}, таймаут сайта: ${timeout} сек.`;
+    els.healthLine.textContent = `${groqHint}. ${geminiHint}. ${mlHint}. ${cyberHint}. ${kzHint}. Цель запуска: до ${maxRun} находок, потоков: ${concurrency}, таймаут сайта: ${timeout} сек.`;
     const actionBlocked = authMissing || !kzReady;
     const actionReason = authMissing
       ? "На сервере не настроен ADMIN_TOKEN"
@@ -603,8 +727,7 @@ async function startRun(event) {
   } catch (error) {
     alert(`Не удалось запустить проверку: ${error.message}`);
   } finally {
-    els.runBtn.disabled = false;
-    els.runBtn.textContent = "Запустить";
+    syncActionButtons();
   }
 }
 
@@ -637,7 +760,7 @@ async function startManualCheck() {
   } catch (error) {
     alert(`Не удалось запустить ручную проверку: ${error.message}`);
   } finally {
-    els.manualBtn.disabled = false;
+    els.manualBtn.disabled = state.healthActionBlocked;
     els.manualBtn.textContent = "Проверить сайт";
   }
 }
@@ -669,6 +792,7 @@ async function stopRun(runId = activeRunIdForStop()) {
   } finally {
     state.stoppingRunIds.delete(normalizedRunId);
     syncStopButton();
+    syncActionButtons();
     renderRuns();
   }
 }
@@ -687,6 +811,7 @@ async function loadRuns() {
   state.runs.forEach((run) => state.runStatuses.set(run.id, run.status));
   if (!state.selectedRunId && state.runs.length) state.selectedRunId = state.runs[0].id;
   syncStopButton();
+  syncActionButtons();
   renderRuns();
   renderRunFolders();
 }
@@ -695,10 +820,15 @@ async function loadRun(runId, options = {}) {
   if (!runId) return;
   const cached = state.runDetails.get(runId);
   const canUseCache = cached && !options.force && !runningStatus(cached.run?.status);
-  const includeFindings = Boolean(options.includeFindings);
+  const includeFindings = Boolean(options.includeFindings || PAGE === "monitor");
+  const compactFindings = Boolean(options.compactFindings || PAGE === "monitor");
   const incremental = Boolean(options.incremental && cached?.logs?.length);
   const params = new URLSearchParams();
-  if (includeFindings) params.set("include_findings", "true");
+  if (includeFindings) {
+    params.set("include_findings", "true");
+    params.set("finding_limit", String(options.findingLimit || (compactFindings ? 8 : 500)));
+  }
+  if (compactFindings) params.set("compact_findings", "true");
   if (incremental) {
     const lastLogId = Number(cached.logs[cached.logs.length - 1]?.id || 0);
     if (lastLogId) params.set("after_log_id", String(lastLogId));
@@ -731,8 +861,9 @@ async function loadRun(runId, options = {}) {
   const liveFindingCount = Number(run.finding_count || 0);
   if (els.runStatus) els.runStatus.textContent = `${runStatusLabel(run)} · ${liveFindingCount}/${run.candidate_count || 0}`;
   syncStopButton();
+  syncActionButtons();
 
-  showActivity(run, data.logs || []);
+  showActivity(run, data.logs || [], data.findings || []);
   renderMethodology(run.methodology || []);
   renderLogs(data.logs || [], run.status);
   renderRuns();
@@ -983,11 +1114,18 @@ function formatMetaParts(meta) {
   if (meta.access_origin) parts.push(`сеть: ${meta.access_origin}`);
   if (meta.count !== undefined) parts.push(`кол-во: ${meta.count}`);
   if (meta.added !== undefined) parts.push(`добавлено: ${meta.added}`);
+  if (meta.page !== undefined) parts.push(`страница: ${meta.page}`);
+  if (meta.batch !== undefined) parts.push(`пакет: ${meta.batch}`);
+  if (meta.checking !== undefined) parts.push(`в пакете: ${meta.checking}`);
+  if (meta.checked_total !== undefined) parts.push(`проверяется: ${meta.checked_total}`);
+  if (meta.candidate_total !== undefined) parts.push(`кандидатов: ${meta.candidate_total}`);
+  if (meta.target_findings !== undefined) parts.push(`цель: ${meta.target_findings}`);
   if (meta.skipped !== undefined) parts.push(`пропущено: ${meta.skipped}`);
   if (meta.raw !== undefined) parts.push(`raw: ${meta.raw}`);
   if (meta.deduped !== undefined) parts.push(`после дедупликации: ${meta.deduped}`);
   if (meta.known_rechecked !== undefined) parts.push(`уже известные: ${meta.known_rechecked}`);
   if (meta.skipped_known !== undefined) parts.push(`пропущено повторов: ${meta.skipped_known}`);
+  if (meta.skipped_attempted !== undefined) parts.push(`уже проверено: ${meta.skipped_attempted}`);
   if (meta.ready !== undefined) parts.push(`готово к проверке: ${meta.ready}`);
   if (meta.items !== undefined) parts.push(`items: ${meta.items}`);
   if (meta.sources !== undefined) parts.push(`sources: ${meta.sources}`);
