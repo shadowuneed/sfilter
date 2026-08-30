@@ -52,11 +52,12 @@ class GroqCompoundClientTests(unittest.TestCase):
 
         post.assert_called_once()
         request_kwargs = post.call_args.kwargs
-        self.assertEqual(request_kwargs["headers"]["Groq-Model-Version"], "2025-07-23")
+        self.assertEqual(request_kwargs["headers"]["Groq-Model-Version"], "latest")
         self.assertEqual(
             request_kwargs["json"]["compound_custom"]["tools"]["enabled_tools"],
-            ["web_search"],
+            ["web_search", "visit_website"],
         )
+        self.assertIn("онлайн казино", request_kwargs["json"]["messages"][0]["content"])
         self.assertEqual([candidate["domain"] for candidate in candidates], ["live-slots.example"])
         self.assertEqual(candidates[0]["source_urls"], ["https://live-slots.example/register"])
         self.assertEqual(
@@ -81,6 +82,14 @@ class GroqCompoundClientTests(unittest.TestCase):
 
         self.assertEqual(sources, ["https://live-slots.example/register"])
         self.assertEqual([candidate["domain"] for candidate in candidates], ["live-slots.example"])
+
+    def test_candidate_mentioned_on_public_source_is_supported_by_tool_evidence(self) -> None:
+        item = {"url": "https://target-casino.example", "domain": "target-casino.example"}
+        evidence = GroqCompoundClient._tool_evidence_text(
+            [{"url": "https://forum.example/report", "output": "Complaint about target-casino.example"}]
+        )
+
+        self.assertTrue(GroqCompoundClient._candidate_has_tool_evidence(item, {"forum.example"}, evidence))
 
 
 if __name__ == "__main__":

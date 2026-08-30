@@ -195,9 +195,9 @@ class InvestigatorRunTargetTests(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(schedule, [(0, 0), (0, 6), (1, 0)])
+        self.assertEqual(schedule, [(0, 0), (0, 6), (0, 12)])
 
-    def test_later_round_refills_locally_without_repeating_web_search(self) -> None:
+    def test_later_round_does_not_invent_domains_without_external_search(self) -> None:
         investigator = object.__new__(Investigator)
         investigator.settings = Settings(osint_candidate_pool_size=5000, osint_feeds_enabled=False)
         investigator.groq = None
@@ -243,8 +243,8 @@ class InvestigatorRunTargetTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual([candidate.domain for candidate in candidates], ["new-casino-mirror.example"])
-        self.assertEqual(algorithmic_limits, [5000])
+        self.assertEqual(candidates, [])
+        self.assertEqual(algorithmic_limits, [])
 
     def test_empty_discovery_backoff_is_bounded(self) -> None:
         self.assertEqual(Investigator._discovery_retry_delay(1), 30)

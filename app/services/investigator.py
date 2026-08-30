@@ -61,7 +61,13 @@ CYBERSCAN_OSINT_SOURCES = [
     },
     {
         "name": "stevenblack_gambling",
-        "url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling/hosts",
+        "url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling-only/hosts",
+        "category": "casino",
+        "parser": "hosts_file",
+    },
+    {
+        "name": "blocklistproject_gambling",
+        "url": "https://raw.githubusercontent.com/blocklistproject/Lists/master/gambling.txt",
         "category": "casino",
         "parser": "hosts_file",
     },
@@ -361,15 +367,30 @@ SEARCH_MODE_LABELS = {
 
 CASINO_SEARCH_QUERIES = [
     "онлайн казино играть на деньги",
+    "онлайн казино Казахстан рабочий сайт",
     "казино онлайн регистрация бонус",
     "слоты на деньги играть",
     "live casino slots roulette blackjack bonus",
     "казино зеркало рабочий вход",
     "онлайн казино без блокировки зеркало",
+    "рабочие зеркала казино новый домен",
+    "новые онлайн казино регистрация депозит",
+    "casino mirror working login new domain",
+    "online casino play now deposit slots",
     "мошеннические онлайн казино жалобы домен",
     "онлайн казино отзывы форум рабочий сайт",
+    "казино не выводит деньги жалоба домен",
+    "форум жалобы казино адрес сайта",
     "список нелегальных онлайн казино зеркала",
     "online casino slots bonus registration",
+    "online casino complaints withdrawal website domain",
+    "casino blacklist direct domains",
+    "site:casino.guru complaints casino",
+    "site:askgamblers.com casino complaints",
+    "site:trustpilot.com online casino withdrawal",
+    "site:.casino slots register bonus",
+    "site:.bet casino slots roulette",
+    "crypto casino register deposit play",
 ]
 
 SCAM_SEARCH_QUERIES = [
@@ -562,6 +583,7 @@ class Investigator:
         self.cyberscan = CyberScanClassifier(settings)
         self._search_request_lock = Lock()
         self._last_search_request_at = 0.0
+        self._feed_token_cache: dict[str, list[str]] = {}
 
     def run(
         self,
@@ -707,8 +729,8 @@ class Investigator:
 
             methodology = [
                 f"Режим поиска: {SEARCH_MODE_LABELS[search_mode]}.",
-                "Первый проход собирает реальные домены из выдачи DuckDuckGo/Google/Bing/Yandex, разрешенных OSINT-источников и Groq Compound при наличии ключа; Gemini не используется.",
-                "Если выдачи недостаточно, локальный алгоритм расширяет пул вариантами доменов известных казино-брендов; каждый вариант обязательно проходит живую проверку до добавления в реестр.",
+                "Первый проход собирает реальные домены из выдачи DuckDuckGo/Google/Bing/Yandex, профильных OSINT-источников и Groq Compound при наличии ключа; Gemini не используется.",
+                "Пустая выдача не заменяется придуманными комбинациями доменов: в проверку попадают только адреса из публичного поиска, профильного списка или известного стартового реестра.",
                 "Внешний поиск обновляется периодически, а между обновлениями проверяются еще не использованные кандидаты без повторных запросов к поисковикам.",
                 "Поиск продолжается до достижения выбранного количества записей в реестре или ручной остановки.",
                 "В поисковых запросах берем живые домены, рабочие зеркала и страницы, доступные для пользователей Казахстана.",
@@ -783,7 +805,7 @@ class Investigator:
                 search_mode,
                 excluded_domains=attempted_domains,
                 discovery_round=discovery_round,
-                use_groq=discovery_round == 0 and not attempted_domains,
+                use_groq=True,
             )
             fresh_candidates = [candidate for candidate in candidates if candidate.key()]
             candidate_check_limit = self._candidate_check_limit(
@@ -1171,8 +1193,9 @@ class Investigator:
                         self._discover_with_groq(
                             run_id,
                             seed_query,
-                            min(80, candidate_target),
+                            min(120, candidate_target),
                             search_mode,
+                            query_offset=external_discovery_round * self.settings.groq_requests_per_discovery,
                         )
                     )
                 except httpx.HTTPStatusError as exc:
@@ -1218,7 +1241,12 @@ class Investigator:
             except Exception as exc:  # noqa: BLE001
                 self.db.add_log(run_id, "warning", "Пользовательский поиск недоступен", {"error": str(exc)})
             if self.settings.osint_feeds_enabled and len(discovered) < candidate_target:
-                feed_candidates = await self._discover_from_feeds(run_id, discovery_limit)
+                feed_candidates = await self._discover_from_feeds(
+                    run_id,
+                    discovery_limit,
+                    search_mode,
+                    feed_page=external_discovery_round,
+                )
                 matched_feeds = [
                     candidate
                     for candidate in feed_candidates
@@ -1248,7 +1276,12 @@ class Investigator:
             )
         else:
             if refresh_external and self.settings.osint_feeds_enabled:
-                feed_candidates = await self._discover_from_feeds(run_id, discovery_limit)
+                feed_candidates = await self._discover_from_feeds(
+                    run_id,
+                    discovery_limit,
+                    search_mode,
+                    feed_page=external_discovery_round,
+                )
                 discovered.extend(feed_candidates)
             if refresh_external:
                 self.db.add_log(
@@ -1273,9 +1306,9 @@ class Investigator:
                 )
 
         seed_domains = set(find_domains(seed_query or ""))
-        allow_algorithmic_refill = not seed_domains and (not user_search_mode or search_mode == "casino")
+        allow_bootstrap_refill = not seed_domains and (not user_search_mode or search_mode == "casino")
 
-        if allow_algorithmic_refill and len(discovered) < candidate_target:
+        if allow_bootstrap_refill and len(discovered) < candidate_target:
             bootstrap = self._discover_from_bootstrap(seed_query, candidate_target - len(discovered), search_mode)
             if bootstrap:
                 discovered.extend(bootstrap)
@@ -1293,30 +1326,6 @@ class Investigator:
         known_domains = self.db.known_domains()
         fresh_after_known, skipped_known = self._exclude_known_candidates(candidates, known_domains)
         fresh_candidates, skipped_attempted = self._exclude_known_candidates(fresh_after_known, excluded_domains)
-        algorithmic_added = 0
-
-        if allow_algorithmic_refill and len(fresh_candidates) < candidate_target:
-            algorithmic_excluded = known_domains | excluded_domains | {candidate.key() for candidate in candidates}
-            algorithmic_budget = candidate_target - len(fresh_candidates)
-            algorithmic = self._discover_from_algorithmic_mirrors(
-                seed_query,
-                algorithmic_budget,
-                algorithmic_excluded,
-                search_mode,
-            )
-            if algorithmic:
-                fresh_candidates.extend(algorithmic)
-                algorithmic_added = len(algorithmic)
-                self.db.add_log(
-                    run_id,
-                    "info",
-                    "Algorithmic discovery добавил кандидатов для расширенного прохода",
-                    {
-                        "added": algorithmic_added,
-                        "reason": "Поисковая выдача и OSINT дали мало новых доменов",
-                    },
-                )
-
         self.db.add_log(
             run_id,
             "info",
@@ -1326,7 +1335,7 @@ class Investigator:
                 "deduped": len(candidates),
                 "skipped_known": skipped_known,
                 "skipped_attempted": skipped_attempted,
-                "algorithmic_added": algorithmic_added,
+                "algorithmic_added": 0,
                 "known_rechecked": 0,
                 "external_refresh": refresh_external,
                 "ready": len(fresh_candidates),
@@ -1340,27 +1349,73 @@ class Investigator:
         seed_query: str | None,
         limit: int,
         search_mode: str,
+        query_offset: int = 0,
     ) -> list[Candidate]:
         queries = self._user_search_queries(seed_query, search_mode)
-        query = (seed_query or (queries[0] if queries else "онлайн казино играть")).strip()
+        if not queries:
+            queries = [(seed_query or "онлайн казино играть").strip()]
+        rotation = max(0, int(query_offset)) % len(queries)
+        queries = queries[rotation:] + queries[:rotation]
+        request_limit = min(
+            self.settings.groq_requests_per_discovery,
+            len(queries),
+            max(1, (max(1, int(limit)) + 14) // 15),
+        )
+        selected_queries = queries[:request_limit]
         self.db.add_log(
             run_id,
             "info",
-            "Groq Compound выполняет один дополнительный поиск",
-            {"model": self.groq.model, "limit": limit, "requests": 1},
+            "Groq Compound запускает серию реальных веб-поисков",
+            {
+                "model": self.groq.model,
+                "limit": limit,
+                "requests": request_limit,
+                "query_offset": max(0, int(query_offset)),
+            },
         )
-        items, meta = self.groq.discover(query, limit, search_mode)
         candidates: list[Candidate] = []
-        for item in items:
-            candidate = self._candidate_from_item(item, default_sources=meta.get("sources") or [])
-            if not candidate:
+        requests_made = 0
+        last_remaining: str | None = None
+        for query in selected_queries:
+            if len(candidates) >= limit:
+                break
+            request_started = time.monotonic()
+            try:
+                items, meta = self.groq.discover(query, min(15, limit - len(candidates)), search_mode)
+            except httpx.HTTPStatusError as exc:
+                self.db.add_log(
+                    run_id,
+                    "warning",
+                    "Groq Web Search временно недоступен",
+                    {"query": query, "status_code": exc.response.status_code, "requests": requests_made},
+                )
+                if exc.response.status_code == 429:
+                    break
                 continue
-            context = f"{candidate.domain} {candidate.url} {candidate.why}"
-            if self._is_informational_search_result(candidate.url, context, search_mode):
-                continue
-            if not self._candidate_matches_user_search(candidate, query, search_mode):
-                continue
-            candidates.append(candidate)
+            requests_made += 1
+            last_remaining = meta.get("rate_limit_remaining_requests")
+            added_before = len(candidates)
+            for item in items:
+                candidate = self._candidate_from_item(item, default_sources=meta.get("sources") or [])
+                if not candidate:
+                    continue
+                candidate.search_query = query
+                context = f"{candidate.domain} {candidate.url} {candidate.why}"
+                if self._is_informational_search_result(candidate.url, context, search_mode):
+                    continue
+                if not self._candidate_matches_user_search(candidate, query, search_mode):
+                    continue
+                candidates.append(candidate)
+            candidates = self._dedupe_candidates(candidates, limit)
+            self.db.add_log(
+                run_id,
+                "info",
+                "Groq Web Search обработал запрос",
+                {"query": query, "added": len(candidates) - added_before, "requests": requests_made},
+            )
+            remaining_delay = 2.05 - (time.monotonic() - request_started)
+            if remaining_delay > 0 and requests_made < request_limit:
+                time.sleep(remaining_delay)
         candidates = self._sort_candidates_for_search_mode(
             self._dedupe_candidates(candidates, limit),
             search_mode,
@@ -1370,9 +1425,10 @@ class Investigator:
             "info",
             "Groq Compound discovery завершен",
             {
-                "model": meta.get("model") or self.groq.model,
+                "model": self.groq.model,
                 "candidates": len(candidates),
-                "requests": 1,
+                "requests": requests_made,
+                "remaining_daily_requests": last_remaining,
                 "gemini_used": False,
             },
         )
@@ -1944,7 +2000,7 @@ class Investigator:
             if normalized and normalized not in clean:
                 clean.append(normalized)
         if effective_mode == "casino":
-            return clean[:10]
+            return clean[:24]
         if effective_mode in {"phishing", "scam"}:
             return clean[:8]
         return clean[:10]
@@ -2406,33 +2462,71 @@ Critical local-search behavior:
                 self.db.add_log(run_id, "info", "OSINT feed обработан", {"url": feed_url, "added": added, "skipped": skipped})
         return candidates
 
-    async def _discover_from_feeds(self, run_id: int, max_candidates: int) -> list[Candidate]:
+    async def _discover_from_feeds(
+        self,
+        run_id: int,
+        max_candidates: int,
+        search_mode: str = "auto",
+        *,
+        feed_page: int = 0,
+    ) -> list[Candidate]:
         candidates: list[Candidate] = []
         seen: set[str] = set()
         timeout = min(self.settings.request_timeout_seconds, 15)
         headers = {"User-Agent": self.settings.user_agent}
-        sources = self._osint_sources()
+        effective_mode = self._effective_search_mode(None, search_mode)
+        sources = self._osint_sources(effective_mode)
 
-        self.db.add_log(run_id, "info", "OSINT discovery started", {"sources": len(sources), "limit": max_candidates})
+        self.db.add_log(
+            run_id,
+            "info",
+            "OSINT discovery started",
+            {"sources": len(sources), "limit": max_candidates, "search_mode": effective_mode, "page": feed_page},
+        )
         async with httpx.AsyncClient(timeout=timeout, headers=headers, follow_redirects=True) as client:
             for source in sources:
                 if len(candidates) >= max_candidates:
                     break
-                try:
-                    response = await client.get(source["url"])
-                    response.raise_for_status()
-                except Exception as exc:  # noqa: BLE001
-                    self.db.add_log(
-                        run_id,
-                        "warning",
-                        "OSINT source unavailable",
-                        {"name": source["name"], "url": source["url"], "error": str(exc)},
-                    )
-                    continue
+                tokens = self._feed_token_cache.get(source["url"])
+                if tokens is None:
+                    try:
+                        response = await client.get(source["url"])
+                        response.raise_for_status()
+                    except Exception as exc:  # noqa: BLE001
+                        self.db.add_log(
+                            run_id,
+                            "warning",
+                            "OSINT source unavailable",
+                            {"name": source["name"], "url": source["url"], "error": str(exc)},
+                        )
+                        continue
+                    tokens = self._feed_tokens(response.text, source["parser"])
+                    self._feed_token_cache[source["url"]] = tokens
 
                 added = 0
                 skipped = 0
-                for token in self._feed_tokens(response.text, source["parser"]):
+                eligible: list[str] = []
+                source_seen: set[str] = set()
+                for token in tokens:
+                    domain = extract_domain(token)
+                    key = registered_domain(domain)
+                    if not is_candidate_domain(domain) or not key or key in source_seen:
+                        skipped += 1
+                        continue
+                    if source["category"] == "casino" and effective_mode == "casino":
+                        if (
+                            not self._has_casino_product_signal(domain)
+                            or self._is_official_bookmaker_domain(domain)
+                            or self._is_bookmaker_first_context(domain)
+                        ):
+                            skipped += 1
+                            continue
+                    source_seen.add(key)
+                    eligible.append(domain)
+
+                remaining = max_candidates - len(candidates)
+                selected = self._sample_feed_tokens(eligible, remaining, feed_page)
+                for token in selected:
                     if len(candidates) >= max_candidates:
                         break
                     domain = extract_domain(token)
@@ -2459,11 +2553,29 @@ Critical local-search behavior:
                     run_id,
                     "info",
                     "OSINT source processed",
-                    {"name": source["name"], "category": source["category"], "added": added, "skipped": skipped},
+                    {
+                        "name": source["name"],
+                        "category": source["category"],
+                        "matching": len(eligible),
+                        "selected": len(selected),
+                        "added": added,
+                        "skipped": skipped,
+                    },
                 )
         return candidates
 
-    def _osint_sources(self) -> list[dict[str, str]]:
+    @staticmethod
+    def _sample_feed_tokens(tokens: list[str], limit: int, page: int = 0) -> list[str]:
+        if limit <= 0 or not tokens:
+            return []
+        if len(tokens) <= limit:
+            return list(tokens)
+        bucket_width = len(tokens) / limit
+        phase_options = max(1, int(bucket_width))
+        phase = max(0, int(page)) % phase_options
+        return [tokens[min(len(tokens) - 1, int((index * bucket_width) + phase))] for index in range(limit)]
+
+    def _osint_sources(self, search_mode: str = "auto") -> list[dict[str, str]]:
         sources = [dict(item) for item in CYBERSCAN_OSINT_SOURCES]
         known_urls = {item["url"] for item in sources}
         for feed_url in self.settings.osint_feeds:
@@ -2474,10 +2586,23 @@ Critical local-search behavior:
                 {
                     "name": extract_domain(feed_url) or "custom_feed",
                     "url": feed_url,
-                    "category": "phishing" if "phish" in feed_url.lower() else "suspicious",
+                    "category": (
+                        "casino"
+                        if re.search(r"(?i)(gambling|casino)", feed_url)
+                        else "phishing"
+                        if "phish" in feed_url.lower()
+                        else "suspicious"
+                    ),
                     "parser": "plain_list",
                 }
             )
+        effective_mode = self.normalize_search_mode(search_mode)
+        if effective_mode == "casino":
+            return [source for source in sources if source["category"] == "casino"]
+        if effective_mode == "phishing":
+            return [source for source in sources if source["category"] in {"phishing", "malware"}]
+        if effective_mode == "scam":
+            return [source for source in sources if source["category"] == "suspicious"]
         return sources
 
     def _feed_tokens(self, text: str, parser: str) -> list[str]:
@@ -3167,7 +3292,7 @@ Critical local-search behavior:
     def _candidate_from_item(
         self,
         item: dict[str, Any],
-        default_sources: list[dict[str, str]],
+        default_sources: list[Any],
     ) -> Candidate | None:
         text_blob = self._item_text_blob(item, default_sources)
         category_item = {key: value for key, value in item.items() if key != "search_query"}
@@ -3196,7 +3321,11 @@ Critical local-search behavior:
         if isinstance(sources, str):
             sources = [sources]
         if not sources:
-            sources = [source["url"] for source in default_sources if source.get("url")]
+            sources = [
+                str(source.get("url") or "") if isinstance(source, dict) else str(source or "")
+                for source in default_sources
+            ]
+            sources = [source for source in sources if source.startswith(("http://", "https://"))]
         mirrors = item.get("mirror_hints") or []
         if isinstance(mirrors, str):
             mirrors = [mirrors]
@@ -3220,7 +3349,7 @@ Critical local-search behavior:
         )
 
     @staticmethod
-    def _item_text_blob(item: dict[str, Any], default_sources: list[dict[str, str]]) -> str:
+    def _item_text_blob(item: dict[str, Any], default_sources: list[Any]) -> str:
         parts: list[str] = []
 
         def collect(value: Any) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from unittest.mock import patch
 
 import httpx
 
@@ -311,6 +312,62 @@ class InvestigatorCandidateTests(unittest.TestCase):
         self.assertIn("casino-mirror.example", hosts_tokens)
         self.assertIn("bonus-slot.example", hosts_tokens)
 
+    def test_casino_osint_uses_only_profiled_gambling_lists(self) -> None:
+        self.investigator.settings = Settings(osint_feeds=[])
+
+        sources = self.investigator._osint_sources("casino")
+
+        self.assertTrue(sources)
+        self.assertTrue(all(source["category"] == "casino" for source in sources))
+        urls = {source["url"] for source in sources}
+        self.assertIn(
+            "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling-only/hosts",
+            urls,
+        )
+        self.assertIn("https://raw.githubusercontent.com/blocklistproject/Lists/master/gambling.txt", urls)
+
+    def test_feed_sampling_rotates_across_the_full_source(self) -> None:
+        tokens = [f"casino-{index}.example" for index in range(100)]
+
+        first = Investigator._sample_feed_tokens(tokens, 10, page=0)
+        second = Investigator._sample_feed_tokens(tokens, 10, page=1)
+
+        self.assertEqual(len(first), 10)
+        self.assertEqual(len(set(first)), 10)
+        self.assertNotEqual(first, second)
+
+    def test_groq_discovery_uses_multiple_distinct_queries(self) -> None:
+        class FakeDb:
+            @staticmethod
+            def add_log(*args, **kwargs) -> None:  # noqa: ANN002, ANN003
+                return None
+
+        class FakeGroq:
+            model = "groq/compound"
+
+            def __init__(self) -> None:
+                self.queries: list[str] = []
+
+            def discover(self, query: str, limit: int, search_mode: str):  # noqa: ANN201
+                self.queries.append(query)
+                index = len(self.queries)
+                url = f"https://casino-{index}.example"
+                return (
+                    [{"url": url, "domain": f"casino-{index}.example", "category": "casino", "why": "casino"}],
+                    {"sources": [url], "rate_limit_remaining_requests": "200"},
+                )
+
+        self.investigator.settings = Settings(groq_requests_per_discovery=3)
+        self.investigator.db = FakeDb()
+        self.investigator.groq = FakeGroq()
+
+        with patch("app.services.investigator.time.sleep"):
+            candidates = self.investigator._discover_with_groq(1, "онлайн казино", 45, "casino")
+
+        self.assertEqual(len(self.investigator.groq.queries), 3)
+        self.assertEqual(len(set(self.investigator.groq.queries)), 3)
+        self.assertEqual(len(candidates), 3)
+
     def test_known_domains_are_dropped_from_auto_discovery(self) -> None:
         class FakeDb:
             def __init__(self) -> None:
@@ -545,9 +602,9 @@ class InvestigatorCandidateTests(unittest.TestCase):
 
         candidates = asyncio.run(self.investigator._discover_candidates(1, "онлайн казино", 100, "casino"))
 
-        self.assertEqual(len(candidates), 11)
+        self.assertEqual(len(candidates), 10)
         self.assertEqual(captured_bootstrap_limits, [4990])
-        self.assertEqual(captured_algorithmic_limits, [4990])
+        self.assertEqual(captured_algorithmic_limits, [])
 
     def test_target_500_builds_a_five_thousand_candidate_pool(self) -> None:
         class FakeDb:
@@ -581,7 +638,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
         candidates = asyncio.run(self.investigator._discover_candidates(1, "онлайн казино", 500, "casino"))
 
         self.assertEqual(candidates, [])
-        self.assertEqual(captured_algorithmic_limits, [5000])
+        self.assertEqual(captured_algorithmic_limits, [])
 
     def test_casino_check_limit_overscans_candidates(self) -> None:
         self.investigator.settings = Settings(max_candidates_per_run=2000)
@@ -604,7 +661,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
     def test_casino_mode_queries_do_not_include_easy_money(self) -> None:
         queries = Investigator._user_search_queries("онлайн казино", "casino")
 
-        self.assertLessEqual(len(queries), 10)
+        self.assertLessEqual(len(queries), 24)
         joined = " ".join(queries).lower()
         self.assertIn("онлайн казино", joined)
         self.assertIn("slots", joined)

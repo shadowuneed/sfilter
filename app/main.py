@@ -292,7 +292,7 @@ def health() -> dict[str, Any]:
         "groq_configured": investigator.groq.available,
         "groq_model": settings.groq_model,
         "groq_model_version": settings.groq_model_version,
-        "groq_requests_per_run": 1 if investigator.groq.available else 0,
+        "groq_requests_per_discovery": settings.groq_requests_per_discovery if investigator.groq.available else 0,
         "candidate_timeout_seconds": settings.candidate_timeout_seconds,
         "fast_evidence_mode": settings.fast_evidence_mode,
         "screenshot_timeout_seconds": settings.screenshot_timeout_seconds,

@@ -656,7 +656,7 @@ async function loadHealth() {
       ? `Gemini настроен (${keyCount} ключ(а), ${geminiModels}${hashHint}), но в автоматическом поиске не используется`
       : "Gemini в автоматическом поиске не используется";
     const groqHint = health.groq_configured
-      ? `Groq Compound: 1 пакетный запрос на запуск (${health.groq_model || "groq/compound-mini"})`
+      ? `Groq Compound: до ${health.groq_requests_per_discovery || 1} поисковых пакетов (${health.groq_model || "groq/compound"})`
       : "Groq Compound не настроен: поиск продолжает работать через поисковые страницы и OSINT";
     const mlClasses = Array.isArray(health.ml_classes) && health.ml_classes.length ? ` (${health.ml_classes.join(", ")})` : "";
     const mlHint = health.ml_available

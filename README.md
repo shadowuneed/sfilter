@@ -67,6 +67,10 @@ Create `.env` from `.env.example` and set keys locally or in Render environment 
 GEMINI_API_KEYS=your_primary_key,your_backup_key
 GEMINI_MODEL=gemini-2.5-flash
 GEMINI_FALLBACK_MODELS=gemini-2.0-flash
+GROQ_API_KEY=your_groq_key
+GROQ_MODEL=groq/compound
+GROQ_MODEL_VERSION=latest
+GROQ_REQUESTS_PER_DISCOVERY=8
 ADMIN_TOKEN=use-a-long-random-secret
 AUTH_REQUIRED=true
 DATABASE_URL=postgresql://postgres:password@host:5432/postgres?sslmode=require
@@ -97,6 +101,8 @@ Set `ADMIN_TOKEN` in the deployment environment. If it is missing, the UI no lon
 `DATABASE_URL` enables persistent Postgres storage and takes priority over `DATABASE_PATH`. Use the Supabase connection string with SSL enabled. For `*.supabase.com` hosts DOFilter also adds `sslmode=require` automatically if it is missing. If `DATABASE_URL` is empty, DOFilter falls back to local SQLite at `DATABASE_PATH`, which is useful only for local development.
 
 `REQUIRE_POSTGRES=true` disables silent SQLite fallback. The Render blueprint sets it to `true`, so production fails fast if Supabase `DATABASE_URL` is missing instead of creating a temporary local database.
+
+`GROQ_REQUESTS_PER_DISCOVERY` controls how many distinct web-search queries are sent in one external discovery pass. Casino mode also uses category-specific public domain lists; every candidate still has to open successfully and pass content checks before it reaches the registry.
 
 `ML_MODEL_PATH` points to the trained CatBoost artifact. `CYBERSCAN_MODEL_PATH` points to the bundled CyberScan RandomForest artifact copied from the reference project. DOFilter collects candidates from OSINT feeds first, optionally enriches the pool with Gemini, opens each reachable site, extracts evidence, and stores CatBoost, CyberScan ML, and content-analysis signals inside each finding's evidence JSON.
 

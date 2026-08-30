@@ -28,18 +28,25 @@ class GroqCompoundClient:
         if not self.available or limit <= 0:
             return [], {"available": self.available, "model": self.model, "sources": []}
 
-        requested = max(5, min(int(limit), 10))
+        requested = max(5, min(int(limit), 15))
         subject = {
             "casino": "online casino websites and working mirrors",
             "phishing": "phishing websites targeting users",
             "scam": "fraudulent investment websites",
         }.get(search_mode, "suspicious websites matching the investigation")
         prompt = (
-            f"Search the current web once for {subject} visible to users in Kazakhstan. "
-            f"Return JSON only with at most {requested} candidates containing direct url, domain, category, "
-            "why, and source_urls. Do not invent domains and do not return forums, reviews, news, social "
-            "networks, search engines, or sports-betting-only bookmakers."
+            f"Operator search query: {query.strip()!r}. Search the current web for {subject} matching this "
+            "exact intent. Use multiple useful query variations when needed and inspect result pages that list "
+            "complaints, mirrors, blacklists, or casino domains. Return JSON only as "
+            f'{{"candidates": [...]}} with at most {requested} candidates. Each candidate must contain direct '
+            "url, domain, category, why, and source_urls. A candidate must be a real target website explicitly "
+            "present in the web-search evidence; a forum, review, news page, social network, or search engine is "
+            "only a source_url. Do not invent domain variants. Exclude sports-betting-only bookmakers. Prefer "
+            "sites that can be opened, registered on, deposited to, or played on by users in Kazakhstan."
         )
+        enabled_tools = ["web_search"]
+        if str(self.model_version).strip().lower() == "latest" and self.model == "groq/compound":
+            enabled_tools.append("visit_website")
         response = httpx.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={
@@ -51,7 +58,7 @@ class GroqCompoundClient:
                 "model": self.model,
                 "messages": [{"role": "user", "content": prompt}],
                 "search_settings": {"country": "kazakhstan"},
-                "compound_custom": {"tools": {"enabled_tools": ["web_search"]}},
+                "compound_custom": {"tools": {"enabled_tools": enabled_tools}},
             },
             timeout=self.timeout_seconds,
         )
@@ -62,16 +69,17 @@ class GroqCompoundClient:
         data = self._parse_json_object(content)
         executed_tools = message.get("executed_tools") or []
         tool_sources = self._tool_sources(executed_tools)
+        tool_evidence = self._tool_evidence_text(executed_tools)
         raw_candidates = list(data.get("candidates") or [])
         raw_candidates.extend(self._content_candidates(content, tool_sources))
         raw_candidates.extend(self._tool_candidates(executed_tools))
-        if tool_sources:
+        if tool_sources or tool_evidence:
             source_domains = {registered_domain(extract_domain(source)) for source in tool_sources}
             raw_candidates = [
                 item
                 for item in raw_candidates
                 if isinstance(item, dict)
-                and registered_domain(extract_domain(str(item.get("domain") or item.get("url") or ""))) in source_domains
+                and self._candidate_has_tool_evidence(item, source_domains, tool_evidence)
             ]
         candidates = self._normalize_candidates(raw_candidates, tool_sources, requested)
         return candidates, {
@@ -80,7 +88,28 @@ class GroqCompoundClient:
             "model_version": self.model_version,
             "sources": tool_sources,
             "usage": payload.get("usage") or {},
+            "query": query.strip(),
+            "rate_limit_remaining_requests": response.headers.get("x-ratelimit-remaining-requests"),
         }
+
+    @staticmethod
+    def _tool_evidence_text(executed_tools: Any) -> str:
+        try:
+            return json.dumps(executed_tools, ensure_ascii=False).lower()
+        except (TypeError, ValueError):
+            return str(executed_tools or "").lower()
+
+    @staticmethod
+    def _candidate_has_tool_evidence(
+        item: dict[str, Any],
+        source_domains: set[str],
+        tool_evidence: str,
+    ) -> bool:
+        domain = extract_domain(str(item.get("domain") or item.get("url") or ""))
+        key = registered_domain(domain)
+        if not key:
+            return False
+        return key in source_domains or domain.lower() in tool_evidence or key.lower() in tool_evidence
 
     @staticmethod
     def _parse_json_object(content: str) -> dict[str, Any]:
