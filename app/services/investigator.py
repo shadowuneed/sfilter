@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import gc
+import random
 import re
 import time
 from dataclasses import dataclass, field
 from io import StringIO
 from threading import Event, Lock
-from typing import Any
+from typing import Any, Iterable, Iterator
 from urllib.parse import urlencode, urljoin
 
 import httpx
@@ -368,6 +370,11 @@ SEARCH_MODE_LABELS = {
 CASINO_SEARCH_QUERIES = [
     "онлайн казино играть на деньги",
     "онлайн казино Казахстан рабочий сайт",
+    "онлайн казино Россия рабочее зеркало",
+    "онлайн казино Кыргызстан рабочий сайт",
+    "онлайн казино Узбекистан рабочий сайт",
+    "онлайн казино Беларусь рабочий сайт",
+    "казино зеркало СНГ новый домен",
     "казино онлайн регистрация бонус",
     "слоты на деньги играть",
     "live casino slots roulette blackjack bonus",
@@ -445,6 +452,45 @@ BETTING_ONLY_RE = re.compile(
 
 KZ_RELEVANCE_RE = re.compile(
     r"(казахстан|қазақстан|kazakhstan|kazakstan|\.kz\b|(?:^|[/.?=&_-])kz(?:$|[/.?=&_-]))",
+    re.IGNORECASE,
+)
+
+CIS_DOMAIN_TLDS = (
+    ".kz",
+    ".ru",
+    ".xn--p1ai",
+    ".su",
+    ".by",
+    ".am",
+    ".az",
+    ".kg",
+    ".md",
+    ".tj",
+    ".tm",
+    ".uz",
+)
+
+CIS_DOMAIN_HINT_RE = re.compile(
+    r"(?:^|[.-])(?:kz|kaz|kazakhstan|ru|rus|russia|by|belarus|am|armenia|az|azer|"
+    r"kg|kyrgyz|uz|uzbek|tj|tajik|tm|turkmen|md|moldova)(?:[.-]|$)",
+    re.IGNORECASE,
+)
+
+CIS_CASINO_LABEL_HINT_RE = re.compile(
+    r"(?:(?:casino|kazino|slots?|vulkan|bet|play|win)"
+    r"(?:kz|kaz|kazakh|ru|rus|by|kg|kyrgyz|uz|uzbek|tj|az|am|md|tm)"
+    r"(?:\d{0,6}|official|online|site|club|vip|mirror)?$)|"
+    r"(?:^(?:kz|kaz|kazakh|ru|rus|by|kg|kyrgyz|uz|uzbek|tj|az|am|md|tm)"
+    r"(?:casino|kazino|slots?|vulkan|bet|play|win)"
+    r"(?:\d{0,6}|official|online|site|club|vip|mirror)?$)",
+    re.IGNORECASE,
+)
+
+KZ_CASINO_LABEL_HINT_RE = re.compile(
+    r"(?:(?:casino|kazino|slots?|vulkan|bet|play|win)(?:kz|kaz|kazakh)"
+    r"(?:\d{0,6}|official|online|site|club|vip|mirror)?$)|"
+    r"(?:^(?:kz|kaz|kazakh)(?:casino|kazino|slots?|vulkan|bet|play|win)"
+    r"(?:\d{0,6}|official|online|site|club|vip|mirror)?$)",
     re.IGNORECASE,
 )
 
@@ -583,7 +629,6 @@ class Investigator:
         self.cyberscan = CyberScanClassifier(settings)
         self._search_request_lock = Lock()
         self._last_search_request_at = 0.0
-        self._feed_token_cache: dict[str, list[str]] = {}
 
     def run(
         self,
@@ -749,16 +794,25 @@ class Investigator:
             attempted_domains = self.db.list_run_attempted_domains(run_id)
             run_state = self.db.get_run(run_id) or {}
             checked_total = max(int(run_state.get("candidate_count") or 0), len(attempted_domains))
-            screenshot_tasks: list[asyncio.Task[Any]] = []
+            screenshot_queue: list[tuple[int, dict[str, Any]]] = []
             screenshot_semaphore = asyncio.Semaphore(max(1, int(self.settings.screenshot_concurrency)))
 
             def queue_screenshot(finding_id: int, finding: dict[str, Any]) -> None:
                 if not take_screenshots or not finding.get("final_url"):
                     return
-                task = asyncio.create_task(
-                    self._capture_and_store_screenshot(run_id, finding_id, finding, screenshot_semaphore)
+                screenshot_queue.append(
+                    (
+                        finding_id,
+                        {
+                            "domain": finding.get("domain"),
+                            "final_url": finding.get("final_url"),
+                            "url": finding.get("url"),
+                            "title": finding.get("title"),
+                            "html_path": finding.get("html_path"),
+                            "status_code": finding.get("status_code"),
+                        },
+                    )
                 )
-                screenshot_tasks.append(task)
 
             def handle_inspection_result(finding: dict[str, Any]) -> None:
                 nonlocal findings_count
@@ -796,6 +850,27 @@ class Investigator:
             if cancel_event and cancel_event.is_set():
                 self.db.update_run(run_id, status="canceled", finished_at=utc_now(), finding_count=findings_count)
                 self.db.add_log(run_id, "warning", "Проверка остановлена пользователем", {"findings": findings_count})
+                return
+
+            if findings_count >= max_candidates:
+                self.db.update_run(run_id, status="completed", finished_at=utc_now(), finding_count=findings_count)
+                self.db.add_log(
+                    run_id,
+                    "info",
+                    "Поиск завершен: выбранная цель набрана",
+                    {"findings": findings_count, "target": max_candidates, "screenshots_continue": take_screenshots},
+                )
+                if take_screenshots:
+                    screenshot_queue.extend(self._pending_screenshot_queue(run_id, max_candidates))
+                    await self._drain_screenshot_queue(
+                        run_id,
+                        screenshot_queue,
+                        screenshot_semaphore,
+                        findings_count=findings_count,
+                        checked_total=checked_total,
+                        cancel_event=cancel_event,
+                        recovery=True,
+                    )
                 return
 
             candidates = await self._discover_candidates(
@@ -959,39 +1034,61 @@ class Investigator:
                     },
                 )
 
-            if screenshot_tasks:
-                pending = sum(1 for task in screenshot_tasks if not task.done())
-                self.db.add_log(
-                    run_id,
-                    "info",
-                    "Основной поиск не ждет скриншоты: завершаю фоновые снимки",
-                    {"screenshots": len(screenshot_tasks), "pending": pending, "findings": findings_count},
-                )
-                await asyncio.gather(*screenshot_tasks, return_exceptions=True)
-
-            if findings_count >= max_candidates:
+            target_reached = findings_count >= max_candidates
+            if target_reached:
                 self.db.update_run(run_id, status="completed", finished_at=utc_now(), finding_count=findings_count)
-                self.db.add_log(run_id, "info", "Поиск завершен: выбранная цель набрана", {"findings": findings_count, "target": max_candidates})
-            else:
-                self.db.update_run(
-                    run_id,
-                    status="running",
-                    finished_at=None,
-                    error=None,
-                    finding_count=findings_count,
-                    candidate_count=checked_total,
-                )
                 self.db.add_log(
                     run_id,
                     "info",
-                    "Цель еще не набрана: запуск остается активным",
-                    {
-                        "findings": findings_count,
-                        "target": max_candidates,
-                        "attempted": len(attempted_domains),
-                        "next_discovery_pass": discovery_round + 2,
-                    },
+                    "Поиск завершен: выбранная цель набрана",
+                    {"findings": findings_count, "target": max_candidates, "screenshots_continue": take_screenshots},
                 )
+
+            if take_screenshots:
+                queued_ids = {finding_id for finding_id, _ in screenshot_queue}
+                screenshot_queue.extend(
+                    item
+                    for item in self._pending_screenshot_queue(run_id, max_candidates)
+                    if item[0] not in queued_ids
+                )
+
+            if screenshot_queue:
+                candidate_pool.clear()
+                fresh_candidates.clear()
+                candidates.clear()
+                completed = await self._drain_screenshot_queue(
+                    run_id,
+                    screenshot_queue,
+                    screenshot_semaphore,
+                    findings_count=findings_count,
+                    checked_total=checked_total,
+                    cancel_event=cancel_event,
+                )
+                if not completed:
+                    return
+
+            if target_reached:
+                return
+
+            self.db.update_run(
+                run_id,
+                status="running",
+                finished_at=None,
+                error=None,
+                finding_count=findings_count,
+                candidate_count=checked_total,
+            )
+            self.db.add_log(
+                run_id,
+                "info",
+                "Цель еще не набрана: запуск остается активным",
+                {
+                    "findings": findings_count,
+                    "target": max_candidates,
+                    "attempted": len(attempted_domains),
+                    "next_discovery_pass": discovery_round + 2,
+                },
+            )
         except Exception as exc:  # noqa: BLE001
             self.db.update_run(run_id, status="failed", finished_at=utc_now(), error=f"{type(exc).__name__}: {exc}")
             self.db.add_log(run_id, "error", "Поиск завершился ошибкой", {"error": str(exc)})
@@ -2020,16 +2117,43 @@ class Investigator:
     @staticmethod
     def _casino_kz_relevance_score(url: str, context: str) -> int:
         domain = extract_domain(url)
-        registered = registered_domain(domain)
         text = f"{url} {context}"
         score = 0
-        if registered.endswith(".kz"):
+        if Investigator._has_kazakhstan_domain_hint(domain):
             score += 120
         if Investigator._looks_like_kz_search_landing(domain):
             score += 60
         if KZ_RELEVANCE_RE.search(text):
             score += 60
         return score
+
+    @staticmethod
+    def _has_kazakhstan_domain_hint(domain_or_url: str | None) -> bool:
+        domain = extract_domain(str(domain_or_url or ""))
+        registered = registered_domain(domain)
+        labels = [re.sub(r"[^a-z0-9]+", "", label.lower()) for label in domain.split(".") if label]
+        return bool(
+            registered
+            and (
+                registered.endswith(".kz")
+                or KZ_RELEVANCE_RE.search(domain)
+                or any(KZ_CASINO_LABEL_HINT_RE.search(label) for label in labels)
+            )
+        )
+
+    @staticmethod
+    def _has_cis_domain_hint(domain_or_url: str | None) -> bool:
+        domain = extract_domain(str(domain_or_url or ""))
+        registered = registered_domain(domain)
+        labels = [re.sub(r"[^a-z0-9]+", "", label.lower()) for label in domain.split(".") if label]
+        return bool(
+            registered
+            and (
+                registered.endswith(CIS_DOMAIN_TLDS)
+                or CIS_DOMAIN_HINT_RE.search(domain)
+                or any(CIS_CASINO_LABEL_HINT_RE.search(label) for label in labels)
+            )
+        )
 
     @staticmethod
     def _has_casino_product_signal(text: str | None) -> bool:
@@ -2104,6 +2228,8 @@ class Investigator:
             has_casino_product = Investigator._has_casino_product_signal(product_context)
             bookmaker_first = Investigator._is_bookmaker_first_context(product_context)
             score += max(0, Investigator._casino_kz_relevance_score(candidate.url, context))
+            if Investigator._has_cis_domain_hint(candidate.domain):
+                score += 70
             if Investigator._is_official_bookmaker_domain(candidate.domain):
                 score -= 500
             if bookmaker_first:
@@ -2487,45 +2613,29 @@ Critical local-search behavior:
             for source in sources:
                 if len(candidates) >= max_candidates:
                     break
-                tokens = self._feed_token_cache.get(source["url"])
-                if tokens is None:
-                    try:
-                        response = await client.get(source["url"])
-                        response.raise_for_status()
-                    except Exception as exc:  # noqa: BLE001
-                        self.db.add_log(
-                            run_id,
-                            "warning",
-                            "OSINT source unavailable",
-                            {"name": source["name"], "url": source["url"], "error": str(exc)},
-                        )
-                        continue
-                    tokens = self._feed_tokens(response.text, source["parser"])
-                    self._feed_token_cache[source["url"]] = tokens
+                remaining = max_candidates - len(candidates)
+                try:
+                    response = await client.get(source["url"])
+                    response.raise_for_status()
+                except Exception as exc:  # noqa: BLE001
+                    self.db.add_log(
+                        run_id,
+                        "warning",
+                        "OSINT source unavailable",
+                        {"name": source["name"], "url": source["url"], "error": str(exc)},
+                    )
+                    continue
+
+                selected, matching, skipped = self._bounded_feed_sample(
+                    self._iter_feed_tokens(response.text, source["parser"]),
+                    source,
+                    effective_mode,
+                    remaining,
+                    feed_page,
+                )
+                del response
 
                 added = 0
-                skipped = 0
-                eligible: list[str] = []
-                source_seen: set[str] = set()
-                for token in tokens:
-                    domain = extract_domain(token)
-                    key = registered_domain(domain)
-                    if not is_candidate_domain(domain) or not key or key in source_seen:
-                        skipped += 1
-                        continue
-                    if source["category"] == "casino" and effective_mode == "casino":
-                        if (
-                            not self._has_casino_product_signal(domain)
-                            or self._is_official_bookmaker_domain(domain)
-                            or self._is_bookmaker_first_context(domain)
-                        ):
-                            skipped += 1
-                            continue
-                    source_seen.add(key)
-                    eligible.append(domain)
-
-                remaining = max_candidates - len(candidates)
-                selected = self._sample_feed_tokens(eligible, remaining, feed_page)
                 for token in selected:
                     if len(candidates) >= max_candidates:
                         break
@@ -2556,13 +2666,94 @@ Critical local-search behavior:
                     {
                         "name": source["name"],
                         "category": source["category"],
-                        "matching": len(eligible),
+                        "matching": matching,
                         "selected": len(selected),
                         "added": added,
                         "skipped": skipped,
                     },
                 )
         return candidates
+
+    def _bounded_feed_sample(
+        self,
+        tokens: Iterable[str],
+        source: dict[str, str],
+        effective_mode: str,
+        limit: int,
+        page: int = 0,
+    ) -> tuple[list[str], int, int]:
+        if limit <= 0:
+            return [], 0, 0
+
+        rng = random.Random(f"{source['url']}:{max(0, int(page))}")
+        regional_rng = random.Random(f"{source['url']}:{max(0, int(page))}:cis")
+        selected: list[str] = []
+        selected_keys: set[str] = set()
+        regional_limit = min(limit, max(1, limit // 5))
+        regional_selected: list[str] = []
+        regional_keys: set[str] = set()
+        matching = 0
+        skipped = 0
+        eligible_seen = 0
+        regional_seen = 0
+
+        for token in tokens:
+            domain = extract_domain(token)
+            key = registered_domain(domain)
+            if not is_candidate_domain(domain) or not key:
+                skipped += 1
+                continue
+            if source["category"] == "casino" and effective_mode == "casino":
+                if (
+                    not self._has_casino_product_signal(domain)
+                    or self._is_official_bookmaker_domain(domain)
+                    or self._is_bookmaker_first_context(domain)
+                ):
+                    skipped += 1
+                    continue
+
+            matching += 1
+            if self._has_cis_domain_hint(domain) and key not in regional_keys:
+                regional_seen += 1
+                if len(regional_selected) < regional_limit:
+                    regional_selected.append(domain)
+                    regional_keys.add(key)
+                else:
+                    regional_index = regional_rng.randrange(regional_seen)
+                    if regional_index < regional_limit:
+                        old_regional_key = registered_domain(regional_selected[regional_index])
+                        if old_regional_key:
+                            regional_keys.discard(old_regional_key)
+                        regional_selected[regional_index] = domain
+                        regional_keys.add(key)
+
+            if key in selected_keys:
+                skipped += 1
+                continue
+
+            eligible_seen += 1
+            if len(selected) < limit:
+                selected.append(domain)
+                selected_keys.add(key)
+                continue
+
+            replacement_index = rng.randrange(eligible_seen)
+            if replacement_index >= limit:
+                continue
+            old_key = registered_domain(selected[replacement_index])
+            if old_key:
+                selected_keys.discard(old_key)
+            selected[replacement_index] = domain
+            selected_keys.add(key)
+
+        combined = list(regional_selected)
+        combined_keys = {registered_domain(domain) for domain in combined}
+        combined.extend(
+            domain
+            for domain in selected
+            if registered_domain(domain) not in combined_keys
+        )
+        return combined[:limit], matching, skipped
 
     @staticmethod
     def _sample_feed_tokens(tokens: list[str], limit: int, page: int = 0) -> list[str]:
@@ -2606,16 +2797,19 @@ Critical local-search behavior:
         return sources
 
     def _feed_tokens(self, text: str, parser: str) -> list[str]:
-        if parser == "csv":
-            tokens: list[str] = []
-            rows = csv.reader(StringIO("\n".join(line for line in text.splitlines() if not line.startswith("#"))))
-            for row in rows:
-                for cell in row:
-                    tokens.extend(self._domains_or_urls_from_text(cell))
-            return tokens
+        return list(self._iter_feed_tokens(text, parser))
 
-        tokens = []
-        for raw_line in text.splitlines():
+    def _iter_feed_tokens(self, text: str, parser: str) -> Iterator[str]:
+        if parser == "csv":
+            rows = csv.reader(StringIO(text))
+            for row in rows:
+                if not row or str(row[0]).lstrip().startswith("#"):
+                    continue
+                for cell in row:
+                    yield from self._domains_or_urls_from_text(cell)
+            return
+
+        for raw_line in StringIO(text):
             line = raw_line.strip()
             if not line or line.startswith(("#", "!", "//")):
                 continue
@@ -2626,8 +2820,7 @@ Critical local-search behavior:
             else:
                 line_tokens = [line]
             for token in line_tokens:
-                tokens.extend(self._domains_or_urls_from_text(token))
-        return tokens
+                yield from self._domains_or_urls_from_text(token)
 
     @staticmethod
     def _domains_or_urls_from_text(text: str) -> list[str]:
@@ -2706,6 +2899,111 @@ Critical local-search behavior:
                 {"count": len(groups), "gemini_used": False},
             )
         return groups
+
+    @staticmethod
+    def _screenshot_queue_item(finding: dict[str, Any]) -> tuple[int, dict[str, Any]] | None:
+        finding_id = int(finding.get("id") or 0)
+        final_url = str(finding.get("final_url") or "").strip()
+        if finding_id <= 0 or not final_url:
+            return None
+        return (
+            finding_id,
+            {
+                "domain": finding.get("domain"),
+                "final_url": final_url,
+                "url": finding.get("url"),
+                "title": finding.get("title"),
+                "html_path": finding.get("html_path"),
+                "status_code": finding.get("status_code"),
+            },
+        )
+
+    def _pending_screenshot_queue(self, run_id: int, limit: int) -> list[tuple[int, dict[str, Any]]]:
+        queue: list[tuple[int, dict[str, Any]]] = []
+        for finding in self.db.list_pending_screenshot_findings(run_id, limit=max(1, limit)):
+            item = self._screenshot_queue_item(finding)
+            if item:
+                queue.append(item)
+        return queue
+
+    async def _drain_screenshot_queue(
+        self,
+        run_id: int,
+        screenshot_queue: list[tuple[int, dict[str, Any]]],
+        screenshot_semaphore: asyncio.Semaphore,
+        *,
+        findings_count: int,
+        checked_total: int,
+        cancel_event: Event | None = None,
+        recovery: bool = False,
+    ) -> bool:
+        if not screenshot_queue:
+            return True
+
+        gc.collect()
+        self.db.add_log(
+            run_id,
+            "info",
+            (
+                "Восстанавливаю незавершенные скриншоты после перезапуска"
+                if recovery
+                else "Основная проверка завершена: последовательно сохраняю скриншоты"
+            ),
+            {
+                "screenshots": len(screenshot_queue),
+                "pending": len(screenshot_queue),
+                "findings": findings_count,
+            },
+        )
+        for queue_index, (finding_id, finding) in enumerate(screenshot_queue, start=1):
+            if cancel_event and cancel_event.is_set():
+                self.db.update_run(
+                    run_id,
+                    status="canceled",
+                    finished_at=utc_now(),
+                    finding_count=findings_count,
+                    candidate_count=checked_total,
+                )
+                self.db.add_log(
+                    run_id,
+                    "warning",
+                    "Проверка остановлена пользователем во время сохранения скриншотов",
+                    {"findings": findings_count, "screenshots_saved": queue_index - 1},
+                )
+                return False
+            await self._capture_and_store_screenshot(
+                run_id,
+                finding_id,
+                finding,
+                screenshot_semaphore,
+            )
+            if queue_index < len(screenshot_queue):
+                await asyncio.sleep(0.5)
+        screenshot_queue.clear()
+        gc.collect()
+        return True
+
+    def repair_pending_screenshots(self, run_id: int) -> None:
+        asyncio.run(self._repair_pending_screenshots(run_id))
+
+    async def _repair_pending_screenshots(self, run_id: int) -> None:
+        run = self.db.get_run(run_id)
+        if not run or not bool(run.get("take_screenshots")):
+            return
+        screenshot_queue = self._pending_screenshot_queue(
+            run_id,
+            max(1, int(run.get("max_candidates") or 500)),
+        )
+        if not screenshot_queue:
+            return
+        await self._drain_screenshot_queue(
+            run_id,
+            screenshot_queue,
+            asyncio.Semaphore(1),
+            findings_count=self.db.count_findings(run_id),
+            checked_total=int(run.get("candidate_count") or 0),
+            recovery=True,
+        )
 
     async def _capture_and_store_screenshot(
         self,

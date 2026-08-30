@@ -673,6 +673,17 @@ class Database:
                 ).fetchall()
             return [self._finding_to_dict(row) for row in rows]
 
+    def list_pending_screenshot_findings(self, run_id: int, limit: int = 500) -> list[dict[str, Any]]:
+        requested = max(1, min(int(limit), 500))
+        findings = self.list_findings(run_id=run_id, limit=500)
+        pending = [
+            finding
+            for finding in findings
+            if not finding.get("screenshot_path")
+            and bool((finding.get("evidence") or {}).get("screenshot_pending"))
+        ]
+        return pending[:requested]
+
     def list_run_findings_summary(self, run_id: int, limit: int = 8) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 50))
         with self.connect() as conn:

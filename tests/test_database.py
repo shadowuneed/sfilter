@@ -145,6 +145,7 @@ class DatabaseBackendTests(unittest.TestCase):
                     "reasons_json": ["initial reason"],
                 },
             )
+            pending_before = db.list_pending_screenshot_findings(run_id)
 
             updated = db.update_finding_screenshot(
                 finding_id,
@@ -154,6 +155,8 @@ class DatabaseBackendTests(unittest.TestCase):
             finding = db.list_findings(run_id=run_id)[0]
 
             self.assertTrue(updated)
+            self.assertEqual([finding["id"] for finding in pending_before], [finding_id])
+            self.assertEqual(db.list_pending_screenshot_findings(run_id), [])
             self.assertEqual(finding["screenshot_path"], "evidence/screenshots/run_1_casino.example.png")
             self.assertFalse(finding["evidence"]["screenshot_pending"])
             self.assertEqual(finding["evidence"]["screenshot_error"], "navigation warning")

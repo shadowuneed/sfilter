@@ -336,6 +336,80 @@ class InvestigatorCandidateTests(unittest.TestCase):
         self.assertEqual(len(set(first)), 10)
         self.assertNotEqual(first, second)
 
+    def test_large_feed_sampling_keeps_only_the_requested_domains(self) -> None:
+        source = {
+            "name": "large_gambling_feed",
+            "url": "https://example.test/gambling.txt",
+            "category": "casino",
+            "parser": "hosts_file",
+        }
+        domains = (f"casino-{index}.com" for index in range(20_000))
+
+        first, matching, skipped = self.investigator._bounded_feed_sample(
+            domains,
+            source,
+            "casino",
+            250,
+            page=0,
+        )
+        repeated, _, _ = self.investigator._bounded_feed_sample(
+            (f"casino-{index}.com" for index in range(20_000)),
+            source,
+            "casino",
+            250,
+            page=0,
+        )
+        rotated, _, _ = self.investigator._bounded_feed_sample(
+            (f"casino-{index}.com" for index in range(20_000)),
+            source,
+            "casino",
+            250,
+            page=1,
+        )
+
+        self.assertEqual(matching, 20_000)
+        self.assertEqual(skipped, 0)
+        self.assertEqual(len(first), 250)
+        self.assertEqual(len(set(first)), 250)
+        self.assertEqual(first, repeated)
+        self.assertNotEqual(first, rotated)
+
+    def test_cis_domains_and_embedded_region_labels_are_prioritized(self) -> None:
+        source = {
+            "name": "large_gambling_feed",
+            "url": "https://example.test/gambling.txt",
+            "category": "casino",
+            "parser": "hosts_file",
+        }
+        regional = ["casinokz.com", "casino-ru.com", "slotsuz.net", "casinokg.org"]
+        domains = [*(f"casino-global-{index}.com" for index in range(5_000)), *regional]
+
+        selected, _, _ = self.investigator._bounded_feed_sample(
+            iter(domains),
+            source,
+            "casino",
+            20,
+            page=0,
+        )
+
+        self.assertEqual(selected[:4], regional)
+        self.assertTrue(self.investigator._has_kazakhstan_domain_hint("casinokz.com"))
+        self.assertTrue(self.investigator._has_kazakhstan_domain_hint("kzslots.net"))
+        self.assertTrue(self.investigator._has_cis_domain_hint("casino.ru"))
+        self.assertTrue(self.investigator._has_cis_domain_hint("slotsuz.net"))
+        self.assertFalse(self.investigator._has_cis_domain_hint("casino-ireland.ie"))
+
+    def test_casino_ranking_prefers_kazakhstan_then_cis_then_global(self) -> None:
+        candidates = [
+            Candidate(url="https://casino-global.com", domain="casino-global.com", category="casino", why="OSINT feed"),
+            Candidate(url="https://casino.ru", domain="casino.ru", category="casino", why="OSINT feed"),
+            Candidate(url="https://casinokz.com", domain="casinokz.com", category="casino", why="OSINT feed"),
+        ]
+
+        ranked = self.investigator._sort_candidates_for_search_mode(candidates, "casino")
+
+        self.assertEqual([candidate.domain for candidate in ranked], ["casinokz.com", "casino.ru", "casino-global.com"])
+
     def test_groq_discovery_uses_multiple_distinct_queries(self) -> None:
         class FakeDb:
             @staticmethod

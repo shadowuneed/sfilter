@@ -126,10 +126,18 @@ class ScreenshotService:
                         "--disable-gpu",
                         "--disable-extensions",
                         "--disable-background-networking",
+                        "--disable-component-update",
+                        "--disable-domain-reliability",
                         "--disable-default-apps",
                         "--disable-sync",
+                        "--disable-site-isolation-trials",
+                        "--disable-features=BackForwardCache,MediaRouter,OptimizationHints,Translate",
+                        "--disk-cache-size=1",
+                        "--media-cache-size=1",
+                        "--js-flags=--max-old-space-size=64",
                         "--metrics-recording-only",
                         "--mute-audio",
+                        "--no-first-run",
                         "--no-zygote",
                         "--renderer-process-limit=1",
                         "--disable-blink-features=AutomationControlled",
@@ -145,6 +153,12 @@ class ScreenshotService:
                     proxy={"server": self.settings.kz_proxy_url} if self.settings.kz_proxy_url else None,
                 )
                 page = await context.new_page()
+                await page.route(
+                    "**/*",
+                    lambda route: route.abort()
+                    if route.request.resource_type in {"media", "font"}
+                    else route.continue_(),
+                )
                 timeout_ms = max(2_500, int(self.settings.screenshot_timeout_seconds * 1000))
                 settle_ms = max(0, int(self.settings.screenshot_settle_ms))
                 page.set_default_timeout(timeout_ms)

@@ -170,6 +170,28 @@ def resume_active_runs_after_restart() -> None:
             "auto",
         )
 
+    if latest_automatic_run_id is not None:
+        return
+
+    for run in db.list_runs(limit=5):
+        if not bool(run.get("take_screenshots")):
+            continue
+        run_id = int(run["id"])
+        if not db.list_pending_screenshot_findings(run_id, limit=1):
+            continue
+        db.add_log(
+            run_id,
+            "info",
+            "После запуска сервера найдены незавершенные скриншоты",
+        )
+        _start_run_thread(
+            run_id,
+            f"dofilter-screenshot-repair-{run_id}",
+            investigator.repair_pending_screenshots,
+            run_id,
+        )
+        break
+
 
 @app.middleware("http")
 async def api_auth_middleware(request: Request, call_next):

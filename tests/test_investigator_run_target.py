@@ -88,6 +88,141 @@ class InvestigatorRunTargetTests(unittest.TestCase):
                 {"alpha-casino.example", "beta-casino.example"},
             )
 
+    def test_screenshots_start_after_candidate_checks_finish(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "argus.db")
+            db.init()
+            run_id = db.create_run(seed_query="онлайн казино", max_candidates=3, take_screenshots=True)
+            investigator = object.__new__(Investigator)
+            investigator.settings = Settings(
+                database_path=Path(tmp) / "argus.db",
+                scan_concurrency=3,
+                screenshots_enabled=True,
+                screenshot_concurrency=1,
+            )
+            investigator.db = db
+            checked: list[str] = []
+            captured_after_checks: list[int] = []
+            statuses_during_capture: list[str] = []
+
+            async def discover(*args, **kwargs) -> list[Candidate]:  # noqa: ANN002, ANN003
+                return [
+                    Candidate(
+                        url=f"https://casino-{index}.example",
+                        domain=f"casino-{index}.example",
+                        category="casino",
+                        why="Search result",
+                    )
+                    for index in range(3)
+                ]
+
+            async def mirrors(*args, **kwargs) -> list[dict]:  # noqa: ANN002, ANN003
+                return []
+
+            async def inspect(
+                current_run_id: int,
+                index: int,
+                total: int,
+                candidate: Candidate,
+                *args,
+                **kwargs,
+            ) -> dict:  # noqa: ANN002, ANN003
+                checked.append(candidate.domain)
+                return {
+                    "url": candidate.url,
+                    "final_url": candidate.url,
+                    "domain": candidate.domain,
+                    "normalized_domain": candidate.key(),
+                    "title": candidate.domain,
+                    "category": "casino",
+                    "verdict": "high",
+                    "risk_score": 90,
+                    "active": True,
+                    "status_code": 200,
+                }
+
+            async def capture(
+                current_run_id: int,
+                finding_id: int,
+                finding: dict,
+                semaphore: asyncio.Semaphore,
+            ) -> None:
+                self.assertEqual(current_run_id, run_id)
+                captured_after_checks.append(len(checked))
+                statuses_during_capture.append(str(db.get_run(run_id)["status"]))
+
+            investigator._discover_candidates = discover
+            investigator._discover_mirrors = mirrors
+            investigator._inspect_candidate = inspect
+            investigator._capture_and_store_screenshot = capture
+
+            asyncio.run(investigator._run(run_id, "онлайн казино", 3, True, search_mode="auto"))
+
+            self.assertEqual(len(checked), 3)
+            self.assertEqual(captured_after_checks, [3, 3, 3])
+            self.assertEqual(statuses_during_capture, ["completed", "completed", "completed"])
+            self.assertEqual(db.get_run(run_id)["status"], "completed")
+
+    def test_completed_run_repairs_only_pending_screenshots(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "argus.db")
+            db.init()
+            run_id = db.create_run(seed_query="онлайн казино", max_candidates=2, take_screenshots=True)
+            finding_ids: list[int] = []
+            for index in range(2):
+                finding_ids.append(
+                    db.insert_finding(
+                        run_id,
+                        {
+                            "url": f"https://casino-{index}.example",
+                            "final_url": f"https://casino-{index}.example",
+                            "domain": f"casino-{index}.example",
+                            "normalized_domain": f"casino-{index}.example",
+                            "title": f"Casino {index}",
+                            "category": "casino",
+                            "verdict": "high",
+                            "risk_score": 90,
+                            "active": True,
+                            "status_code": 200,
+                            "evidence_json": {"screenshot_pending": True},
+                        },
+                    )
+                )
+            db.update_finding_screenshot(
+                finding_ids[0],
+                "evidence/screenshots/existing.png",
+                None,
+            )
+            db.update_run(run_id, status="completed", finding_count=2)
+
+            investigator = object.__new__(Investigator)
+            investigator.settings = Settings(
+                database_path=Path(tmp) / "argus.db",
+                screenshot_concurrency=1,
+            )
+            investigator.db = db
+            captured: list[int] = []
+
+            async def capture(
+                current_run_id: int,
+                finding_id: int,
+                finding: dict,
+                semaphore: asyncio.Semaphore,
+            ) -> None:
+                captured.append(finding_id)
+                db.update_finding_screenshot(
+                    finding_id,
+                    f"evidence/screenshots/repaired-{finding_id}.png",
+                    None,
+                )
+
+            investigator._capture_and_store_screenshot = capture
+            investigator.repair_pending_screenshots(run_id)
+
+            self.assertEqual(captured, [finding_ids[1]])
+            self.assertEqual(db.list_pending_screenshot_findings(run_id), [])
+            self.assertEqual(db.get_run(run_id)["status"], "completed")
+
     def test_arbitrary_text_uses_search_pages_without_category_selector(self) -> None:
         self.assertTrue(Investigator._user_search_mode("подозрительные магазины Алматы", "auto"))
 
