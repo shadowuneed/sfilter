@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import asyncio
+import importlib.util
 import os
 import re
 import textwrap
@@ -36,8 +37,12 @@ class ScreenshotService:
     def __init__(self, settings: Settings):
         self.settings = settings
         self._browser_slots = threading.BoundedSemaphore(max(1, int(settings.screenshot_concurrency)))
+        self._runtime_status_cache: dict[str, Any] | None = None
 
     def runtime_status(self) -> dict[str, Any]:
+        if self._runtime_status_cache is not None:
+            return dict(self._runtime_status_cache)
+
         status: dict[str, Any] = {
             "enabled": self.settings.screenshots_enabled,
             "browser_enabled": self.settings.browser_screenshots_enabled,
@@ -54,17 +59,49 @@ class ScreenshotService:
         }
         if not self.settings.browser_screenshots_enabled:
             status["error"] = "browser screenshots disabled; fallback evidence images are enabled"
+            self._runtime_status_cache = dict(status)
             return status
         try:
-            from playwright.sync_api import sync_playwright
-
+            if importlib.util.find_spec("playwright") is None:
+                raise ModuleNotFoundError("Playwright package is not installed")
             status["playwright_imported"] = True
-            with sync_playwright() as playwright:
-                chromium_path = Path(playwright.chromium.executable_path)
+            browser_roots: list[Path] = []
+            configured_root = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+            if configured_root and configured_root != "0":
+                browser_roots.append(Path(configured_root))
+            local_app_data = os.environ.get("LOCALAPPDATA")
+            if local_app_data:
+                browser_roots.append(Path(local_app_data) / "ms-playwright")
+            browser_roots.extend(
+                [
+                    Path.home() / ".cache" / "ms-playwright",
+                    Path.home() / "Library" / "Caches" / "ms-playwright",
+                ]
+            )
+            executable_names = {
+                "chrome",
+                "chrome.exe",
+                "chrome-headless-shell",
+                "chrome-headless-shell.exe",
+            }
+            chromium_path = next(
+                (
+                    candidate
+                    for root in browser_roots
+                    if root.exists()
+                    for candidate in root.rglob("*")
+                    if candidate.is_file() and candidate.name in executable_names
+                ),
+                None,
+            )
+            if chromium_path:
                 status["chromium_path"] = str(chromium_path)
-                status["chromium_exists"] = chromium_path.exists()
+                status["chromium_exists"] = True
+            else:
+                status["error"] = "Chromium executable was not found in Playwright browser directories"
         except Exception as exc:  # noqa: BLE001
             status["error"] = f"{type(exc).__name__}: {exc}"
+        self._runtime_status_cache = dict(status)
         return status
 
     async def capture(
@@ -111,6 +148,7 @@ class ScreenshotService:
 
         browser = None
         context = None
+        page = None
         acquired = False
         try:
             while not self._browser_slots.acquire(blocking=False):
@@ -153,88 +191,110 @@ class ScreenshotService:
                     proxy={"server": self.settings.kz_proxy_url} if self.settings.kz_proxy_url else None,
                 )
                 page = await context.new_page()
-                await page.route(
-                    "**/*",
-                    lambda route: route.abort()
-                    if route.request.resource_type in {"media", "font"}
-                    else route.continue_(),
-                )
-                timeout_ms = max(2_500, int(self.settings.screenshot_timeout_seconds * 1000))
-                settle_ms = max(0, int(self.settings.screenshot_settle_ms))
-                page.set_default_timeout(timeout_ms)
-                navigation_error = None
                 try:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-                except Exception as exc:  # noqa: BLE001
-                    navigation_error = exc
+                    await page.route(
+                        "**/*",
+                        lambda route: route.abort()
+                        if route.request.resource_type in {"media", "font"}
+                        else route.continue_(),
+                    )
+                    timeout_ms = max(2_500, int(self.settings.screenshot_timeout_seconds * 1000))
+                    settle_ms = max(0, int(self.settings.screenshot_settle_ms))
+                    page.set_default_timeout(timeout_ms)
+                    navigation_error = None
                     try:
-                        await page.goto(url, wait_until="commit", timeout=max(1_500, timeout_ms // 2))
+                        await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                    except Exception as exc:  # noqa: BLE001
+                        navigation_error = exc
+                        try:
+                            await page.goto(url, wait_until="commit", timeout=max(1_500, timeout_ms // 2))
+                        except Exception:
+                            pass
+                    try:
+                        await page.wait_for_load_state("load", timeout=min(750, timeout_ms))
                     except Exception:
                         pass
-                try:
-                    await page.wait_for_load_state("load", timeout=min(750, timeout_ms))
-                except Exception:
-                    pass
-                if settle_ms:
-                    await page.wait_for_timeout(settle_ms)
-                try:
-                    await page.screenshot(
-                        path=str(output),
-                        full_page=False,
-                        timeout=max(2_000, min(timeout_ms, 3_000)),
-                        animations="disabled",
-                        caret="hide",
-                    )
-                    result = self._capture_result(output, rel_path)
-                    if result.path or not self.settings.screenshot_fallback_enabled:
-                        if result.path and navigation_error:
-                            return ScreenshotResult(
-                                path=result.path,
-                                error=f"navigation warning: {type(navigation_error).__name__}: {navigation_error}",
-                            )
-                        return result
-                    return self._fallback_result(
-                        output,
-                        rel_path,
-                        url=url,
-                        title=title,
-                        html_path=html_path,
-                        status_code=status_code,
-                        error=result.error or "browser screenshot was not usable",
-                    )
-                except Exception:  # noqa: BLE001
+                    if settle_ms:
+                        await page.wait_for_timeout(settle_ms)
                     try:
                         await page.screenshot(
                             path=str(output),
                             full_page=False,
-                            timeout=max(1_500, min(timeout_ms // 2, 2_500)),
+                            timeout=max(2_000, min(timeout_ms, 3_000)),
                             animations="disabled",
                             caret="hide",
                         )
-                    except Exception:  # noqa: BLE001
-                        client = await context.new_cdp_session(page)
-                        capture = await client.send(
-                            "Page.captureScreenshot",
-                            {"format": "png", "fromSurface": True, "captureBeyondViewport": False},
+                        result = self._capture_result(output, rel_path)
+                        if result.path or not self.settings.screenshot_fallback_enabled:
+                            if result.path and navigation_error:
+                                return ScreenshotResult(
+                                    path=result.path,
+                                    error=f"navigation warning: {type(navigation_error).__name__}: {navigation_error}",
+                                )
+                            return result
+                        return self._fallback_result(
+                            output,
+                            rel_path,
+                            url=url,
+                            title=title,
+                            html_path=html_path,
+                            status_code=status_code,
+                            error=result.error or "browser screenshot was not usable",
                         )
-                        output.write_bytes(base64.b64decode(capture["data"]))
-                    result = self._capture_result(output, rel_path)
-                    if result.path or not self.settings.screenshot_fallback_enabled:
-                        if result.path and navigation_error:
-                            return ScreenshotResult(
-                                path=result.path,
-                                error=f"navigation warning: {type(navigation_error).__name__}: {navigation_error}",
+                    except Exception:  # noqa: BLE001
+                        try:
+                            await page.screenshot(
+                                path=str(output),
+                                full_page=False,
+                                timeout=max(1_500, min(timeout_ms // 2, 2_500)),
+                                animations="disabled",
+                                caret="hide",
                             )
-                        return result
-                    return self._fallback_result(
-                        output,
-                        rel_path,
-                        url=url,
-                        title=title,
-                        html_path=html_path,
-                        status_code=status_code,
-                        error=result.error or "browser screenshot was not usable",
-                    )
+                        except Exception:  # noqa: BLE001
+                            client = await context.new_cdp_session(page)
+                            capture = await client.send(
+                                "Page.captureScreenshot",
+                                {"format": "png", "fromSurface": True, "captureBeyondViewport": False},
+                            )
+                            output.write_bytes(base64.b64decode(capture["data"]))
+                        result = self._capture_result(output, rel_path)
+                        if result.path or not self.settings.screenshot_fallback_enabled:
+                            if result.path and navigation_error:
+                                return ScreenshotResult(
+                                    path=result.path,
+                                    error=f"navigation warning: {type(navigation_error).__name__}: {navigation_error}",
+                                )
+                            return result
+                        return self._fallback_result(
+                            output,
+                            rel_path,
+                            url=url,
+                            title=title,
+                            html_path=html_path,
+                            status_code=status_code,
+                            error=result.error or "browser screenshot was not usable",
+                        )
+                finally:
+                    if page:
+                        try:
+                            await page.unroute_all(behavior="wait")
+                        except Exception:
+                            try:
+                                await page.unroute_all(behavior="ignoreErrors")
+                            except Exception:
+                                pass
+                    if context:
+                        try:
+                            await context.close()
+                        except Exception:
+                            pass
+                        context = None
+                    if browser:
+                        try:
+                            await browser.close()
+                        except Exception:
+                            pass
+                        browser = None
         except Exception as exc:  # noqa: BLE001
             return self._fallback_result(
                 output,
