@@ -180,8 +180,10 @@ class InvestigatorRunTargetTests(unittest.TestCase):
 
         investigator.db = FakeDb()
         investigator._discover_with_user_search = user_search
+        investigator._discover_from_bootstrap = lambda *args, **kwargs: []
+        investigator._discover_from_algorithmic_mirrors = lambda *args, **kwargs: []
 
-        for discovery_round in range(3):
+        for discovery_round in (0, 6, 12):
             asyncio.run(
                 investigator._discover_candidates(
                     1,
@@ -194,6 +196,55 @@ class InvestigatorRunTargetTests(unittest.TestCase):
             )
 
         self.assertEqual(schedule, [(0, 0), (0, 6), (1, 0)])
+
+    def test_later_round_refills_locally_without_repeating_web_search(self) -> None:
+        investigator = object.__new__(Investigator)
+        investigator.settings = Settings(osint_candidate_pool_size=5000, osint_feeds_enabled=False)
+        investigator.groq = None
+        algorithmic_limits: list[int] = []
+
+        class FakeDb:
+            @staticmethod
+            def add_log(*args, **kwargs) -> None:  # noqa: ANN002, ANN003
+                return None
+
+            @staticmethod
+            def known_domains() -> set[str]:
+                return set()
+
+        def fail_user_search(*args, **kwargs):  # noqa: ANN002, ANN003
+            raise AssertionError("Intermediate pass must not repeat external search")
+
+        def algorithmic_refill(seed_query, limit, excluded_domains, search_mode="auto"):  # noqa: ANN001
+            algorithmic_limits.append(limit)
+            return [
+                Candidate(
+                    url="https://new-casino-mirror.example",
+                    domain="new-casino-mirror.example",
+                    category="casino",
+                    why="Algorithmic candidate for live verification",
+                    search_query=seed_query,
+                )
+            ]
+
+        investigator.db = FakeDb()
+        investigator._discover_with_user_search = fail_user_search
+        investigator._discover_from_bootstrap = lambda *args, **kwargs: []
+        investigator._discover_from_algorithmic_mirrors = algorithmic_refill
+
+        candidates = asyncio.run(
+            investigator._discover_candidates(
+                1,
+                "онлайн казино",
+                100,
+                "casino",
+                discovery_round=1,
+                use_groq=False,
+            )
+        )
+
+        self.assertEqual([candidate.domain for candidate in candidates], ["new-casino-mirror.example"])
+        self.assertEqual(algorithmic_limits, [5000])
 
     def test_empty_discovery_backoff_is_bounded(self) -> None:
         self.assertEqual(Investigator._discovery_retry_delay(1), 30)

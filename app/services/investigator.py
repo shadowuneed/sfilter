@@ -347,6 +347,8 @@ USER_SEARCH_ENGINES = [
     },
 ]
 
+EXTERNAL_DISCOVERY_REFRESH_INTERVAL = 6
+
 SEARCH_MODES = {"auto", "casino", "phishing", "scam", "all"}
 
 SEARCH_MODE_LABELS = {
@@ -675,42 +677,50 @@ class Investigator:
                 run_id,
                 "info",
                 "Поиск запущен",
-                {"started_at": utc_now(), "search_mode": search_mode, "search_mode_label": SEARCH_MODE_LABELS[search_mode]},
+                {
+                    "started_at": utc_now(),
+                    "search_mode": search_mode,
+                    "search_mode_label": SEARCH_MODE_LABELS[search_mode],
+                    "strategy": "search-results-plus-verified-mirror-expansion",
+                },
             )
         if self.settings.require_kz_proxy and not self.settings.kz_proxy_url:
             message = "KZ proxy is required: set KZ_PROXY_URL, KZ_HTTP_PROXY, KZ_HTTPS_PROXY, or KZ_PROXY to a Kazakhstan HTTP/SOCKS proxy."
             self.db.update_run(run_id, status="failed", finished_at=utc_now(), error=message)
             self.db.add_log(run_id, "error", message, {"required": True, "configured": False})
             return
-        if self.settings.kz_proxy_url:
-            self.db.add_log(
-                run_id,
-                "info",
-                "Проверка доступности выполняется через казахстанскую точку",
-                {"access_origin": self.settings.kz_access_label},
-            )
-        else:
-            self.db.add_log(
-                run_id,
-                "info",
-                "KZ_PROXY_URL не настроен: проверка доступности идет из сети хостинга",
-                {"access_origin": self.settings.kz_access_label},
-            )
+        if discovery_round == 0:
+            if self.settings.kz_proxy_url:
+                self.db.add_log(
+                    run_id,
+                    "info",
+                    "Проверка доступности выполняется через казахстанскую точку",
+                    {"access_origin": self.settings.kz_access_label},
+                )
+            else:
+                self.db.add_log(
+                    run_id,
+                    "info",
+                    "KZ_PROXY_URL не настроен: проверка доступности идет из сети хостинга",
+                    {"access_origin": self.settings.kz_access_label},
+                )
 
-        methodology = [
-            f"Режим поиска: {SEARCH_MODE_LABELS[search_mode]}.",
-            "Поиск повторными проходами собирает реальные домены из выдачи DuckDuckGo/Google/Bing/Yandex и разрешенных OSINT-источников; Gemini не используется.",
-            "Новые страницы выдачи проверяются небольшими пакетами до достижения выбранного количества записей в реестре или ручной остановки.",
-            "В поисковых запросах берем живые домены, рабочие зеркала и страницы, доступные для пользователей Казахстана.",
-            "Открытие кандидатов проверяем через KZ_PROXY_URL; если прокси не задан, фиксируем прямую сеть сервера как ограничение доказательства.",
-            "Отбрасываем IP-адреса, localhost, тестовые домены и технические источники.",
-            "Домены, уже присутствующие в общем реестре, исключаем до открытия и повторно не добавляем в новый запуск.",
-            "Оставляем в таблице только сайты, которые удалось открыть и зафиксировать, а страницы блокировки не показываем как рабочие сайты.",
-            "Для каждого открытого сайта сохраняем HTML, SHA-256, DNS/TLS, RDAP, скорость ответа, размер страницы, редиректы и скриншот.",
-            "Зеркала группируем локально по сходству доменных имен и подтверждаем живой проверкой.",
-            "Все ошибки и пропущенные сайты пишем в журнал проверки и терминал.",
-        ]
-        self.db.update_run(run_id, methodology_json=methodology)
+            methodology = [
+                f"Режим поиска: {SEARCH_MODE_LABELS[search_mode]}.",
+                "Первый проход собирает реальные домены из выдачи DuckDuckGo/Google/Bing/Yandex, разрешенных OSINT-источников и Groq Compound при наличии ключа; Gemini не используется.",
+                "Если выдачи недостаточно, локальный алгоритм расширяет пул вариантами доменов известных казино-брендов; каждый вариант обязательно проходит живую проверку до добавления в реестр.",
+                "Внешний поиск обновляется периодически, а между обновлениями проверяются еще не использованные кандидаты без повторных запросов к поисковикам.",
+                "Поиск продолжается до достижения выбранного количества записей в реестре или ручной остановки.",
+                "В поисковых запросах берем живые домены, рабочие зеркала и страницы, доступные для пользователей Казахстана.",
+                "Открытие кандидатов проверяем через KZ_PROXY_URL; если прокси не задан, фиксируем прямую сеть сервера как ограничение доказательства.",
+                "Отбрасываем IP-адреса, localhost, тестовые домены и технические источники.",
+                "Домены, уже присутствующие в общем реестре, исключаем до открытия и повторно не добавляем в новый запуск.",
+                "Оставляем в таблице только сайты, которые удалось открыть и зафиксировать, а страницы блокировки не показываем как рабочие сайты.",
+                "Для каждого открытого сайта сохраняем HTML, SHA-256, DNS/TLS, RDAP, скорость ответа, размер страницы, редиректы и скриншот.",
+                "Зеркала группируем локально по сходству доменных имен и подтверждаем живой проверкой.",
+                "Все ошибки и пропущенные сайты пишем в журнал проверки и терминал.",
+            ]
+            self.db.update_run(run_id, methodology_json=methodology)
 
         try:
             findings_count = self.db.count_findings(run_id)
@@ -1034,6 +1044,10 @@ class Investigator:
         return min(available_candidates, self.settings.max_candidates_per_run, desired)
 
     @staticmethod
+    def _should_refresh_external_discovery(discovery_round: int) -> bool:
+        return max(0, int(discovery_round)) % EXTERNAL_DISCOVERY_REFRESH_INTERVAL == 0
+
+    @staticmethod
     def _discovery_retry_delay(empty_rounds: int) -> int:
         exponent = min(max(0, int(empty_rounds) - 1), 4)
         return min(300, 30 * (2**exponent))
@@ -1135,13 +1149,21 @@ class Investigator:
         }
         discovery_limit = min(
             self.settings.max_candidates_per_run,
-            max(500, max_candidates * 10, self.settings.osint_candidate_pool_size),
+            max(max_candidates * 10, 5000, self.settings.osint_candidate_pool_size),
         )
-        candidate_target = min(discovery_limit, max(500, max_candidates * 10))
+        candidate_target = max_candidates
+        if search_mode == "casino" and max_candidates >= 100:
+            candidate_target = min(
+                discovery_limit,
+                self.settings.max_candidates_per_run,
+                max_candidates * 50,
+            )
         discovered: list[Candidate] = []
         user_search_mode = self._user_search_mode(seed_query, search_mode)
+        refresh_external = self._should_refresh_external_discovery(discovery_round)
+        external_discovery_round = max(0, int(discovery_round)) // EXTERNAL_DISCOVERY_REFRESH_INTERVAL
 
-        if user_search_mode:
+        if user_search_mode and refresh_external:
             groq = getattr(self, "groq", None)
             if use_groq and groq is not None and groq.available:
                 try:
@@ -1172,8 +1194,8 @@ class Investigator:
                 engine_limit = max(20, min(64, 16 + (max_candidates // 10)))
                 queries_per_pass = max(1, engine_limit // max(1, len(USER_SEARCH_ENGINES)))
                 rotations_per_page = max(1, (query_count + queries_per_pass - 1) // queries_per_pass)
-                page_offset = max(0, discovery_round) // rotations_per_page
-                query_offset = (max(0, discovery_round) % rotations_per_page) * queries_per_pass
+                page_offset = external_discovery_round // rotations_per_page
+                query_offset = (external_discovery_round % rotations_per_page) * queries_per_pass
                 if page_offset or query_offset:
                     search_candidates = self._discover_with_user_search(
                         run_id,
@@ -1210,16 +1232,31 @@ class Investigator:
                         "OSINT fallback добавил кандидатов после недоступного поискового поиска",
                         {"added": len(matched_feeds), "reason": "Search pages unavailable or returned too few casino domains"},
                     )
-        else:
-            if self.settings.osint_feeds_enabled:
-                feed_candidates = await self._discover_from_feeds(run_id, discovery_limit)
-                discovered.extend(feed_candidates)
+        elif user_search_mode:
             self.db.add_log(
                 run_id,
                 "info",
-                "Автопоиск работает без Gemini",
-                {"mode": "search-pages-and-osint", "gemini_used": False},
+                "Продолжаю проверку локально расширенного пула без повторного запроса к поисковикам",
+                {
+                    "discovery_pass": discovery_round + 1,
+                    "next_external_refresh_pass": (
+                        ((discovery_round // EXTERNAL_DISCOVERY_REFRESH_INTERVAL) + 1)
+                        * EXTERNAL_DISCOVERY_REFRESH_INTERVAL
+                        + 1
+                    ),
+                },
             )
+        else:
+            if refresh_external and self.settings.osint_feeds_enabled:
+                feed_candidates = await self._discover_from_feeds(run_id, discovery_limit)
+                discovered.extend(feed_candidates)
+            if refresh_external:
+                self.db.add_log(
+                    run_id,
+                    "info",
+                    "Автопоиск работает без Gemini",
+                    {"mode": "search-pages-and-osint", "gemini_used": False},
+                )
 
         if seed_query:
             for domain in find_domains(seed_query):
@@ -1236,17 +1273,17 @@ class Investigator:
                 )
 
         seed_domains = set(find_domains(seed_query or ""))
-        allow_synthetic_refill = not user_search_mode
+        allow_algorithmic_refill = not seed_domains and (not user_search_mode or search_mode == "casino")
 
-        if allow_synthetic_refill and len(discovered) < candidate_target:
+        if allow_algorithmic_refill and len(discovered) < candidate_target:
             bootstrap = self._discover_from_bootstrap(seed_query, candidate_target - len(discovered), search_mode)
             if bootstrap:
                 discovered.extend(bootstrap)
                 self.db.add_log(
                     run_id,
-                    "warning",
+                    "info",
                     "Discovery bootstrap добавил кандидатов для проверки",
-                    {"added": len(bootstrap), "reason": "Gemini/OSINT дали мало доменов"},
+                    {"added": len(bootstrap), "reason": "Поисковая выдача и OSINT дали мало доменов"},
                 )
 
         candidates = self._sort_candidates_for_search_mode(
@@ -1258,12 +1295,9 @@ class Investigator:
         fresh_candidates, skipped_attempted = self._exclude_known_candidates(fresh_after_known, excluded_domains)
         algorithmic_added = 0
 
-        if allow_synthetic_refill and len(fresh_candidates) < candidate_target and not seed_domains:
+        if allow_algorithmic_refill and len(fresh_candidates) < candidate_target:
             algorithmic_excluded = known_domains | excluded_domains | {candidate.key() for candidate in candidates}
-            algorithmic_budget = min(
-                candidate_target - len(fresh_candidates),
-                max(50, min(max_candidates * 2, 500)),
-            )
+            algorithmic_budget = candidate_target - len(fresh_candidates)
             algorithmic = self._discover_from_algorithmic_mirrors(
                 seed_query,
                 algorithmic_budget,
@@ -1275,11 +1309,11 @@ class Investigator:
                 algorithmic_added = len(algorithmic)
                 self.db.add_log(
                     run_id,
-                    "warning",
+                    "info",
                     "Algorithmic discovery добавил кандидатов для расширенного прохода",
                     {
                         "added": algorithmic_added,
-                        "reason": "Gemini/OSINT дали мало новых доменов",
+                        "reason": "Поисковая выдача и OSINT дали мало новых доменов",
                     },
                 )
 
@@ -1294,6 +1328,7 @@ class Investigator:
                 "skipped_attempted": skipped_attempted,
                 "algorithmic_added": algorithmic_added,
                 "known_rechecked": 0,
+                "external_refresh": refresh_external,
                 "ready": len(fresh_candidates),
             },
         )

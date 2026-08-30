@@ -415,11 +415,11 @@ class InvestigatorCandidateTests(unittest.TestCase):
                 )
             ]
 
-        def fail_bootstrap(*args, **kwargs):  # noqa: ANN002, ANN003
-            raise AssertionError("Bootstrap candidates must not be mixed into user-search discovery")
+        def no_bootstrap(*args, **kwargs):  # noqa: ANN002, ANN003
+            return []
 
-        def fail_algorithmic(*args, **kwargs):  # noqa: ANN002, ANN003
-            raise AssertionError("Algorithmic mirrors must not be mixed into user-search discovery")
+        def no_algorithmic(*args, **kwargs):  # noqa: ANN002, ANN003
+            return []
 
         def fake_user_search(run_id, seed_query, discovery_limit, max_candidates, search_mode="auto"):  # noqa: ANN001
             return [
@@ -436,11 +436,11 @@ class InvestigatorCandidateTests(unittest.TestCase):
         self.investigator.db = FakeDb()
         self.investigator.gemini = FakeGemini()
         self.investigator._discover_from_feeds = fake_feeds
-        self.investigator._discover_from_bootstrap = fail_bootstrap
-        self.investigator._discover_from_algorithmic_mirrors = fail_algorithmic
+        self.investigator._discover_from_bootstrap = no_bootstrap
+        self.investigator._discover_from_algorithmic_mirrors = no_algorithmic
         self.investigator._discover_with_user_search = fake_user_search
 
-        candidates = asyncio.run(self.investigator._discover_candidates(1, "онлайн казино", 1))
+        candidates = asyncio.run(self.investigator._discover_candidates(1, "онлайн казино", 100))
 
         self.assertEqual(
             {candidate.domain for candidate in candidates},
@@ -506,6 +506,7 @@ class InvestigatorCandidateTests(unittest.TestCase):
             available = False
 
         captured_bootstrap_limits: list[int] = []
+        captured_algorithmic_limits: list[int] = []
 
         def fake_user_search(run_id, seed_query, discovery_limit, max_candidates, search_mode="auto"):  # noqa: ANN001
             return [
@@ -524,7 +525,16 @@ class InvestigatorCandidateTests(unittest.TestCase):
             return []
 
         def fake_algorithmic(seed_query, limit, excluded_domains, search_mode="auto"):  # noqa: ANN001
-            return []
+            captured_algorithmic_limits.append(limit)
+            return [
+                Candidate(
+                    url="https://algorithmic-casino.example",
+                    domain="algorithmic-casino.example",
+                    category="casino",
+                    why="Algorithmic candidate",
+                    search_query=seed_query,
+                )
+            ]
 
         self.investigator.settings = Settings(osint_candidate_pool_size=700, osint_feeds_enabled=False)
         self.investigator.db = FakeDb()
@@ -535,8 +545,43 @@ class InvestigatorCandidateTests(unittest.TestCase):
 
         candidates = asyncio.run(self.investigator._discover_candidates(1, "онлайн казино", 100, "casino"))
 
-        self.assertEqual(len(candidates), 10)
-        self.assertEqual(captured_bootstrap_limits, [])
+        self.assertEqual(len(candidates), 11)
+        self.assertEqual(captured_bootstrap_limits, [4990])
+        self.assertEqual(captured_algorithmic_limits, [4990])
+
+    def test_target_500_builds_a_five_thousand_candidate_pool(self) -> None:
+        class FakeDb:
+            @staticmethod
+            def known_domains() -> set[str]:
+                return set()
+
+            @staticmethod
+            def add_log(*args, **kwargs) -> None:  # noqa: ANN002, ANN003
+                return None
+
+        captured_algorithmic_limits: list[int] = []
+
+        def no_user_search(*args, **kwargs):  # noqa: ANN002, ANN003
+            return []
+
+        def no_bootstrap(*args, **kwargs):  # noqa: ANN002, ANN003
+            return []
+
+        def capture_algorithmic(seed_query, limit, excluded_domains, search_mode="auto"):  # noqa: ANN001
+            captured_algorithmic_limits.append(limit)
+            return []
+
+        self.investigator.settings = Settings(osint_candidate_pool_size=5000, osint_feeds_enabled=False)
+        self.investigator.db = FakeDb()
+        self.investigator.gemini = None
+        self.investigator._discover_with_user_search = no_user_search
+        self.investigator._discover_from_bootstrap = no_bootstrap
+        self.investigator._discover_from_algorithmic_mirrors = capture_algorithmic
+
+        candidates = asyncio.run(self.investigator._discover_candidates(1, "онлайн казино", 500, "casino"))
+
+        self.assertEqual(candidates, [])
+        self.assertEqual(captured_algorithmic_limits, [5000])
 
     def test_casino_check_limit_overscans_candidates(self) -> None:
         self.investigator.settings = Settings(max_candidates_per_run=2000)
