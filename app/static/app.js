@@ -1,3 +1,7 @@
+const PAGE = document.body.dataset.page || "monitor";
+const PAGE_USES_CASES = PAGE === "monitor" || PAGE === "registry" || PAGE === "dynamics";
+const TREND_CHART_HEIGHT = 300;
+
 const state = {
   selectedRunId: null,
   pollTimer: null,
@@ -13,7 +17,7 @@ const state = {
   caseDetails: new Map(),
   runDetails: new Map(),
   runStatuses: new Map(),
-  registryExpanded: false,
+  registryExpanded: PAGE === "registry",
   expandedRunFolderId: null,
   runFolderLoadingId: null,
   runFolderErrors: new Map(),
@@ -21,6 +25,11 @@ const state = {
   lastCasesRefreshAt: 0,
   chartPoints: [],
   chartHoverIndex: null,
+  logFilter: "all",
+  visibleLogs: [],
+  visibleRunStatus: "",
+  runHistoryExpanded: false,
+  stoppingRunIds: new Set(),
 };
 
 const DEFAULT_RUN_CANDIDATES = 100;
@@ -55,6 +64,11 @@ const els = {
   evidenceCount: document.getElementById("evidenceCount"),
   trendChart: document.getElementById("trendChart"),
   chartTooltip: document.getElementById("chartTooltip"),
+  trendEmptyState: document.getElementById("trendEmptyState"),
+  trendTotal: document.getElementById("trendTotal"),
+  trendCasinoCount: document.getElementById("trendCasinoCount"),
+  trendPhishingCount: document.getElementById("trendPhishingCount"),
+  trendPyramidCount: document.getElementById("trendPyramidCount"),
   caseSearch: document.getElementById("caseSearch"),
   categoryFilter: document.getElementById("categoryFilter"),
   caseMinRisk: document.getElementById("caseMinRisk"),
@@ -68,6 +82,10 @@ const els = {
   runFoldersList: document.getElementById("runFoldersList"),
   runFoldersCount: document.getElementById("runFoldersCount"),
   runsList: document.getElementById("runsList"),
+  runHistoryToggle: document.getElementById("runHistoryToggle"),
+  runHistoryContent: document.getElementById("runHistoryContent"),
+  runHistorySummary: document.getElementById("runHistorySummary"),
+  runHistoryAction: document.getElementById("runHistoryAction"),
   methodologyList: document.getElementById("methodologyList"),
   logsList: document.getElementById("logsList"),
   warningCount: document.getElementById("warningCount"),
@@ -116,6 +134,12 @@ const categoryColors = {
   investment_pyramid: "#8b5cf6",
   empty_or_parked: "#64748b",
   suspicious: "#3b82f6",
+};
+
+const categoryFillColors = {
+  casino: "rgba(245, 158, 11, 0.18)",
+  phishing: "rgba(239, 68, 68, 0.14)",
+  pyramid: "rgba(139, 92, 246, 0.14)",
 };
 
 const modelLabelLabels = {
@@ -344,6 +368,32 @@ function hasRunningRuns() {
     || Array.from(state.runStatuses.values()).some((status) => runningStatus(status));
 }
 
+function runStatusForId(runId) {
+  if (!runId) return "";
+  return state.runs.find((run) => Number(run.id) === Number(runId))?.status
+    || state.runStatuses.get(Number(runId))
+    || state.runDetails.get(Number(runId))?.run?.status
+    || "";
+}
+
+function activeRunIdForStop() {
+  const preferredIds = [state.activityRunId, state.selectedRunId];
+  for (const runId of preferredIds) {
+    if (runId && runningStatus(runStatusForId(runId))) return Number(runId);
+  }
+  const activeRun = state.runs.find((run) => runningStatus(run.status));
+  return activeRun ? Number(activeRun.id) : null;
+}
+
+function syncStopButton() {
+  if (!els.stopBtn) return;
+  const runId = activeRunIdForStop();
+  const stopping = Boolean(runId && state.stoppingRunIds.has(runId));
+  els.stopBtn.disabled = !runId || stopping;
+  els.stopBtn.dataset.activeRunId = runId ? String(runId) : "";
+  els.stopBtn.textContent = stopping ? "Останавливаю" : "Стоп";
+}
+
 function latestLog(logs = []) {
   return logs.length ? logs[logs.length - 1] : null;
 }
@@ -354,13 +404,13 @@ function activityStageIndex(run = {}, logs = []) {
   }
   const last = latestLog(logs) || {};
   const meta = last.meta || {};
-  if (Number(run.finding_count || 0) > 0 || meta.risk_score !== undefined) return 3;
+  const lastText = `${last.message || ""} ${JSON.stringify(meta)}`.toLowerCase();
+  if (/добавлен|отчет|заверш|report|complete/.test(lastText)) return 3;
   if (meta.path || meta.html_sha256) return 2;
+  if (/скрин|html|sha|dns|tls|ssl|доказ|screenshot|evidence/.test(lastText)) return 2;
+  if (/открываю|ручного анализа|кандидат|доступ|candidate|opening|url/.test(lastText)) return 1;
   if (meta.url || meta.domain) return 1;
-  const text = logs.map((log) => `${log.message || ""} ${JSON.stringify(log.meta || {})}`).join(" ").toLowerCase();
-  if (/добавлен|отчет|заверш|report|complete/.test(text)) return 3;
-  if (/скрин|html|sha|dns|tls|ssl|доказ|screenshot|evidence/.test(text)) return 2;
-  if (/открываю|ручного анализа|кандидат|доступ|candidate|opening|url/.test(text)) return 1;
+  if (Number(run.finding_count || 0) > 0 || meta.risk_score !== undefined) return 3;
   return 0;
 }
 
@@ -381,6 +431,8 @@ function showActivity(run = {}, logs = []) {
   const stageIndex = activityStageIndex(run, logs);
   const last = latestLog(logs);
   els.activityPanel.hidden = false;
+  els.activityPanel.style.setProperty("--activity-progress", `${((stageIndex + 1) / activityStages.length) * 100}%`);
+  els.activityPanel.setAttribute("aria-busy", String(active));
   els.activityPanel.classList.toggle("done", done && run.status === "completed");
   els.activityPanel.classList.toggle("failed", done && run.status === "failed");
   els.activityPanel.classList.toggle("interrupted", done && ["canceled", "interrupted"].includes(run.status));
@@ -403,6 +455,8 @@ function showActivity(run = {}, logs = []) {
 
 function primeActivity(runId, mode = "auto") {
   state.activityRunId = runId;
+  state.runStatuses.set(Number(runId), "queued");
+  syncStopButton();
   showActivity(
     { id: runId, status: "queued", finding_count: 0, candidate_count: 0 },
     [
@@ -443,6 +497,7 @@ function runStatusLabel(run) {
 }
 
 function renderPill(el, text, cls) {
+  if (!el) return;
   el.textContent = text;
   el.className = `health-pill ${cls}`;
 }
@@ -522,6 +577,7 @@ async function loadHealth() {
 
 async function startRun(event) {
   event?.preventDefault();
+  if (!els.runBtn || !els.seedQuery || !els.takeScreenshots) return;
   els.runBtn.disabled = true;
   els.runBtn.textContent = "Запускаю";
   showActivity(
@@ -586,23 +642,40 @@ async function startManualCheck() {
   }
 }
 
-async function stopRun(runId = state.selectedRunId) {
-  if (!runId) return;
-  if (runId === state.selectedRunId) els.stopBtn.disabled = true;
-  const runIndex = state.runs.findIndex((item) => item.id === runId);
+async function stopRun(runId = activeRunIdForStop()) {
+  const normalizedRunId = Number(runId);
+  if (!Number.isInteger(normalizedRunId) || normalizedRunId <= 0) return;
+  const previousStatus = runStatusForId(normalizedRunId);
+  state.stoppingRunIds.add(normalizedRunId);
+  const runIndex = state.runs.findIndex((item) => Number(item.id) === normalizedRunId);
   if (runIndex >= 0) {
     state.runs[runIndex] = { ...state.runs[runIndex], status: "canceling" };
-    renderRuns();
-    renderRunFolders();
   }
-  await api(`/api/runs/${runId}/cancel`, { method: "POST" });
-  state.runDetails.delete(runId);
-  await loadRun(runId, { force: true });
-  await loadRuns();
+  state.runStatuses.set(normalizedRunId, "canceling");
+  syncStopButton();
+  renderRuns();
+  renderRunFolders();
+  try {
+    await api(`/api/runs/${normalizedRunId}/cancel`, { method: "POST" });
+    state.runDetails.delete(normalizedRunId);
+    await loadRun(normalizedRunId, { force: true });
+    await loadRuns();
+  } catch (error) {
+    if (runIndex >= 0 && previousStatus) {
+      state.runs[runIndex] = { ...state.runs[runIndex], status: previousStatus };
+    }
+    if (previousStatus) state.runStatuses.set(normalizedRunId, previousStatus);
+    throw error;
+  } finally {
+    state.stoppingRunIds.delete(normalizedRunId);
+    syncStopButton();
+    renderRuns();
+  }
 }
 
 async function loadRuns() {
-  const data = await api("/api/runs?limit=100");
+  const limit = PAGE === "monitor" ? 20 : 100;
+  const data = await api(`/api/runs?limit=${limit}`);
   state.runs = data.runs || [];
   const runIds = new Set(state.runs.map((run) => run.id));
   if (state.expandedRunFolderId && !runIds.has(state.expandedRunFolderId)) {
@@ -613,6 +686,7 @@ async function loadRuns() {
   });
   state.runs.forEach((run) => state.runStatuses.set(run.id, run.status));
   if (!state.selectedRunId && state.runs.length) state.selectedRunId = state.runs[0].id;
+  syncStopButton();
   renderRuns();
   renderRunFolders();
 }
@@ -653,10 +727,10 @@ async function loadRun(runId, options = {}) {
     state.runs.unshift(run);
   }
 
-  els.currentRun.textContent = `#${run.id}`;
+  if (els.currentRun) els.currentRun.textContent = `#${run.id}`;
   const liveFindingCount = Number(run.finding_count || 0);
-  els.runStatus.textContent = `${runStatusLabel(run)} · ${liveFindingCount}/${run.candidate_count || 0}`;
-  els.stopBtn.disabled = !runningStatus(run.status);
+  if (els.runStatus) els.runStatus.textContent = `${runStatusLabel(run)} · ${liveFindingCount}/${run.candidate_count || 0}`;
+  syncStopButton();
 
   showActivity(run, data.logs || []);
   renderMethodology(run.methodology || []);
@@ -669,7 +743,7 @@ async function loadRun(runId, options = {}) {
     && liveFindingCount !== state.lastLiveFindingCount
     && Date.now() - state.lastCasesRefreshAt >= CASE_REFRESH_INTERVAL_MS
   ) {
-    await loadCases({ preserveLimit: true });
+    if (PAGE_USES_CASES) await loadCases({ preserveLimit: true });
     state.lastLiveFindingCount = liveFindingCount;
   }
 
@@ -680,13 +754,31 @@ async function loadRun(runId, options = {}) {
     if (!hasRunningRuns()) stopPolling();
     if (previousStatus && runningStatus(previousStatus)) {
       await loadRuns();
-      await loadCases();
+      if (PAGE_USES_CASES) await loadCases();
     }
     if (hasRunningRuns() && !state.pollTimer) startPolling();
   }
 }
 
+function setRunHistoryExpanded(expanded) {
+  state.runHistoryExpanded = Boolean(expanded);
+  if (els.runHistoryToggle) els.runHistoryToggle.setAttribute("aria-expanded", String(state.runHistoryExpanded));
+  if (els.runHistoryContent) els.runHistoryContent.hidden = !state.runHistoryExpanded;
+  if (els.runHistoryAction) els.runHistoryAction.textContent = state.runHistoryExpanded ? "Скрыть" : "Показать";
+}
+
+function updateRunHistorySummary() {
+  if (!els.runHistorySummary) return;
+  const activeCount = state.runs.filter((run) => runningStatus(run.status)).length;
+  const total = state.runs.length;
+  els.runHistorySummary.textContent = activeCount
+    ? `${total} запусков · ${activeCount} активных`
+    : `${total} запусков`;
+}
+
 function renderRuns() {
+  updateRunHistorySummary();
+  if (!els.runsList) return;
   if (!state.runs.length) {
     els.runsList.innerHTML = '<div class="empty-state">Запусков пока нет.</div>';
     return;
@@ -697,8 +789,9 @@ function renderRuns() {
     const runningClass = running ? "running" : "";
     const signal = runningStatus(run.status) ? "live" : run.status === "failed" ? "bad" : run.status === "interrupted" ? "warn" : "done";
     const hint = ["failed", "interrupted"].includes(run.status) && run.error ? run.error : `${run.finding_count || 0} находок`;
+    const stopping = state.stoppingRunIds.has(Number(run.id));
     const stopControl = running
-      ? `<button class="run-stop-btn" data-stop-run-id="${run.id}" type="button">Остановить запуск</button>`
+      ? `<button class="run-stop-btn" data-stop-run-id="${run.id}" type="button" ${stopping ? "disabled" : ""}>${stopping ? "Останавливаю" : "Остановить запуск"}</button>`
       : "";
     return `
       <div class="run-item ${active} ${runningClass}" data-run-id="${run.id}" role="button" tabindex="0">
@@ -907,17 +1000,44 @@ function formatMetaParts(meta) {
   return parts;
 }
 
+function compactLogRows(logs) {
+  const rows = [];
+  logs.forEach((log) => {
+    const previous = rows[rows.length - 1];
+    const groupable = log.level === "info" && /^Search page processed$/i.test(String(log.message || ""));
+    if (groupable && previous?._groupable && previous.message === log.message) {
+      const previousAdded = Number(previous.meta?.added);
+      const nextAdded = Number(log.meta?.added);
+      previous.timestamp = log.timestamp;
+      previous._repeat += 1;
+      previous.meta = { ...(log.meta || {}) };
+      if (Number.isFinite(previousAdded) && Number.isFinite(nextAdded)) {
+        previous.meta.added = previousAdded + nextAdded;
+      }
+      return;
+    }
+    rows.push({ ...log, meta: { ...(log.meta || {}) }, _repeat: 1, _groupable: groupable });
+  });
+  return rows;
+}
+
 function renderLogs(logs, runStatus = "") {
+  if (!els.logsList || !els.warningCount) return;
+  state.visibleLogs = logs;
+  state.visibleRunStatus = runStatus;
   const warnings = logs.filter((log) => ["warning", "error"].includes(log.level)).length;
   els.warningCount.textContent = `${warnings} предупреждений`;
-  if (!logs.length) {
+  const filteredLogs = state.logFilter === "all"
+    ? logs
+    : logs.filter((log) => log.level === state.logFilter);
+  if (!filteredLogs.length) {
     const message = runningStatus(runStatus)
-      ? "Ожидаю новое событие запуска."
-      : "Live-журнал завершен. Сохраненных ошибок нет.";
+      ? state.logFilter === "all" ? "Ожидаю новое событие запуска." : "Событий этого уровня пока нет."
+      : state.logFilter === "all" ? "Live-журнал завершен. Сохраненных ошибок нет." : "Событий этого уровня нет.";
     els.logsList.innerHTML = `<div class="empty-state">${message}</div>`;
     return;
   }
-  const recentLogs = logs.slice(-45);
+  const recentLogs = compactLogRows(filteredLogs.slice(-160)).slice(-60);
   const last = recentLogs[recentLogs.length - 1];
   const summary = `
     <div class="log-live-summary">
@@ -926,9 +1046,12 @@ function renderLogs(logs, runStatus = "") {
         <strong>${escapeHtml(last?.message || "Ожидаю событие")}</strong>
       </div>
       <div>
-        <span>${recentLogs.length}/${logs.length} строк</span>
+        <span>${recentLogs.length}/${filteredLogs.length} строк</span>
         <strong>${warnings} предупреждений</strong>
       </div>
+    </div>
+    <div class="log-table-head" aria-hidden="true">
+      <span>Время</span><span>Уровень</span><span>Событие и детали</span>
     </div>`;
   els.logsList.innerHTML = summary + recentLogs.map((log) => {
     const cls = log.level === "error" ? "error" : log.level === "warning" ? "warning" : "";
@@ -938,7 +1061,7 @@ function renderLogs(logs, runStatus = "") {
         <span class="log-time">${escapeHtml(formatDateTime(log.timestamp))}</span>
         <strong class="log-level">${escapeHtml(levelLabels[log.level] || log.level)}</strong>
         <div class="log-body">
-          <p>${escapeHtml(log.message)}</p>
+          <p>${escapeHtml(log.message)}${log._repeat > 1 ? `<span class="log-repeat">×${log._repeat}</span>` : ""}</p>
           ${meta.length ? `<div class="log-meta">${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
         </div>
       </div>`;
@@ -948,12 +1071,12 @@ function renderLogs(logs, runStatus = "") {
 
 async function loadCases(options = {}) {
   const params = new URLSearchParams({ archived: "false", limit: "250" });
-  if (els.caseSearch.value.trim()) params.set("q", els.caseSearch.value.trim());
-  if (els.caseMinRisk.value) params.set("min_risk", els.caseMinRisk.value);
+  if (els.caseSearch?.value.trim()) params.set("q", els.caseSearch.value.trim());
+  if (els.caseMinRisk?.value) params.set("min_risk", els.caseMinRisk.value);
   const data = await api(`/api/cases?${params.toString()}`);
   state.lastCasesRefreshAt = Date.now();
   state.cases = data.cases || [];
-  const category = els.categoryFilter.value;
+  const category = els.categoryFilter?.value || "";
   state.filteredCases = category
     ? state.cases.filter((item) => normalizeCategory(item.category) === category)
     : state.cases;
@@ -972,9 +1095,9 @@ async function exportCurrentCases(format) {
 }
 
 function renderCaseStats(cases) {
-  els.activeCaseCount.textContent = cases.length;
-  els.highRiskCount.textContent = cases.filter((item) => Number(item.best_risk_score || 0) >= 70).length;
-  els.evidenceCount.textContent = cases.filter((item) => item.html_path || item.screenshot_path).length;
+  if (els.activeCaseCount) els.activeCaseCount.textContent = cases.length;
+  if (els.highRiskCount) els.highRiskCount.textContent = cases.filter((item) => Number(item.best_risk_score || 0) >= 70).length;
+  if (els.evidenceCount) els.evidenceCount.textContent = cases.filter((item) => item.html_path || item.screenshot_path).length;
 }
 
 function renderCases(cases) {
@@ -982,6 +1105,7 @@ function renderCases(cases) {
     const filtered = cases.length !== state.cases.length;
     els.registrySummary.textContent = filtered ? `${cases.length} из ${state.cases.length} доменов` : `${cases.length} доменов`;
   }
+  if (!els.casesList) return;
   if (!state.registryExpanded) {
     els.casesList.innerHTML = "";
     return;
@@ -996,10 +1120,11 @@ function renderCases(cases) {
 
 function setRegistryExpanded(open) {
   state.registryExpanded = Boolean(open);
-  if (!els.toggleRegistryBtn || !els.registryDetails) return;
-  els.toggleRegistryBtn.setAttribute("aria-expanded", String(state.registryExpanded));
-  els.toggleRegistryBtn.textContent = state.registryExpanded ? "Скрыть реестр" : "Открыть реестр";
-  els.registryDetails.hidden = !state.registryExpanded;
+  if (els.toggleRegistryBtn) {
+    els.toggleRegistryBtn.setAttribute("aria-expanded", String(state.registryExpanded));
+    els.toggleRegistryBtn.textContent = state.registryExpanded ? "Скрыть реестр" : "Открыть реестр";
+  }
+  if (els.registryDetails) els.registryDetails.hidden = !state.registryExpanded;
   renderCases(state.filteredCases);
 }
 
@@ -1165,12 +1290,12 @@ function drawTrend(cases) {
 
   const dpr = window.devicePixelRatio || 1;
   canvas.width = Math.floor(rect.width * dpr);
-  canvas.height = Math.floor(320 * dpr);
+  canvas.height = Math.floor(TREND_CHART_HEIGHT * dpr);
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   const width = rect.width;
-  const height = 320;
+  const height = TREND_CHART_HEIGHT;
   ctx.clearRect(0, 0, width, height);
 
   const today = new Date();
@@ -1198,6 +1323,13 @@ function drawTrend(cases) {
     category,
     values: days.map((date) => buckets[dayKey(date)][category]),
   }));
+  const totals = Object.fromEntries(series.map((item) => [item.category, item.values.reduce((sum, value) => sum + value, 0)]));
+  const total = Object.values(totals).reduce((sum, value) => sum + value, 0);
+  if (els.trendTotal) els.trendTotal.textContent = String(total);
+  if (els.trendCasinoCount) els.trendCasinoCount.textContent = String(totals.casino || 0);
+  if (els.trendPhishingCount) els.trendPhishingCount.textContent = String(totals.phishing || 0);
+  if (els.trendPyramidCount) els.trendPyramidCount.textContent = String(totals.pyramid || 0);
+  if (els.trendEmptyState) els.trendEmptyState.hidden = total > 0;
   const maxValue = Math.max(1, ...series.flatMap((item) => item.values));
   const tickStep = Math.max(1, Math.ceil(maxValue / 5));
   const axisMax = tickStep * 5;
@@ -1226,34 +1358,51 @@ function drawTrend(cases) {
     ctx.fillText(String(value), 18, y + 4);
   }
 
+  const labelStep = width < 640 ? 5 : 3;
+  const lastDayIndex = days.length - 1;
+  ctx.textAlign = "center";
   days.forEach((date, index) => {
-    if (index % 3 !== 0 && index !== days.length - 1) return;
+    if (index !== lastDayIndex && (index % labelStep !== 0 || lastDayIndex - index < Math.ceil(labelStep / 2))) return;
     const x = plot.left + (plotWidth * index) / Math.max(1, days.length - 1);
     const label = date.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" });
-    ctx.save();
-    ctx.translate(x, height - 26);
-    ctx.rotate(-0.65);
-    ctx.fillText(label, 0, 0);
-    ctx.restore();
+    ctx.fillText(label, x, height - 20);
   });
+  ctx.textAlign = "start";
 
   series.forEach(({ category, values }) => {
+    if (!values.some((value) => value > 0)) return;
+    const points = values.map((value, index) => ({
+      value,
+      x: plot.left + (plotWidth * index) / Math.max(1, values.length - 1),
+      y: plot.top + plotHeight - (plotHeight * value) / axisMax,
+    }));
+    const fill = ctx.createLinearGradient(0, plot.top, 0, plot.top + plotHeight);
+    fill.addColorStop(0, categoryFillColors[category]);
+    fill.addColorStop(1, "rgba(8, 13, 20, 0)");
+    ctx.beginPath();
+    points.forEach((point, index) => {
+      if (index === 0) ctx.moveTo(point.x, point.y);
+      else ctx.lineTo(point.x, point.y);
+    });
+    ctx.lineTo(points[points.length - 1].x, plot.top + plotHeight);
+    ctx.lineTo(points[0].x, plot.top + plotHeight);
+    ctx.closePath();
+    ctx.fillStyle = fill;
+    ctx.fill();
+
     ctx.strokeStyle = categoryColors[category];
     ctx.fillStyle = categoryColors[category];
     ctx.lineWidth = 3;
     ctx.beginPath();
-    values.forEach((value, index) => {
-      const x = plot.left + (plotWidth * index) / Math.max(1, values.length - 1);
-      const y = plot.top + plotHeight - (plotHeight * value) / axisMax;
-      if (index === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+    points.forEach((point, index) => {
+      if (index === 0) ctx.moveTo(point.x, point.y);
+      else ctx.lineTo(point.x, point.y);
     });
     ctx.stroke();
-    values.forEach((value, index) => {
-      const x = plot.left + (plotWidth * index) / Math.max(1, values.length - 1);
-      const y = plot.top + plotHeight - (plotHeight * value) / axisMax;
+    points.forEach((point) => {
+      if (point.value <= 0) return;
       ctx.beginPath();
-      ctx.arc(x, y, 4, 0, Math.PI * 2);
+      ctx.arc(point.x, point.y, 4, 0, Math.PI * 2);
       ctx.fill();
     });
   });
@@ -1268,7 +1417,7 @@ function drawChartHover(ctx, plot, plotHeight, axisMax) {
     return;
   }
   const canvas = els.trendChart;
-  const height = 320;
+  const height = TREND_CHART_HEIGHT;
   ctx.save();
   ctx.strokeStyle = "rgba(226, 232, 240, 0.28)";
   ctx.lineWidth = 1;
@@ -1330,6 +1479,7 @@ function clearChartHover() {
 }
 
 async function openCase(caseId) {
+  if (!els.drawerOverlay || !els.drawerTitle || !els.caseDetailContent) return;
   els.drawerOverlay.hidden = false;
   els.drawerTitle.textContent = "Загрузка анализа";
   const cached = state.caseDetails.get(caseId);
@@ -1429,6 +1579,7 @@ function mlFeatureText(ml) {
 }
 
 function renderCaseDetail(item, findings) {
+  if (!els.drawerTitle || !els.caseDetailContent) return;
   const finding = latestFinding(item, findings);
   const evidence = finding.evidence || {};
   const ml = evidence.ml || {};
@@ -1582,7 +1733,7 @@ function bindTabs() {
 }
 
 function closeDrawer() {
-  els.drawerOverlay.hidden = true;
+  if (els.drawerOverlay) els.drawerOverlay.hidden = true;
 }
 
 function startPolling() {
@@ -1620,7 +1771,7 @@ async function pollSelectedRun() {
   }
 }
 
-els.scanForm.addEventListener("submit", startRun);
+els.scanForm?.addEventListener("submit", startRun);
 els.healthToggle?.addEventListener("click", () => {
   const open = els.healthToggle.getAttribute("aria-expanded") !== "true";
   setHealthDetailsOpen(open);
@@ -1635,10 +1786,15 @@ els.manualTarget?.addEventListener("keydown", (event) => {
     startManualCheck();
   }
 });
-els.stopBtn.addEventListener("click", stopRun);
-els.caseFilterBtn.addEventListener("click", loadCases);
-els.categoryFilter.addEventListener("change", loadCases);
-els.caseSearch.addEventListener("keydown", (event) => {
+els.stopBtn?.addEventListener("click", () => {
+  stopRun().catch((error) => alert(`Не удалось остановить запуск: ${error.message}`));
+});
+els.runHistoryToggle?.addEventListener("click", () => {
+  setRunHistoryExpanded(!state.runHistoryExpanded);
+});
+els.caseFilterBtn?.addEventListener("click", loadCases);
+els.categoryFilter?.addEventListener("change", loadCases);
+els.caseSearch?.addEventListener("keydown", (event) => {
   if (event.key === "Enter") loadCases();
 });
 els.exportCasesCsvBtn?.addEventListener("click", () => exportCurrentCases("csv").catch((error) => alert(`Не удалось скачать CSV: ${error.message}`)));
@@ -1646,8 +1802,17 @@ els.exportCasesXlsxBtn?.addEventListener("click", () => exportCurrentCases("xlsx
 els.toggleRegistryBtn?.addEventListener("click", () => {
   setRegistryExpanded(!state.registryExpanded);
 });
-els.drawerClose.addEventListener("click", closeDrawer);
-els.drawerOverlay.addEventListener("click", (event) => {
+document.querySelectorAll("[data-log-filter]").forEach((button) => {
+  button.addEventListener("click", () => {
+    state.logFilter = button.dataset.logFilter || "all";
+    document.querySelectorAll("[data-log-filter]").forEach((item) => {
+      item.classList.toggle("active", item === button);
+    });
+    renderLogs(state.visibleLogs, state.visibleRunStatus);
+  });
+});
+els.drawerClose?.addEventListener("click", closeDrawer);
+els.drawerOverlay?.addEventListener("click", (event) => {
   if (event.target === els.drawerOverlay) closeDrawer();
 });
 document.addEventListener("keydown", (event) => {
@@ -1656,13 +1821,13 @@ document.addEventListener("keydown", (event) => {
     setHealthDetailsOpen(false);
   }
 });
-window.addEventListener("resize", () => drawTrend(state.cases));
+if (els.trendChart) window.addEventListener("resize", () => drawTrend(state.cases));
 els.trendChart?.addEventListener("mousemove", handleChartMove);
 els.trendChart?.addEventListener("mouseleave", clearChartHover);
 
 els.authForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
-  state.apiToken = els.apiTokenInput.value.trim();
+  state.apiToken = els.apiTokenInput?.value.trim() || "";
   if (!state.apiToken) {
     showAuth("Введите ADMIN_TOKEN.");
     return;
@@ -1685,9 +1850,29 @@ async function bootstrap() {
     return;
   }
   if (!(state.authRequired && !state.authConfigured)) {
-    await loadRuns();
-    if (state.selectedRunId) await loadRun(state.selectedRunId);
-    await loadCases();
+    if (PAGE === "monitor") {
+      await loadRuns();
+      if (state.selectedRunId) await loadRun(state.selectedRunId);
+      await loadCases();
+      return;
+    }
+    if (PAGE === "registry") {
+      setRegistryExpanded(true);
+      await loadCases();
+      return;
+    }
+    if (PAGE === "dynamics") {
+      await loadCases();
+      return;
+    }
+    if (PAGE === "runs") {
+      await loadRuns();
+      return;
+    }
+    if (PAGE === "journal") {
+      await loadRuns();
+      if (state.selectedRunId) await loadRun(state.selectedRunId);
+    }
   }
 }
 

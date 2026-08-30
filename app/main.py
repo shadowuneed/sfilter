@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -203,6 +203,26 @@ def index() -> FileResponse:
 @app.get("/monitor")
 def monitor() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/dynamics")
+def dynamics() -> RedirectResponse:
+    return RedirectResponse(url="/monitor#trendPanel", status_code=307)
+
+
+@app.get("/registry")
+def registry() -> FileResponse:
+    return FileResponse(STATIC_DIR / "registry.html")
+
+
+@app.get("/runs")
+def runs_archive() -> FileResponse:
+    return FileResponse(STATIC_DIR / "runs.html")
+
+
+@app.get("/journal")
+def journal() -> RedirectResponse:
+    return RedirectResponse(url="/monitor#auditPanel", status_code=307)
 
 
 @app.get("/api/health")

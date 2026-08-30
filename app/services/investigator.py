@@ -661,6 +661,7 @@ class Investigator:
             "В поисковых запросах берем живые домены, рабочие зеркала и страницы, доступные для пользователей Казахстана.",
             "Открытие кандидатов проверяем через KZ_PROXY_URL; если прокси не задан, фиксируем прямую сеть сервера как ограничение доказательства.",
             "Отбрасываем IP-адреса, localhost, тестовые домены и технические источники.",
+            "Домены, уже присутствующие в общем реестре, исключаем до открытия и повторно не добавляем в новый запуск.",
             "Оставляем в таблице только сайты, которые удалось открыть и зафиксировать, а страницы блокировки не показываем как рабочие сайты.",
             "Для каждого открытого сайта сохраняем HTML, SHA-256, DNS/TLS, RDAP, скорость ответа, размер страницы, редиректы и скриншот.",
             "Зеркала ищем отдельно по найденным доменам и похожести имен.",
@@ -1092,7 +1093,6 @@ class Investigator:
         known_domains = self.db.known_domains()
         fresh_after_known, skipped_known = self._exclude_known_candidates(candidates, known_domains)
         fresh_candidates, skipped_attempted = self._exclude_known_candidates(fresh_after_known, excluded_domains)
-        known_rechecked = 0
         algorithmic_added = 0
 
         if allow_synthetic_refill and len(fresh_candidates) < candidate_target and not seed_domains:
@@ -1116,16 +1116,6 @@ class Investigator:
                     },
                 )
 
-        if allow_synthetic_refill and len(fresh_candidates) < candidate_target and not seed_domains:
-            refill_count = candidate_target - len(fresh_candidates)
-            known_candidates = [
-                candidate
-                for candidate in candidates
-                if candidate.key() in known_domains and candidate.key() not in excluded_domains
-            ][:refill_count]
-            if known_candidates:
-                fresh_candidates.extend(known_candidates)
-                known_rechecked = len(known_candidates)
         self.db.add_log(
             run_id,
             "info",
@@ -1136,7 +1126,7 @@ class Investigator:
                 "skipped_known": skipped_known,
                 "skipped_attempted": skipped_attempted,
                 "algorithmic_added": algorithmic_added,
-                "known_rechecked": known_rechecked,
+                "known_rechecked": 0,
                 "ready": len(fresh_candidates),
             },
         )

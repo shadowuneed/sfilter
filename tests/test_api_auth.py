@@ -40,6 +40,34 @@ class ApiAuthTests(unittest.TestCase):
         self.assertTrue(response.json()["auth_required"])
         self.assertIn("ml_available", response.json())
 
+    def test_frontend_pages_are_public_and_separate(self) -> None:
+        pages = {
+            "/monitor": "monitor",
+            "/registry": "registry",
+            "/runs": "runs",
+        }
+
+        for path, page in pages.items():
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 200)
+                self.assertIn(f'data-page="{page}"', response.text)
+
+        redirects = {
+            "/dynamics": "/monitor#trendPanel",
+            "/journal": "/monitor#auditPanel",
+        }
+        for path, location in redirects.items():
+            with self.subTest(path=path):
+                response = self.client.get(path, follow_redirects=False)
+                self.assertEqual(response.status_code, 307)
+                self.assertEqual(response.headers["location"], location)
+
+        monitor = self.client.get("/monitor")
+        self.assertIn('id="runHistoryToggle"', monitor.text)
+        self.assertIn('id="runHistoryContent"', monitor.text)
+        self.assertNotIn('<nav class="topnav"', monitor.text)
+
     def test_protected_api_rejects_missing_token(self) -> None:
         response = self.client.get("/api/runs")
 

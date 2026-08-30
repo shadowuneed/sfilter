@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Реестр - Qalqan</title>
+  <link rel="icon" type="image/png" href="/static/afmlogo.png?v=20260720-qalqan">
+  <link rel="stylesheet" href="/static/styles.css?v=20260830-polish">
+</head>
+<body data-page="registry">
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/monitor" aria-label="Qalqan"><strong>Qalqan</strong></a>
+      <nav class="topnav" aria-label="Разделы">
+        <a href="/monitor">Поиск</a>
+        <a href="/monitor#trendPanel">Динамика</a>
+        <a href="/monitor#auditPanel">Журнал</a>
+        <a class="active" href="/registry" aria-current="page">Реестр</a>
+        <a href="/runs">Запуски</a>
+      </nav>
+      <div class="health">
+        <button id="healthToggle" class="health-toggle" type="button" aria-expanded="false" aria-controls="healthDetails">
+          <span>Состояние</span><i aria-hidden="true"></i>
+        </button>
+        <div id="healthDetails" class="health-details" hidden>
+          <div class="health-pills">
+            <span id="kzAccessPill" class="health-pill">KZ: проверка</span>
+            <span id="geminiPill" class="health-pill">AI: проверка</span>
+          </div>
+          <p id="healthLine" class="health-summary">Проверяю готовность платформы...</p>
+        </div>
+      </div>
+    </header>
+
+    <main class="workspace page-workspace">
+      <section class="domain-band">
+        <div class="section-head registry-head">
+          <div>
+            <span class="eyebrow">Общий реестр</span>
+            <h1 class="page-title">Рабочие подозрительные домены</h1>
+          </div>
+          <span id="registrySummary" class="summary-pill">0 доменов</span>
+        </div>
+
+        <div id="registryDetails" class="registry-details">
+          <div class="filters">
+            <input id="caseSearch" type="search" placeholder="Домен или заголовок">
+            <select id="categoryFilter" aria-label="Категория">
+              <option value="">Все категории</option>
+              <option value="casino">Казино</option>
+              <option value="phishing">Фишинг</option>
+              <option value="pyramid">Пирамиды</option>
+              <option value="suspicious">Подозрительные</option>
+              <option value="legit">Низкий риск</option>
+            </select>
+            <input id="caseMinRisk" type="number" min="0" max="100" placeholder="Мин. риск">
+            <button id="caseFilterBtn" class="secondary-btn" type="button">Фильтр</button>
+            <button id="exportCasesCsvBtn" class="ghost-btn" type="button">CSV</button>
+            <button id="exportCasesXlsxBtn" class="ghost-btn" type="button">Excel</button>
+          </div>
+
+          <div class="domain-table" role="table" aria-label="Список доменов">
+            <div class="domain-head" role="row">
+              <span role="columnheader">Домен</span>
+              <span role="columnheader">Категория</span>
+              <span role="columnheader">Уровень риска</span>
+              <span role="columnheader">Обнаружен</span>
+              <span role="columnheader">Последняя проверка</span>
+              <span role="columnheader">Действия</span>
+            </div>
+            <div id="casesList" class="domain-body">
+              <div class="empty-state">Загрузка реестра...</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="drawerOverlay" class="drawer-overlay" hidden>
+    <aside class="analysis-drawer" aria-label="Анализ домена">
+      <div class="drawer-head">
+        <div><span class="eyebrow">Анализ домена</span><h2 id="drawerTitle">Домен</h2></div>
+        <button id="drawerClose" class="icon-btn" type="button" aria-label="Закрыть">×</button>
+      </div>
+      <div id="caseDetailContent" class="case-detail-content"></div>
+    </aside>
+  </div>
+
+  <div id="authOverlay" class="auth-overlay" hidden>
+    <form id="authForm" class="auth-box">
+      <span class="eyebrow">Доступ к API</span>
+      <h2>Введите ADMIN_TOKEN</h2>
+      <p id="authHint">Токен нужен для просмотра реестра и доказательств.</p>
+      <label for="apiTokenInput">API token</label>
+      <input id="apiTokenInput" type="password" autocomplete="current-password" placeholder="Bearer token">
+      <div class="auth-actions">
+        <button class="primary-btn" type="submit">Сохранить</button>
+        <button id="clearTokenBtn" class="secondary-btn" type="button">Сбросить</button>
+      </div>
+    </form>
+  </div>
+
+  <script src="/static/app.js?v=20260830-polish"></script>
+</body>
+</html>

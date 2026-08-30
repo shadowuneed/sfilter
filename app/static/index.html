@@ -5,21 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Qalqan</title>
   <link rel="icon" type="image/png" href="/static/afmlogo.png?v=20260720-qalqan">
-  <link rel="stylesheet" href="/static/styles.css?v=20260724-run-folders">
+  <link rel="stylesheet" href="/static/styles.css?v=20260830-polish">
 </head>
-<body>
+<body data-page="monitor">
   <div class="app-shell">
-    <header class="topbar">
+    <header class="topbar topbar-simple">
       <a class="brand" href="/monitor" aria-label="Qalqan">
         <strong>Qalqan</strong>
       </a>
-
-      <nav class="topnav" aria-label="Разделы">
-        <a href="#scanPanel">Поиск</a>
-        <a href="#trendPanel">Динамика</a>
-        <a href="#domainsPanel">Домены</a>
-        <a href="#auditPanel">Журнал</a>
-      </nav>
 
       <div class="health">
         <button id="healthToggle" class="health-toggle" type="button" aria-expanded="false" aria-controls="healthDetails">
@@ -46,22 +39,46 @@
             <img class="partner-logo partner-logo-afm" src="/static/afmlogo.png?v=20260720-qalqan" alt="Агентство Республики Казахстан по финансовому мониторингу">
           </div>
           <div class="source-strip" aria-label="Этапы анализа">
-            <div>
-              <strong>Web Search</strong>
-              <span>жалобы, форумы, отзывы</span>
-            </div>
-            <div>
-              <strong>OSINT</strong>
-              <span>фиды угроз и gambling-листы</span>
-            </div>
-            <div>
-              <strong>ML</strong>
-              <span>CyberScan + CatBoost</span>
-            </div>
-            <div>
-              <strong>Evidence</strong>
-              <span>SSL, DNS, HTML, скриншот</span>
-            </div>
+            <article class="source-step">
+              <span class="source-symbol source-symbol-search" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-4-4"></path></svg>
+                <small>01</small>
+              </span>
+              <div>
+                <strong>Web Search</strong>
+                <span>Google · Bing · Yandex · DuckDuckGo</span>
+              </div>
+            </article>
+            <article class="source-step">
+              <span class="source-symbol source-symbol-osint" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><path d="M3 12h18M12 3c2.4 2.5 3.6 5.5 3.6 9S14.4 18.5 12 21c-2.4-2.5-3.6-5.5-3.6-9S9.6 5.5 12 3Z"></path></svg>
+                <small>02</small>
+              </span>
+              <div>
+                <strong>OSINT</strong>
+                <span>жалобы · форумы · threat feeds</span>
+              </div>
+            </article>
+            <article class="source-step">
+              <span class="source-symbol source-symbol-ml" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"></rect><rect x="9" y="9" width="6" height="6" rx="1"></rect><path d="M9 2v3M15 2v3M9 19v3M15 19v3M19 9h3M19 15h3M2 9h3M2 15h3"></path></svg>
+                <small>03</small>
+              </span>
+              <div>
+                <strong>ML</strong>
+                <span>CyberScan · CatBoost · контент</span>
+              </div>
+            </article>
+            <article class="source-step">
+              <span class="source-symbol source-symbol-evidence" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M20 13c0 4.6-3.2 7-8 8.7C7.2 20 4 17.6 4 13V5.5L12 2l8 3.5V13Z"></path><path d="m8.5 12 2.2 2.2 4.8-4.8"></path></svg>
+                <small>04</small>
+              </span>
+              <div>
+                <strong>Evidence</strong>
+                <span>HTTP · DNS · TLS · HTML · скриншот</span>
+              </div>
+            </article>
           </div>
         </div>
 
@@ -118,142 +135,98 @@
         <p id="activityText">После старта здесь будет видно, что именно сейчас делает система.</p>
       </section>
 
-      <section class="status-grid" aria-label="Сводка">
-        <div class="metric-tile">
-          <span>Текущий запуск</span>
-          <strong id="currentRun">-</strong>
-          <small id="runStatus">ожидание</small>
-        </div>
-        <div class="metric-tile">
-          <span>Найдено доменов</span>
-          <strong id="activeCaseCount">0</strong>
-          <small>в активном реестре</small>
-        </div>
-        <div class="metric-tile">
-          <span>Высокий риск</span>
-          <strong id="highRiskCount">0</strong>
-          <small>70% и выше</small>
-        </div>
-        <div class="metric-tile">
-          <span>Доказательства</span>
-          <strong id="evidenceCount">0</strong>
-          <small>HTML / скриншоты</small>
-        </div>
-      </section>
+      <nav class="workspace-links workspace-links-compact" aria-label="Отдельные реестры">
+        <a href="/registry">
+          <span class="workspace-icon registry-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M4 4h5l2 3h9v13H4V4Z"></path><path d="M4 9h16M8 13h8M8 16h5"></path></svg>
+          </span>
+          <span class="workspace-copy">
+            <small class="workspace-kicker">Реестр</small>
+            <strong>Рабочие домены</strong>
+            <small>Фильтры, доказательства и экспорт</small>
+          </span>
+          <svg class="workspace-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>
+        </a>
+        <a href="/runs">
+          <span class="workspace-icon archive-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="5" rx="1"></rect><path d="M5 9v11h14V9M9 13h6"></path></svg>
+          </span>
+          <span class="workspace-copy">
+            <small class="workspace-kicker">Архив</small>
+            <strong>Домены по запускам</strong>
+            <small>Папка каждого завершенного поиска</small>
+          </span>
+          <svg class="workspace-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>
+        </a>
+      </nav>
 
-      <section id="trendPanel" class="trend-band">
+      <section id="trendPanel" class="trend-band dashboard-section">
         <div class="section-head">
           <div>
-            <span class="eyebrow">Обнаружения</span>
-            <h2>Динамика по категориям</h2>
+            <span class="eyebrow">Обнаружения за 22 дня</span>
+            <h2>Динамика мониторинга</h2>
           </div>
-          <div class="chart-legend">
+          <div class="chart-legend" aria-label="Категории графика">
             <span><i class="casino"></i>Казино</span>
             <span><i class="phishing"></i>Фишинг</span>
             <span><i class="pyramid"></i>Пирамиды</span>
           </div>
         </div>
-        <div class="chart-wrap">
-          <canvas id="trendChart" width="1200" height="320" aria-label="График динамики обнаружений"></canvas>
+        <div class="trend-summary" aria-label="Сводка динамики">
+          <div><span>Всего</span><strong id="trendTotal">0</strong></div>
+          <div><span><i class="casino"></i>Казино</span><strong id="trendCasinoCount">0</strong></div>
+          <div><span><i class="phishing"></i>Фишинг</span><strong id="trendPhishingCount">0</strong></div>
+          <div><span><i class="pyramid"></i>Пирамиды</span><strong id="trendPyramidCount">0</strong></div>
+        </div>
+        <div class="chart-wrap dashboard-chart-wrap">
+          <canvas id="trendChart" width="1200" height="300" aria-label="График динамики обнаружений"></canvas>
+          <div id="trendEmptyState" class="chart-empty-state" hidden>
+            <strong>Пока нет данных за выбранный период</strong>
+            <span>Новые находки появятся здесь после завершения проверки.</span>
+          </div>
           <div id="chartTooltip" class="chart-tooltip" hidden></div>
         </div>
       </section>
 
-      <section id="domainsPanel" class="domain-band">
-        <div class="section-head registry-head">
-          <div>
-            <span class="eyebrow">Реестр</span>
-            <h2>Рабочие подозрительные домены</h2>
-          </div>
-          <div class="registry-actions">
-            <span id="registrySummary" class="summary-pill">0 доменов</span>
-            <button id="toggleRegistryBtn" class="secondary-btn" type="button" aria-expanded="false" aria-controls="registryDetails">Открыть реестр</button>
-          </div>
-        </div>
-
-        <div id="registryDetails" class="registry-details" hidden>
-          <div class="filters">
-            <input id="caseSearch" type="search" placeholder="Домен или заголовок">
-            <select id="categoryFilter" aria-label="Категория">
-              <option value="">Все категории</option>
-              <option value="casino">Казино</option>
-              <option value="phishing">Фишинг</option>
-              <option value="pyramid">Пирамиды</option>
-              <option value="suspicious">Подозрительные</option>
-              <option value="legit">Низкий риск</option>
-            </select>
-            <input id="caseMinRisk" type="number" min="0" max="100" placeholder="Мин. риск">
-            <button id="caseFilterBtn" class="secondary-btn" type="button">Фильтр</button>
-            <button id="exportCasesCsvBtn" class="ghost-btn" type="button">CSV</button>
-            <button id="exportCasesXlsxBtn" class="ghost-btn" type="button">Excel</button>
-          </div>
-
-          <div class="domain-table" role="table" aria-label="Список доменов">
-            <div class="domain-head" role="row">
-              <span role="columnheader">Домен</span>
-              <span role="columnheader">Категория</span>
-              <span role="columnheader">Уровень риска</span>
-              <span role="columnheader">Обнаружен</span>
-              <span role="columnheader">Последняя проверка</span>
-              <span role="columnheader">Действия</span>
-            </div>
-            <div id="casesList" class="domain-body">
-              <div class="empty-state">Загрузка реестра...</div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section id="runFindingsPanel" class="run-findings-band">
-        <div class="section-head">
-          <div>
-            <span class="eyebrow">Архив запусков</span>
-            <h2>Домены по запускам</h2>
-          </div>
-          <span id="runFoldersCount" class="summary-pill">0 запусков</span>
-        </div>
-        <div id="runFoldersList" class="run-folders-list">
-          <div class="empty-state">Загрузка запусков...</div>
-        </div>
-      </section>
-
-      <section id="auditPanel" class="audit-grid">
-        <div class="audit-panel">
-          <div class="section-head">
-            <div>
+      <section id="auditPanel" class="audit-stack dashboard-audit">
+        <section class="run-history-panel">
+          <button id="runHistoryToggle" class="run-history-toggle" type="button" aria-expanded="false" aria-controls="runHistoryContent">
+            <span class="run-history-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"></path><path d="M3 3v5h5M12 7v5l3 2"></path></svg>
+            </span>
+            <span class="run-history-copy">
               <span class="eyebrow">Запуски</span>
-              <h2>История поиска</h2>
-            </div>
+              <strong>История поиска</strong>
+            </span>
+            <span class="run-history-meta">
+              <span id="runHistorySummary">Загрузка...</span>
+              <strong id="runHistoryAction">Показать</strong>
+              <i aria-hidden="true"></i>
+            </span>
+          </button>
+          <div id="runHistoryContent" class="run-history-content" hidden>
+            <div id="runsList" class="runs-list"><div class="empty-state">Загрузка запусков...</div></div>
           </div>
-          <div id="runsList" class="runs-list"></div>
-        </div>
+        </section>
 
         <div class="audit-panel">
-          <div class="section-head">
+          <div class="section-head journal-head">
             <div>
               <span class="eyebrow">События проверки</span>
-              <h2>Технический журнал запуска</h2>
+              <h2>Технический журнал</h2>
             </div>
             <span id="warningCount" class="summary-pill">0 предупреждений</span>
           </div>
+          <div class="journal-toolbar" role="group" aria-label="Фильтр журнала">
+            <button class="journal-filter active" data-log-filter="all" type="button">Все</button>
+            <button class="journal-filter" data-log-filter="warning" type="button">Предупреждения</button>
+            <button class="journal-filter" data-log-filter="error" type="button">Ошибки</button>
+          </div>
           <div id="methodologyList" class="methodology-list" hidden></div>
-          <div id="logsList" class="logs-list"></div>
+          <div id="logsList" class="logs-list" aria-live="polite"><div class="empty-state">Выберите запуск слева.</div></div>
         </div>
       </section>
     </main>
-  </div>
-
-  <div id="drawerOverlay" class="drawer-overlay" hidden>
-    <aside class="analysis-drawer" aria-label="Анализ домена">
-      <div class="drawer-head">
-        <div>
-          <span class="eyebrow">Анализ домена</span>
-          <h2 id="drawerTitle">Домен</h2>
-        </div>
-        <button id="drawerClose" class="icon-btn" type="button" aria-label="Закрыть">×</button>
-      </div>
-      <div id="caseDetailContent" class="case-detail-content"></div>
-    </aside>
   </div>
 
   <div id="authOverlay" class="auth-overlay" hidden>
@@ -270,6 +243,6 @@
     </form>
   </div>
 
-  <script src="/static/app.js?v=20260724-run-folders"></script>
+  <script src="/static/app.js?v=20260830-polish"></script>
 </body>
 </html>

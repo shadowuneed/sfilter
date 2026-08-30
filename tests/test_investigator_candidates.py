@@ -318,6 +318,56 @@ class InvestigatorCandidateTests(unittest.TestCase):
         last_log = self.investigator.db.logs[-1][0]
         self.assertEqual(last_log[3]["skipped_known"], 1)
 
+    def test_known_domains_are_not_used_to_refill_a_later_run(self) -> None:
+        class FakeDb:
+            def __init__(self) -> None:
+                self.logs = []
+
+            def known_domains(self) -> set[str]:
+                return {"known-casino.example"}
+
+            def add_log(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+                self.logs.append((args, kwargs))
+
+        class FakeGemini:
+            available = False
+
+        def fake_user_search(run_id, seed_query, discovery_limit, max_candidates, search_mode="auto"):  # noqa: ANN001
+            return [
+                Candidate(
+                    url="https://known-casino.example",
+                    domain="known-casino.example",
+                    category="casino",
+                    search_query=seed_query,
+                ),
+                Candidate(
+                    url="https://fresh-casino.example",
+                    domain="fresh-casino.example",
+                    category="casino",
+                    search_query=seed_query,
+                ),
+            ]
+
+        def no_algorithmic_refill(seed_query, limit, excluded_domains, search_mode="auto"):  # noqa: ANN001
+            return []
+
+        self.investigator.settings = Settings(
+            osint_feeds_enabled=False,
+            osint_candidate_pool_size=10,
+            search_pages_enabled=True,
+        )
+        self.investigator.db = FakeDb()
+        self.investigator.gemini = FakeGemini()
+        self.investigator._discover_with_user_search = fake_user_search
+        self.investigator._discover_from_algorithmic_mirrors = no_algorithmic_refill
+
+        candidates = asyncio.run(self.investigator._discover_candidates(1, "онлайн казино", 2, "casino"))
+
+        self.assertEqual([candidate.domain for candidate in candidates], ["fresh-casino.example"])
+        last_log = self.investigator.db.logs[-1][0]
+        self.assertEqual(last_log[3]["skipped_known"], 1)
+        self.assertEqual(last_log[3]["known_rechecked"], 0)
+
     def test_user_search_mode_does_not_start_from_feeds_or_bootstrap(self) -> None:
         class FakeDb:
             def __init__(self) -> None:
