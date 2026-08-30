@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -27,6 +28,7 @@ exporter = Exporter(settings, db)
 cancel_events: dict[int, threading.Event] = {}
 
 app = FastAPI(title="DOFilter", version="1.0.0")
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -73,6 +75,14 @@ def _thread_entry(run_id: int, target: Any, args: tuple[Any, ...]) -> None:
     try:
         target(*args)
     finally:
+        try:
+            run = db.get_run(run_id)
+            if run and run["status"] not in {"queued", "running", "canceling"}:
+                removed = db.finish_run_logs(run_id)
+                if removed:
+                    print(f"run={run_id} cleared_legacy_logs={removed}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"run={run_id} log_cleanup_error={type(exc).__name__}", flush=True)
         cancel_events.pop(run_id, None)
 
 
@@ -323,11 +333,25 @@ def list_runs(limit: int = 25) -> dict[str, Any]:
 
 
 @app.get("/api/runs/{run_id}")
-def get_run(run_id: int, include_findings: bool = False) -> dict[str, Any]:
+def get_run(
+    run_id: int,
+    include_findings: bool = False,
+    after_log_id: int | None = None,
+    log_limit: int = 300,
+) -> dict[str, Any]:
     run = db.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
-    payload: dict[str, Any] = {"run": run, "logs": db.list_logs(run_id)}
+    logs = db.list_logs(
+        run_id,
+        limit=max(1, min(log_limit, 1000)),
+        after_id=after_log_id,
+    )
+    payload: dict[str, Any] = {
+        "run": run,
+        "logs": logs,
+        "log_cursor": logs[-1]["id"] if logs else after_log_id,
+    }
     if include_findings:
         payload["findings"] = db.list_findings(run_id=run_id)
     return payload

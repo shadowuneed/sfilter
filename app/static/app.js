@@ -18,6 +18,7 @@ const state = {
   runFolderLoadingId: null,
   runFolderErrors: new Map(),
   lastLiveFindingCount: 0,
+  lastCasesRefreshAt: 0,
   chartPoints: [],
   chartHoverIndex: null,
 };
@@ -25,6 +26,8 @@ const state = {
 const DEFAULT_RUN_CANDIDATES = 100;
 const MAX_RUN_CANDIDATES = 500;
 const POLL_INTERVAL_MS = 3000;
+const CASE_REFRESH_INTERVAL_MS = 15000;
+const MAX_CACHED_LOGS = 500;
 
 const els = {
   scanForm: document.getElementById("scanForm"),
@@ -619,12 +622,26 @@ async function loadRun(runId, options = {}) {
   const cached = state.runDetails.get(runId);
   const canUseCache = cached && !options.force && !runningStatus(cached.run?.status);
   const includeFindings = Boolean(options.includeFindings);
-  const suffix = includeFindings ? "?include_findings=true" : "";
+  const incremental = Boolean(options.incremental && cached?.logs?.length);
+  const params = new URLSearchParams();
+  if (includeFindings) params.set("include_findings", "true");
+  if (incremental) {
+    const lastLogId = Number(cached.logs[cached.logs.length - 1]?.id || 0);
+    if (lastLogId) params.set("after_log_id", String(lastLogId));
+    params.set("log_limit", "1000");
+  }
+  const query = params.toString();
+  const suffix = query ? `?${query}` : "";
   const data = canUseCache && (!includeFindings || cached.findings)
     ? cached
     : await api(`/api/runs/${runId}${suffix}`);
+  if (incremental) {
+    const logsById = new Map();
+    [...(cached.logs || []), ...(data.logs || [])].forEach((log) => logsById.set(log.id, log));
+    data.logs = Array.from(logsById.values()).slice(-MAX_CACHED_LOGS);
+  }
   if (!data.findings && cached?.findings) data.findings = cached.findings;
-  if (!canUseCache || includeFindings) state.runDetails.set(runId, data);
+  if (!canUseCache || includeFindings || incremental) state.runDetails.set(runId, data);
   const run = data.run;
   const previousStatus = state.runStatuses.get(run.id);
   state.selectedRunId = run.id;
@@ -643,13 +660,17 @@ async function loadRun(runId, options = {}) {
 
   showActivity(run, data.logs || []);
   renderMethodology(run.methodology || []);
-  renderLogs(data.logs || []);
+  renderLogs(data.logs || [], run.status);
   renderRuns();
   renderRunFolders();
 
-  if (runningStatus(run.status) && liveFindingCount !== state.lastLiveFindingCount) {
-    state.lastLiveFindingCount = liveFindingCount;
+  if (
+    runningStatus(run.status)
+    && liveFindingCount !== state.lastLiveFindingCount
+    && Date.now() - state.lastCasesRefreshAt >= CASE_REFRESH_INTERVAL_MS
+  ) {
     await loadCases({ preserveLimit: true });
+    state.lastLiveFindingCount = liveFindingCount;
   }
 
   if (runningStatus(run.status)) {
@@ -886,11 +907,14 @@ function formatMetaParts(meta) {
   return parts;
 }
 
-function renderLogs(logs) {
+function renderLogs(logs, runStatus = "") {
   const warnings = logs.filter((log) => ["warning", "error"].includes(log.level)).length;
   els.warningCount.textContent = `${warnings} предупреждений`;
   if (!logs.length) {
-    els.logsList.innerHTML = '<div class="empty-state">Журнал появится после запуска.</div>';
+    const message = runningStatus(runStatus)
+      ? "Ожидаю новое событие запуска."
+      : "Live-журнал завершен. Сохраненных ошибок нет.";
+    els.logsList.innerHTML = `<div class="empty-state">${message}</div>`;
     return;
   }
   const recentLogs = logs.slice(-45);
@@ -927,6 +951,7 @@ async function loadCases(options = {}) {
   if (els.caseSearch.value.trim()) params.set("q", els.caseSearch.value.trim());
   if (els.caseMinRisk.value) params.set("min_risk", els.caseMinRisk.value);
   const data = await api(`/api/cases?${params.toString()}`);
+  state.lastCasesRefreshAt = Date.now();
   state.cases = data.cases || [];
   const category = els.categoryFilter.value;
   state.filteredCases = category
@@ -1585,7 +1610,7 @@ async function pollSelectedRun() {
       await loadRuns();
     }
     if (state.selectedRunId) {
-      await loadRun(state.selectedRunId, { force: true });
+      await loadRun(state.selectedRunId, { force: true, incremental: true });
     }
   } catch (error) {
     console.error(error);

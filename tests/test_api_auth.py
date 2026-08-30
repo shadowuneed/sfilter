@@ -94,6 +94,44 @@ class ApiAuthTests(unittest.TestCase):
         self.assertIn("case_id", response.json()["findings"][0])
         self.assertEqual(response.json()["findings"][0]["normalized_domain"], "example.kz")
 
+    def test_run_detail_returns_only_logs_after_cursor(self) -> None:
+        run_id = main.db.create_run(seed_query="log cursor", max_candidates=1, take_screenshots=False)
+        main.db.add_log(run_id, "info", "first")
+        main.db.add_log(run_id, "info", "second")
+
+        response = self.client.get(
+            f"/api/runs/{run_id}",
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        self.assertEqual(response.status_code, 200)
+        cursor = response.json()["log_cursor"]
+
+        main.db.add_log(run_id, "info", "third")
+        response = self.client.get(
+            f"/api/runs/{run_id}?after_log_id={cursor}",
+            headers={"Authorization": "Bearer test-secret"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item["message"] for item in response.json()["logs"]], ["third"])
+        self.assertGreater(response.json()["log_cursor"], cursor)
+
+    def test_finished_thread_clears_live_logs(self) -> None:
+        run_id = main.db.create_run(seed_query="live logs", max_candidates=1, take_screenshots=False)
+
+        def finish_run() -> None:
+            main.db.add_log(run_id, "info", "visible while running")
+            main.db.add_log(run_id, "error", "stored after completion")
+            main.db.update_run(run_id, status="completed")
+
+        main._thread_entry(run_id, finish_run, ())
+
+        self.assertEqual(
+            [item["message"] for item in main.db.list_logs(run_id)],
+            ["stored after completion"],
+        )
+        self.assertEqual(main.db.get_run(run_id)["status"], "completed")
+
     def test_missing_server_token_blocks_protected_api(self) -> None:
         set_auth(required=True, token=None)
 

@@ -4,6 +4,9 @@ import json
 import re
 import sqlite3
 import sys
+import threading
+import time
+from collections import deque
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -163,6 +166,9 @@ class Database:
         self.dsn = _normalize_postgres_url(self.source) if self.backend == "postgres" else None
         self.path = Path(self.source) if self.backend == "sqlite" else None
         self.label = _redact_database_url(self.source) if self.backend == "postgres" else str(self.path)
+        self._live_logs: dict[int, deque[dict[str, Any]]] = {}
+        self._live_logs_lock = threading.Lock()
+        self._last_live_log_cursor = 0
 
     @contextmanager
     def connect(self) -> Iterator[DatabaseConnection]:
@@ -435,6 +441,7 @@ class Database:
 
     def add_log(self, run_id: int, level: str, message: str, meta: Any | None = None) -> None:
         timestamp = utc_now()
+        level = level.lower()
         message = redact_string(message)
         meta = redact_secrets(meta)
         meta_text = f" | {dumps(meta)}" if meta is not None else ""
@@ -444,13 +451,38 @@ class Database:
             safe_message = message.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
             print(f"[{timestamp}] run={run_id} {level.upper()} {safe_message}", file=sys.stderr, flush=True)
 
-        with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO logs (run_id, timestamp, level, message, meta_json)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (run_id, timestamp, level, message, dumps(meta) if meta is not None else None),
+        with self._live_logs_lock:
+            cursor = max(self._last_live_log_cursor + 1, time.time_ns() // 1000)
+            self._last_live_log_cursor = cursor
+            live_logs = self._live_logs.setdefault(run_id, deque(maxlen=2000))
+            live_logs.append(
+                redact_secrets(repair_mojibake({
+                    "id": cursor,
+                    "cursor": cursor,
+                    "timestamp": timestamp,
+                    "level": level,
+                    "message": message,
+                    "meta": meta if meta is not None else {},
+                }))
+            )
+
+        if level != "error":
+            return
+        try:
+            with self.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO logs (run_id, timestamp, level, message, meta_json)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (run_id, timestamp, level, message, dumps(meta) if meta is not None else None),
+                )
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[{timestamp}] run={run_id} ERROR log_persistence_failed={type(exc).__name__}: "
+                f"{redact_string(str(exc))}",
+                file=sys.stderr,
+                flush=True,
             )
 
     def insert_finding(self, run_id: int, finding: dict[str, Any]) -> int:
@@ -643,12 +675,31 @@ class Database:
             ).fetchall()
             return [self._finding_to_dict(row) for row in rows]
 
-    def list_logs(self, run_id: int, limit: int = 300) -> list[dict[str, Any]]:
+    def list_logs(
+        self,
+        run_id: int,
+        limit: int = 300,
+        *,
+        after_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 1000))
+        with self._live_logs_lock:
+            buffered = list(self._live_logs.get(run_id, ()))
+        if buffered:
+            if after_id is None:
+                return buffered[-limit:]
+            return [item for item in buffered if int(item["cursor"]) > int(after_id)][:limit]
+        if after_id is not None:
+            return []
+
         with self.connect() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM (
-                    SELECT * FROM logs WHERE run_id=? ORDER BY id DESC LIMIT ?
+                    SELECT * FROM logs
+                    WHERE run_id=? AND level='error'
+                    ORDER BY id DESC
+                    LIMIT ?
                 ) recent
                 ORDER BY id ASC
                 """,
@@ -664,6 +715,30 @@ class Database:
                 }))
                 for row in rows
             ]
+
+    def finish_run_logs(self, run_id: int) -> int:
+        with self._live_logs_lock:
+            self._live_logs.pop(run_id, None)
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM logs WHERE run_id=? AND level<>'error'",
+                (run_id,),
+            )
+            return max(0, int(cursor.rowcount or 0))
+
+    def delete_finished_run_logs(self) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM logs
+                WHERE level<>'error'
+                  AND run_id IN (
+                    SELECT id FROM runs
+                    WHERE status NOT IN ('queued', 'running', 'canceling')
+                )
+                """
+            )
+            return max(0, int(cursor.rowcount or 0))
 
     def list_cases(
         self,
@@ -702,32 +777,20 @@ class Database:
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT c.*, f.url, f.final_url, f.title, f.screenshot_path, f.html_path,
-                       f.html_sha256, f.status_code, f.mirror_group, f.sources_json,
-                       f.reasons_json, f.evidence_json, f.dns_json, f.tls_json,
-                       f.created_at AS finding_created_at,
-                       COALESCE(stats.finding_total, 0) AS finding_total,
-                       COALESCE(stats.run_total, 0) AS run_total,
-                       stats.first_run_id,
-                       stats.latest_run_id
+                SELECT c.id, c.normalized_domain, c.domain, c.first_seen, c.last_seen,
+                       c.status, c.archived, c.saved, c.latest_finding_id,
+                       c.best_risk_score, c.category, c.verdict, c.notes, c.updated_at,
+                       f.url, f.final_url, f.title, f.screenshot_path, f.html_path,
+                       f.status_code, f.created_at AS finding_created_at
                 FROM cases c
                 LEFT JOIN findings f ON f.id=c.latest_finding_id
-                LEFT JOIN (
-                    SELECT normalized_domain,
-                           COUNT(*) AS finding_total,
-                           COUNT(DISTINCT run_id) AS run_total,
-                           MIN(run_id) AS first_run_id,
-                           MAX(run_id) AS latest_run_id
-                    FROM findings
-                    GROUP BY normalized_domain
-                ) stats ON stats.normalized_domain=c.normalized_domain
                 {sql_where}
                 ORDER BY c.last_seen DESC, c.updated_at DESC, c.id DESC, c.saved DESC, c.best_risk_score DESC
                 LIMIT ?
                 """,
                 params,
             ).fetchall()
-            return [self._case_to_dict(row) for row in rows]
+            return [self._case_summary_to_dict(row) for row in rows]
 
     def get_case(self, case_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:
@@ -824,4 +887,10 @@ class Database:
         data["evidence"] = loads(data.pop("evidence_json"), {})
         data["dns"] = loads(data.pop("dns_json", None), {})
         data["tls"] = loads(data.pop("tls_json", None), {})
+        return redact_secrets(repair_mojibake(data))
+
+    def _case_summary_to_dict(self, row: Any) -> dict[str, Any]:
+        data = dict(row)
+        data["archived"] = bool(data["archived"])
+        data["saved"] = bool(data["saved"])
         return redact_secrets(repair_mojibake(data))

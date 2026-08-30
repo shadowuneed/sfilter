@@ -115,13 +115,19 @@ The Docker image installs Playwright Chromium for real page screenshots and runs
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
+## Northflank
+
+Use the isolated `northflank-production` branch and follow [NORTHFLANK.md](NORTHFLANK.md)
+for the service, PostgreSQL addon, persistent volume, health check, and migration
+procedure. The stable `main` branch remains the rollback source.
+
 ## Render
 
 `render.yaml` is ready for a Docker web service. Add `GEMINI_API_KEYS` as a secret environment variable in Render.
 Persistent disks are available only on paid Render services, so the blueprint uses the `starter` plan instead of `free`.
 For an existing Render service, add `ADMIN_TOKEN` manually in the service's Environment page because `sync: false` variables are prompted only during initial Blueprint creation.
 
-For durable history on Render, set `DATABASE_URL` to the Supabase Postgres connection string in the service Environment page. When `DATABASE_URL` is present, the app creates and uses Postgres tables for runs, findings, cases, logs, and Gemini usage counters. The app disables psycopg prepared statements for the Supabase pooler on port `6543`, which avoids transaction-pooler issues.
+For durable history on Render, set `DATABASE_URL` to the Supabase Postgres connection string in the service Environment page. When `DATABASE_URL` is present, the app creates and uses Postgres tables for runs, findings, cases, retained error logs, and Gemini usage counters. Informational and warning logs are live-only and stay in process memory. The app disables psycopg prepared statements for the Supabase pooler on port `6543`, which avoids transaction-pooler issues.
 
 The blueprint still mounts a persistent disk at `/var/data` for file evidence:
 

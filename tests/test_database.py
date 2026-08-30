@@ -195,6 +195,67 @@ class DatabaseBackendTests(unittest.TestCase):
 
             self.assertEqual([case["normalized_domain"] for case in cases], ["latest.example", "older-risk.example"])
 
+    def test_registry_summary_omits_heavy_finding_json(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "argus.db")
+            db.init()
+            run_id = db.create_run(seed_query="casino", max_candidates=1, take_screenshots=False)
+            db.insert_finding(
+                run_id,
+                {
+                    "url": "https://summary.example",
+                    "final_url": "https://summary.example",
+                    "domain": "summary.example",
+                    "normalized_domain": "summary.example",
+                    "title": "Summary",
+                    "category": "casino",
+                    "verdict": "suspicious",
+                    "risk_score": 95,
+                    "active": True,
+                    "status_code": 200,
+                    "evidence_json": {"large": "payload"},
+                    "sources_json": [{"url": "https://search.example"}],
+                    "reasons_json": ["reason"],
+                },
+            )
+
+            summary = db.list_cases(archived=False)[0]
+            detail = db.get_case(summary["id"])
+
+            self.assertNotIn("evidence", summary)
+            self.assertNotIn("sources", summary)
+            self.assertNotIn("reasons", summary)
+            self.assertEqual(summary["title"], "Summary")
+            assert detail is not None
+            self.assertEqual(detail["evidence"], {"large": "payload"})
+
+    def test_logs_support_incremental_reads_and_finished_run_cleanup(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "argus.db")
+            db.init()
+            run_id = db.create_run(seed_query="casino", max_candidates=1, take_screenshots=False)
+            db.add_log(run_id, "error", "old error")
+            for index in range(5):
+                db.add_log(run_id, "info", f"progress {index}")
+
+            initial = db.list_logs(run_id, limit=10)
+            delta = db.list_logs(run_id, limit=10, after_id=initial[-3]["id"])
+            with db.connect() as conn:
+                stored_count = conn.execute(
+                    "SELECT COUNT(*) AS count FROM logs WHERE run_id=?",
+                    (run_id,),
+                ).fetchone()["count"]
+            active_removed = db.delete_finished_run_logs()
+            db.update_run(run_id, status="completed")
+            removed = db.finish_run_logs(run_id)
+            finished_logs = db.list_logs(run_id, limit=10)
+
+            self.assertEqual([item["message"] for item in delta], ["progress 3", "progress 4"])
+            self.assertEqual(stored_count, 1)
+            self.assertEqual(active_removed, 0)
+            self.assertEqual(removed, 0)
+            self.assertEqual([item["message"] for item in finished_logs], ["old error"])
+
     def test_stale_running_runs_are_marked_interrupted_not_failed(self) -> None:
         with TemporaryDirectory() as tmp:
             db = Database(Path(tmp) / "argus.db")
