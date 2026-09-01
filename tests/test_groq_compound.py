@@ -58,6 +58,8 @@ class GroqCompoundClientTests(unittest.TestCase):
             ["web_search", "visit_website"],
         )
         self.assertIn("онлайн казино", request_kwargs["json"]["messages"][0]["content"])
+        self.assertIn("with at most 5 candidates", request_kwargs["json"]["messages"][0]["content"])
+        self.assertEqual(request_kwargs["timeout"], 30)
         self.assertEqual([candidate["domain"] for candidate in candidates], ["live-slots.example"])
         self.assertEqual(candidates[0]["source_urls"], ["https://live-slots.example/register"])
         self.assertEqual(

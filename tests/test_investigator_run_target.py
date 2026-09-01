@@ -414,6 +414,41 @@ class InvestigatorRunTargetTests(unittest.TestCase):
             self.assertEqual(db.get_run(run_id)["status"], "canceled")
             self.assertEqual(db.count_findings(run_id), 0)
 
+    def test_cancel_during_discovery_stops_before_candidate_inspection(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "argus.db")
+            db.init()
+            run_id = db.create_run(seed_query="онлайн казино", max_candidates=100, take_screenshots=False)
+            investigator = object.__new__(Investigator)
+            investigator.settings = Settings(
+                database_path=Path(tmp) / "argus.db",
+                screenshots_enabled=False,
+            )
+            investigator.db = db
+            cancel_event = Event()
+
+            async def discover(*args, **kwargs) -> list[Candidate]:  # noqa: ANN002, ANN003
+                event = kwargs.get("cancel_event")
+                assert event is cancel_event
+                event.set()
+                return [
+                    Candidate(
+                        url="https://must-not-open.example",
+                        domain="must-not-open.example",
+                        category="casino",
+                    )
+                ]
+
+            investigator._discover_candidates = discover
+
+            asyncio.run(investigator._run(run_id, "онлайн казино", 100, False, cancel_event, "casino"))
+
+            run = db.get_run(run_id)
+            self.assertIsNotNone(run)
+            self.assertEqual(run["status"], "canceled")
+            self.assertEqual(run["candidate_count"], 0)
+            self.assertEqual(db.count_findings(run_id), 0)
+
     def test_later_discovery_round_reads_deeper_search_pages(self) -> None:
         investigator = object.__new__(Investigator)
         investigator.settings = Settings(search_result_pages=1, search_pages_enabled=True)

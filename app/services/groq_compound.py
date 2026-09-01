@@ -18,7 +18,7 @@ class GroqCompoundClient:
         self.api_key = str(settings.groq_api_key or "").strip()
         self.model = settings.groq_model
         self.model_version = settings.groq_model_version
-        self.timeout_seconds = settings.groq_timeout_seconds
+        self.timeout_seconds = min(settings.groq_timeout_seconds, 30)
 
     @property
     def available(self) -> bool:
@@ -28,7 +28,7 @@ class GroqCompoundClient:
         if not self.available or limit <= 0:
             return [], {"available": self.available, "model": self.model, "sources": []}
 
-        requested = max(5, min(int(limit), 15))
+        requested = max(1, min(int(limit), 5))
         subject = {
             "casino": "online casino websites and working mirrors",
             "phishing": "phishing websites targeting users",

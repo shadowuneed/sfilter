@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from threading import Event
 from unittest.mock import patch
 
 import httpx
@@ -421,9 +422,11 @@ class InvestigatorCandidateTests(unittest.TestCase):
 
             def __init__(self) -> None:
                 self.queries: list[str] = []
+                self.limits: list[int] = []
 
             def discover(self, query: str, limit: int, search_mode: str):  # noqa: ANN201
                 self.queries.append(query)
+                self.limits.append(limit)
                 index = len(self.queries)
                 url = f"https://casino-{index}.example"
                 return (
@@ -440,7 +443,92 @@ class InvestigatorCandidateTests(unittest.TestCase):
 
         self.assertEqual(len(self.investigator.groq.queries), 3)
         self.assertEqual(len(set(self.investigator.groq.queries)), 3)
+        self.assertEqual(self.investigator.groq.limits, [5, 5, 5])
         self.assertEqual(len(candidates), 3)
+        self.assertTrue(all("Groq Web Search page" in candidate.why for candidate in candidates))
+
+    def test_groq_discovery_stops_series_after_payload_too_large(self) -> None:
+        class FakeDb:
+            def __init__(self) -> None:
+                self.logs = []
+
+            def add_log(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+                self.logs.append((args, kwargs))
+
+        class FakeGroq:
+            model = "groq/compound-mini"
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def discover(self, query: str, limit: int, search_mode: str):  # noqa: ANN201
+                self.calls += 1
+                request = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+                response = httpx.Response(413, request=request)
+                raise httpx.HTTPStatusError("payload too large", request=request, response=response)
+
+        self.investigator.settings = Settings(groq_requests_per_discovery=8)
+        self.investigator.db = FakeDb()
+        self.investigator.groq = FakeGroq()
+
+        candidates = self.investigator._discover_with_groq(1, "онлайн казино", 100, "casino")
+
+        self.assertEqual(candidates, [])
+        self.assertEqual(self.investigator.groq.calls, 1)
+        warnings = [entry for entry in self.investigator.db.logs if entry[0][1] == "warning"]
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0][0][3]["status_code"], 413)
+
+    def test_groq_discovery_honors_cancel_before_request(self) -> None:
+        class FakeDb:
+            @staticmethod
+            def add_log(*args, **kwargs) -> None:  # noqa: ANN002, ANN003
+                return None
+
+        class FakeGroq:
+            model = "groq/compound-mini"
+
+            @staticmethod
+            def discover(*args, **kwargs):  # noqa: ANN002, ANN003
+                raise AssertionError("Groq request must not start after cancellation")
+
+        cancel_event = Event()
+        cancel_event.set()
+        self.investigator.settings = Settings(groq_requests_per_discovery=8)
+        self.investigator.db = FakeDb()
+        self.investigator.groq = FakeGroq()
+
+        candidates = self.investigator._discover_with_groq(
+            1,
+            "онлайн казино",
+            100,
+            "casino",
+            cancel_event=cancel_event,
+        )
+
+        self.assertEqual(candidates, [])
+
+    def test_casino_ranking_prioritizes_web_search_over_equal_osint_candidate(self) -> None:
+        candidates = [
+            Candidate(
+                url="https://feed-casino.example",
+                domain="feed-casino.example",
+                category="casino",
+                why="Domain found in CyberScan-style OSINT source",
+                source_urls=["https://feed.example/gambling.txt"],
+            ),
+            Candidate(
+                url="https://web-casino.example",
+                domain="web-casino.example",
+                category="casino",
+                why="Domain found in Groq Web Search page results",
+                source_urls=["https://search.example/result"],
+            ),
+        ]
+
+        ranked = self.investigator._sort_candidates_for_search_mode(candidates, "casino")
+
+        self.assertEqual(ranked[0].domain, "web-casino.example")
 
     def test_known_domains_are_dropped_from_auto_discovery(self) -> None:
         class FakeDb:

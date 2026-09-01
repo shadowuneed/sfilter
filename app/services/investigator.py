@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import gc
+import hashlib
 import random
 import re
 import time
@@ -874,15 +875,30 @@ class Investigator:
                     )
                 return
 
+            discovery_kwargs: dict[str, Any] = {
+                "excluded_domains": attempted_domains,
+                "discovery_round": discovery_round,
+                "use_groq": True,
+            }
+            if cancel_event is not None:
+                discovery_kwargs["cancel_event"] = cancel_event
             candidates = await self._discover_candidates(
                 run_id,
                 seed_query,
                 max_candidates,
                 search_mode,
-                excluded_domains=attempted_domains,
-                discovery_round=discovery_round,
-                use_groq=True,
+                **discovery_kwargs,
             )
+            if cancel_event and cancel_event.is_set():
+                self.db.update_run(
+                    run_id,
+                    status="canceled",
+                    finished_at=utc_now(),
+                    finding_count=findings_count,
+                    candidate_count=checked_total,
+                )
+                self.db.add_log(run_id, "warning", "Проверка остановлена пользователем", {"findings": findings_count})
+                return
             fresh_candidates = [candidate for candidate in candidates if candidate.key()]
             candidate_check_limit = self._candidate_check_limit(
                 max(1, max_candidates - findings_count),
@@ -1260,7 +1276,10 @@ class Investigator:
         excluded_domains: set[str] | None = None,
         discovery_round: int = 0,
         use_groq: bool = True,
+        cancel_event: Event | None = None,
     ) -> list[Candidate]:
+        if cancel_event and cancel_event.is_set():
+            return []
         search_mode = self._effective_search_mode(seed_query, search_mode)
         excluded_domains = {
             registered_domain(domain)
@@ -1279,6 +1298,7 @@ class Investigator:
                 max_candidates * 50,
             )
         discovered: list[Candidate] = []
+        cancel_kwargs = {"cancel_event": cancel_event} if cancel_event is not None else {}
         user_search_mode = self._user_search_mode(seed_query, search_mode)
         refresh_external = self._should_refresh_external_discovery(discovery_round)
         external_discovery_round = max(0, int(discovery_round)) // EXTERNAL_DISCOVERY_REFRESH_INTERVAL
@@ -1294,6 +1314,7 @@ class Investigator:
                             min(120, candidate_target),
                             search_mode,
                             query_offset=external_discovery_round * self.settings.groq_requests_per_discovery,
+                            **cancel_kwargs,
                         )
                     )
                 except httpx.HTTPStatusError as exc:
@@ -1310,6 +1331,8 @@ class Investigator:
                         "Groq Compound не дал кандидатов, продолжаю алгоритмический поиск",
                         {"error": f"{type(exc).__name__}: {exc}", "gemini_used": False},
                     )
+            if cancel_event and cancel_event.is_set():
+                return []
             try:
                 query_count = max(1, len(self._user_search_queries(seed_query, search_mode)))
                 engine_limit = max(20, min(64, 16 + (max_candidates // 10)))
@@ -1326,6 +1349,7 @@ class Investigator:
                         search_mode,
                         page_offset=page_offset,
                         query_offset=query_offset,
+                        **cancel_kwargs,
                     )
                 else:
                     search_candidates = self._discover_with_user_search(
@@ -1334,16 +1358,20 @@ class Investigator:
                         discovery_limit,
                         max_candidates,
                         search_mode,
+                        **cancel_kwargs,
                     )
                 discovered.extend(search_candidates)
             except Exception as exc:  # noqa: BLE001
                 self.db.add_log(run_id, "warning", "Пользовательский поиск недоступен", {"error": str(exc)})
+            if cancel_event and cancel_event.is_set():
+                return []
             if self.settings.osint_feeds_enabled and len(discovered) < candidate_target:
                 feed_candidates = await self._discover_from_feeds(
                     run_id,
                     discovery_limit,
                     search_mode,
                     feed_page=external_discovery_round,
+                    **cancel_kwargs,
                 )
                 matched_feeds = [
                     candidate
@@ -1379,6 +1407,7 @@ class Investigator:
                     discovery_limit,
                     search_mode,
                     feed_page=external_discovery_round,
+                    **cancel_kwargs,
                 )
                 discovered.extend(feed_candidates)
             if refresh_external:
@@ -1388,6 +1417,9 @@ class Investigator:
                     "Автопоиск работает без Gemini",
                     {"mode": "search-pages-and-osint", "gemini_used": False},
                 )
+
+        if cancel_event and cancel_event.is_set():
+            return []
 
         if seed_query:
             for domain in find_domains(seed_query):
@@ -1448,6 +1480,7 @@ class Investigator:
         limit: int,
         search_mode: str,
         query_offset: int = 0,
+        cancel_event: Event | None = None,
     ) -> list[Candidate]:
         queries = self._user_search_queries(seed_query, search_mode)
         if not queries:
@@ -1457,7 +1490,7 @@ class Investigator:
         request_limit = min(
             self.settings.groq_requests_per_discovery,
             len(queries),
-            max(1, (max(1, int(limit)) + 14) // 15),
+            max(1, (max(1, int(limit)) + 4) // 5),
         )
         selected_queries = queries[:request_limit]
         self.db.add_log(
@@ -1475,11 +1508,12 @@ class Investigator:
         requests_made = 0
         last_remaining: str | None = None
         for query in selected_queries:
-            if len(candidates) >= limit:
+            if len(candidates) >= limit or (cancel_event and cancel_event.is_set()):
                 break
             request_started = time.monotonic()
+            requests_made += 1
             try:
-                items, meta = self.groq.discover(query, min(15, limit - len(candidates)), search_mode)
+                items, meta = self.groq.discover(query, min(5, limit - len(candidates)), search_mode)
             except httpx.HTTPStatusError as exc:
                 self.db.add_log(
                     run_id,
@@ -1487,10 +1521,11 @@ class Investigator:
                     "Groq Web Search временно недоступен",
                     {"query": query, "status_code": exc.response.status_code, "requests": requests_made},
                 )
-                if exc.response.status_code == 429:
+                if exc.response.status_code in {413, 429}:
                     break
                 continue
-            requests_made += 1
+            if cancel_event and cancel_event.is_set():
+                break
             last_remaining = meta.get("rate_limit_remaining_requests")
             added_before = len(candidates)
             for item in items:
@@ -1503,6 +1538,8 @@ class Investigator:
                     continue
                 if not self._candidate_matches_user_search(candidate, query, search_mode):
                     continue
+                if "search page" not in candidate.why.lower():
+                    candidate.why = f"Domain found in Groq Web Search page results. {candidate.why}".strip()
                 candidates.append(candidate)
             candidates = self._dedupe_candidates(candidates, limit)
             self.db.add_log(
@@ -1513,7 +1550,11 @@ class Investigator:
             )
             remaining_delay = 2.05 - (time.monotonic() - request_started)
             if remaining_delay > 0 and requests_made < request_limit:
-                time.sleep(remaining_delay)
+                if cancel_event:
+                    if cancel_event.wait(remaining_delay):
+                        break
+                else:
+                    time.sleep(remaining_delay)
         candidates = self._sort_candidates_for_search_mode(
             self._dedupe_candidates(candidates, limit),
             search_mode,
@@ -1541,7 +1582,10 @@ class Investigator:
         search_mode: str = "auto",
         page_offset: int = 0,
         query_offset: int = 0,
+        cancel_event: Event | None = None,
     ) -> list[Candidate]:
+        if cancel_event and cancel_event.is_set():
+            return []
         search_mode = self._effective_search_mode(seed_query, search_mode)
         queries = self._user_search_queries(seed_query, search_mode)
         if queries and query_offset:
@@ -1560,6 +1604,7 @@ class Investigator:
             source_limit=source_request_limit,
             deadline_at=time.monotonic() + search_time_limit,
         )
+        cancel_kwargs = {"cancel_event": cancel_event} if cancel_event is not None else {}
         self.db.add_log(
             run_id,
             "info",
@@ -1581,12 +1626,17 @@ class Investigator:
         )
         empty_pages = 0
         for page_index in range(self.settings.search_result_pages):
-            if search_budget.expired or search_budget.engine_used >= search_budget.engine_limit:
+            if (
+                (cancel_event and cancel_event.is_set())
+                or search_budget.expired
+                or search_budget.engine_used >= search_budget.engine_limit
+            ):
                 break
             page_added = 0
             for query in queries:
                 if (
                     len(candidates) >= target_candidates
+                    or (cancel_event and cancel_event.is_set())
                     or search_budget.expired
                     or search_budget.engine_used >= search_budget.engine_limit
                 ):
@@ -1602,6 +1652,7 @@ class Investigator:
                             search_issues,
                             page_index=max(0, page_offset) + page_index,
                             search_budget=search_budget,
+                            **cancel_kwargs,
                         )
                     )
                 for candidate in batch:
@@ -1649,8 +1700,9 @@ class Investigator:
         *,
         page_index: int = 0,
         search_budget: SearchRequestBudget | None = None,
+        cancel_event: Event | None = None,
     ) -> list[Candidate]:
-        if limit <= 0:
+        if limit <= 0 or (cancel_event and cancel_event.is_set()):
             return []
         timeout = min(max(self.settings.request_timeout_seconds, 8), 14)
         headers = {
@@ -1669,9 +1721,9 @@ class Investigator:
             proxy=self.settings.kz_proxy_url,
         ) as client:
             for engine in USER_SEARCH_ENGINES:
-                engine_name = str(engine["name"])
-                if len(candidates) >= limit:
+                if len(candidates) >= limit or (cancel_event and cancel_event.is_set()):
                     break
+                engine_name = str(engine["name"])
                 if search_budget is not None and not search_budget.claim_engine():
                     break
                 url = self._search_engine_url(engine, query, page_index=page_index)
@@ -1714,7 +1766,7 @@ class Investigator:
                         limit=2,
                     )
                     for source_page in source_pages:
-                        if len(candidates) >= limit:
+                        if len(candidates) >= limit or (cancel_event and cancel_event.is_set()):
                             break
                         if search_budget is not None and not search_budget.claim_source():
                             break
@@ -2205,9 +2257,14 @@ class Investigator:
             candidates,
             key=lambda candidate: (
                 -self._candidate_search_rank(candidate, effective_mode),
+                self._stable_candidate_tie_breaker(candidate),
                 candidate.key(),
             ),
         )
+
+    @staticmethod
+    def _stable_candidate_tie_breaker(candidate: Candidate) -> str:
+        return hashlib.sha256(candidate.key().encode("utf-8", errors="ignore")).hexdigest()
 
     @staticmethod
     def _candidate_search_rank(candidate: Candidate, search_mode: str) -> int:
@@ -2596,7 +2653,10 @@ Critical local-search behavior:
         search_mode: str = "auto",
         *,
         feed_page: int = 0,
+        cancel_event: Event | None = None,
     ) -> list[Candidate]:
+        if cancel_event and cancel_event.is_set():
+            return []
         candidates: list[Candidate] = []
         seen: set[str] = set()
         timeout = min(self.settings.request_timeout_seconds, 15)
@@ -2612,7 +2672,7 @@ Critical local-search behavior:
         )
         async with httpx.AsyncClient(timeout=timeout, headers=headers, follow_redirects=True) as client:
             for source in sources:
-                if len(candidates) >= max_candidates:
+                if len(candidates) >= max_candidates or (cancel_event and cancel_event.is_set()):
                     break
                 remaining = max_candidates - len(candidates)
                 try:
@@ -2626,6 +2686,9 @@ Critical local-search behavior:
                         {"name": source["name"], "url": source["url"], "error": str(exc)},
                     )
                     continue
+
+                if cancel_event and cancel_event.is_set():
+                    break
 
                 selected, matching, skipped = self._bounded_feed_sample(
                     self._iter_feed_tokens(response.text, source["parser"]),
