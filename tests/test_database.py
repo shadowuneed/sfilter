@@ -180,6 +180,33 @@ class DatabaseBackendTests(unittest.TestCase):
             self.assertEqual(finding["evidence"]["screenshot_error"], "navigation warning")
             self.assertIn("Screenshot saved with warning: navigation warning", finding["reasons"])
 
+    def test_failed_screenshot_remains_pending_for_recovery(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "argus.db")
+            db.init()
+            run_id = db.create_run(seed_query="casino", max_candidates=1, take_screenshots=True)
+            finding_id = db.insert_finding(
+                run_id,
+                {
+                    "url": "https://casino.example",
+                    "final_url": "https://casino.example",
+                    "domain": "casino.example",
+                    "normalized_domain": "casino.example",
+                    "category": "casino",
+                    "verdict": "suspicious",
+                    "risk_score": 95,
+                    "active": True,
+                    "status_code": 200,
+                    "evidence_json": {"screenshot_pending": True},
+                },
+            )
+
+            db.update_finding_screenshot(finding_id, None, "temporary browser failure")
+            finding = db.list_findings(run_id=run_id)[0]
+
+            self.assertTrue(finding["evidence"]["screenshot_pending"])
+            self.assertEqual([item["id"] for item in db.list_pending_screenshot_findings(run_id)], [finding_id])
+
     def test_run_findings_summary_is_compact_and_latest_first(self) -> None:
         with TemporaryDirectory() as tmp:
             db = Database(Path(tmp) / "argus.db")

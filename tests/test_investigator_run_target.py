@@ -278,6 +278,63 @@ class InvestigatorRunTargetTests(unittest.TestCase):
 
             self.assertEqual(captured, [finding_id])
 
+    def test_completed_run_retries_legacy_failure_without_pending_flag(self) -> None:
+        with TemporaryDirectory() as tmp:
+            evidence_dir = Path(tmp) / "evidence"
+            db = Database(Path(tmp) / "argus.db")
+            db.init()
+            run_id = db.create_run(seed_query="online casino", max_candidates=1, take_screenshots=True)
+            finding_id = db.insert_finding(
+                run_id,
+                {
+                    "url": "https://casino.example",
+                    "final_url": "https://casino.example",
+                    "domain": "casino.example",
+                    "normalized_domain": "casino.example",
+                    "title": "Casino",
+                    "category": "casino",
+                    "verdict": "high",
+                    "risk_score": 90,
+                    "active": True,
+                    "status_code": 200,
+                    "evidence_json": {
+                        "screenshot_pending": False,
+                        "screenshot_error": "legacy capture failure",
+                    },
+                },
+            )
+            db.update_run(run_id, status="completed", finding_count=1)
+
+            investigator = object.__new__(Investigator)
+            investigator.settings = Settings(
+                database_path=Path(tmp) / "argus.db",
+                evidence_dir=evidence_dir,
+                screenshot_concurrency=1,
+            )
+            investigator.db = db
+            captured: list[int] = []
+
+            async def capture(
+                current_run_id: int,
+                current_finding_id: int,
+                finding: dict,
+                semaphore: asyncio.Semaphore,
+            ) -> None:
+                self.assertEqual(current_run_id, run_id)
+                captured.append(current_finding_id)
+                db.update_finding_screenshot(
+                    current_finding_id,
+                    f"evidence/screenshots/repaired-{current_finding_id}.png",
+                    None,
+                )
+
+            investigator._capture_and_store_screenshot = capture
+
+            self.assertTrue(investigator.has_recoverable_screenshots(run_id))
+            investigator.repair_pending_screenshots(run_id)
+
+            self.assertEqual(captured, [finding_id])
+
     def test_completed_screenshot_backlog_repairs_recent_runs(self) -> None:
         with TemporaryDirectory() as tmp:
             evidence_dir = Path(tmp) / "evidence"

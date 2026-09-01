@@ -2986,9 +2986,11 @@ Critical local-search behavior:
         queue: list[tuple[int, dict[str, Any]]] = []
         requested = max(1, min(int(limit), 500))
         for finding in self.db.list_findings(run_id=run_id, limit=500):
-            evidence = finding.get("evidence") or {}
             screenshot_path = str(finding.get("screenshot_path") or "").strip()
-            is_pending = not screenshot_path and bool(evidence.get("screenshot_pending"))
+            # Older deployments could mark a failed screenshot as no longer
+            # pending.  A screenshot-enabled run still needs every finding
+            # without a real file, regardless of that stale flag.
+            is_pending = not screenshot_path
             is_missing = bool(screenshot_path) and not self._screenshot_file_exists(screenshot_path)
             if not is_pending and not is_missing:
                 continue

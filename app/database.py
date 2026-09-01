@@ -562,7 +562,9 @@ class Database:
             if not isinstance(reasons, list):
                 reasons = []
 
-            evidence["screenshot_pending"] = False
+            # A failed capture remains recoverable.  Only a real file path
+            # completes the screenshot lifecycle.
+            evidence["screenshot_pending"] = not bool(screenshot_path)
             evidence["screenshot_path"] = screenshot_path
             evidence["screenshot_error"] = screenshot_error
             if screenshot_error:
