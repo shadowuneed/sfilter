@@ -88,14 +88,15 @@ class InvestigatorRunTargetTests(unittest.TestCase):
                 {"alpha-casino.example", "beta-casino.example"},
             )
 
-    def test_screenshots_start_after_candidate_checks_finish(self) -> None:
+    def test_screenshots_flush_after_each_candidate_batch_before_completion(self) -> None:
         with TemporaryDirectory() as tmp:
             db = Database(Path(tmp) / "argus.db")
             db.init()
-            run_id = db.create_run(seed_query="онлайн казино", max_candidates=3, take_screenshots=True)
+            run_id = db.create_run(seed_query="онлайн казино", max_candidates=25, take_screenshots=True)
             investigator = object.__new__(Investigator)
             investigator.settings = Settings(
                 database_path=Path(tmp) / "argus.db",
+                evidence_dir=Path(tmp) / "evidence",
                 scan_concurrency=3,
                 screenshots_enabled=True,
                 screenshot_concurrency=1,
@@ -113,7 +114,7 @@ class InvestigatorRunTargetTests(unittest.TestCase):
                         category="casino",
                         why="Search result",
                     )
-                    for index in range(3)
+                    for index in range(25)
                 ]
 
             async def mirrors(*args, **kwargs) -> list[dict]:  # noqa: ANN002, ANN003
@@ -150,9 +151,13 @@ class InvestigatorRunTargetTests(unittest.TestCase):
                 self.assertEqual(current_run_id, run_id)
                 captured_after_checks.append(len(checked))
                 statuses_during_capture.append(str(db.get_run(run_id)["status"]))
+                screenshot_path = f"evidence/screenshots/run-{run_id}-{finding_id}.png"
+                screenshot_file = investigator.settings.evidence_dir / screenshot_path.removeprefix("evidence/")
+                screenshot_file.parent.mkdir(parents=True, exist_ok=True)
+                screenshot_file.write_bytes(b"png")
                 db.update_finding_screenshot(
                     finding_id,
-                    f"evidence/screenshots/run-{run_id}-{finding_id}.png",
+                    screenshot_path,
                     None,
                 )
 
@@ -161,11 +166,11 @@ class InvestigatorRunTargetTests(unittest.TestCase):
             investigator._inspect_candidate = inspect
             investigator._capture_and_store_screenshot = capture
 
-            asyncio.run(investigator._run(run_id, "онлайн казино", 3, True, search_mode="auto"))
+            asyncio.run(investigator._run(run_id, "онлайн казино", 25, True, search_mode="auto"))
 
-            self.assertEqual(len(checked), 3)
-            self.assertEqual(captured_after_checks, [3, 3, 3])
-            self.assertEqual(statuses_during_capture, ["running", "running", "running"])
+            self.assertEqual(len(checked), 25)
+            self.assertEqual(captured_after_checks, ([24] * 24) + [25])
+            self.assertEqual(statuses_during_capture, ["running"] * 25)
             self.assertEqual(db.get_run(run_id)["status"], "completed")
             self.assertTrue(all(finding["screenshot_path"] for finding in db.list_findings(run_id=run_id)))
 
@@ -191,6 +196,8 @@ class InvestigatorRunTargetTests(unittest.TestCase):
                 },
             )
             db.update_run(run_id, status="queued", finding_count=1)
+            other_run_id = db.create_run(seed_query="другой поиск", max_candidates=100, take_screenshots=True)
+            db.update_run(other_run_id, status="running")
 
             investigator = object.__new__(Investigator)
             investigator.settings = Settings(
@@ -226,6 +233,44 @@ class InvestigatorRunTargetTests(unittest.TestCase):
             self.assertEqual(db.get_run(run_id)["status"], "completed")
             self.assertEqual(finding["screenshot_path"], f"evidence/screenshots/run-{run_id}-{finding_id}.png")
             self.assertFalse(finding["evidence"]["screenshot_pending"])
+
+    def test_target_count_alone_does_not_leave_run_stuck_running(self) -> None:
+        with TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "argus.db")
+            db.init()
+            run_id = db.create_run(seed_query="онлайн казино", max_candidates=1, take_screenshots=True)
+            investigator = object.__new__(Investigator)
+            investigator.db = db
+            passes = 0
+
+            async def discovery_pass(*args, **kwargs) -> None:  # noqa: ANN002, ANN003
+                nonlocal passes
+                passes += 1
+                if passes == 1:
+                    db.insert_finding(
+                        run_id,
+                        {
+                            "url": "https://casino.example",
+                            "final_url": "https://casino.example",
+                            "domain": "casino.example",
+                            "normalized_domain": "casino.example",
+                            "category": "casino",
+                            "verdict": "high",
+                            "risk_score": 90,
+                            "active": True,
+                            "status_code": 200,
+                        },
+                    )
+                    db.update_run(run_id, status="running", finding_count=1)
+                    return
+                db.update_run(run_id, status="completed", finding_count=1)
+
+            investigator._run_discovery_pass = discovery_pass
+
+            asyncio.run(investigator._run(run_id, "онлайн казино", 1, True, search_mode="casino"))
+
+            self.assertEqual(passes, 2)
+            self.assertEqual(db.get_run(run_id)["status"], "completed")
 
     def test_completed_run_repairs_only_pending_screenshots(self) -> None:
         with TemporaryDirectory() as tmp:

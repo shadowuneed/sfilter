@@ -461,6 +461,9 @@ function runDiagnostic(run = {}, stats = {}) {
     return `Одновременно работают ${activeCount} запуска: они делят сетевые и браузерные ресурсы. Остановите лишний запуск для максимальной скорости.`;
   }
   if (run.status === "queued") return "Запуск поставлен в очередь. Формируется первая партия реальных доменов.";
+  if (runningStatus(run.status) && found >= Number(run.max_candidates || DEFAULT_RUN_CANDIDATES)) {
+    return "Цель набрана, поиск новых сайтов остановлен. Завершается сохранение скриншотов.";
+  }
   if (runningStatus(run.status) && checked === 0) {
     const source = state.groqConfigured ? "Groq Compound, поисковые страницы, форумы и OSINT" : "поисковые страницы, форумы и OSINT";
     return `Идет сбор через ${source}. Новые проходы будут продолжаться до выбранного количества находок.`;
@@ -616,6 +619,12 @@ function runStatusLabel(run) {
   const error = String(run.error || "");
   if (run.status === "failed" && /сервер|render|остановлен/i.test(error)) {
     return "прервано";
+  }
+  if (
+    runningStatus(run.status)
+    && Number(run.finding_count || 0) >= Math.max(1, Number(run.max_candidates || DEFAULT_RUN_CANDIDATES))
+  ) {
+    return "сохраняются скриншоты";
   }
   return statusLabel(run.status);
 }

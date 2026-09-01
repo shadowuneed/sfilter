@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 from unittest.mock import Mock, patch
 
+import httpx
+
 from app.config import Settings
 from app.services.groq_compound import GroqCompoundClient
 
@@ -67,6 +69,54 @@ class GroqCompoundClientTests(unittest.TestCase):
             ["https://live-slots.example/register", "https://search-source.example/page"],
         )
         self.assertEqual(meta["model"], "groq/compound")
+        self.assertEqual(meta["backend"], "compound")
+
+    def test_payload_too_large_switches_to_browser_search_and_keeps_it_enabled(self) -> None:
+        request = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+        oversized = httpx.Response(413, request=request, json={"error": {"code": "request_too_large"}})
+        fallback = Mock()
+        fallback.status_code = 200
+        fallback.raise_for_status.return_value = None
+        fallback.headers = {"x-ratelimit-remaining-requests": "200"}
+        fallback.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"candidates":[{"url":"https://fallback-casino.example","domain":"fallback-casino.example","category":"casino","why":"casino lobby","source_urls":["https://fallback-casino.example"]}]}',
+                        "executed_tools": [
+                            {
+                                "type": "browser_search",
+                                "search_results": {
+                                    "results": [
+                                        {
+                                            "url": "https://fallback-casino.example",
+                                            "title": "Fallback Casino",
+                                            "content": "Online casino lobby",
+                                        }
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                }
+            ],
+            "usage": {"total_tokens": 120},
+        }
+        client = GroqCompoundClient(Settings(groq_api_key="test-key"))
+
+        with patch("app.services.groq_compound.httpx.post", side_effect=[oversized, fallback, fallback]) as post:
+            candidates, meta = client.discover("онлайн казино", 5, "casino")
+            second_candidates, second_meta = client.discover("казино Казахстан", 5, "casino")
+
+        self.assertEqual(post.call_count, 3)
+        self.assertEqual(post.call_args_list[1].kwargs["json"]["model"], "openai/gpt-oss-20b")
+        self.assertEqual(post.call_args_list[1].kwargs["json"]["tools"], [{"type": "browser_search"}])
+        self.assertEqual([candidate["domain"] for candidate in candidates], ["fallback-casino.example"])
+        self.assertEqual([candidate["domain"] for candidate in second_candidates], ["fallback-casino.example"])
+        self.assertEqual(meta["backend"], "browser_search")
+        self.assertEqual(meta["compound_status_code"], 413)
+        self.assertEqual(second_meta["backend"], "browser_search")
+        self.assertIsNone(second_meta["compound_status_code"])
 
     def test_text_answer_is_accepted_only_when_tool_output_confirms_domain(self) -> None:
         content = (

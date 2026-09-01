@@ -849,26 +849,36 @@ class Investigator:
                     },
                 )
 
+            async def flush_screenshots(*, recovery: bool = False) -> bool:
+                if not take_screenshots:
+                    return True
+                queued_ids = {finding_id for finding_id, _ in screenshot_queue}
+                screenshot_queue.extend(
+                    item
+                    for item in self._pending_screenshot_queue(run_id, max_candidates)
+                    if item[0] not in queued_ids
+                )
+                if not screenshot_queue:
+                    return True
+                return await self._drain_screenshot_queue(
+                    run_id,
+                    screenshot_queue,
+                    screenshot_semaphore,
+                    findings_count=findings_count,
+                    checked_total=checked_total,
+                    cancel_event=cancel_event,
+                    recovery=recovery,
+                )
+
             if cancel_event and cancel_event.is_set():
                 self.db.update_run(run_id, status="canceled", finished_at=utc_now(), finding_count=findings_count)
                 self.db.add_log(run_id, "warning", "Проверка остановлена пользователем", {"findings": findings_count})
                 return
 
+            if not await flush_screenshots(recovery=True):
+                return
+
             if findings_count >= max_candidates:
-                if take_screenshots:
-                    screenshot_queue.extend(self._pending_screenshot_queue(run_id, max_candidates))
-                    if screenshot_queue:
-                        completed = await self._drain_screenshot_queue(
-                            run_id,
-                            screenshot_queue,
-                            screenshot_semaphore,
-                            findings_count=findings_count,
-                            checked_total=checked_total,
-                            cancel_event=cancel_event,
-                            recovery=True,
-                        )
-                        if not completed:
-                            return
                 self.db.update_run(run_id, status="completed", finished_at=utc_now(), finding_count=findings_count)
                 self.db.add_log(
                     run_id,
@@ -994,6 +1004,8 @@ class Investigator:
                         checked_total += 1
                         handle_inspection_result(finding)
                     self.db.update_run(run_id, candidate_count=checked_total)
+                    if not await flush_screenshots():
+                        return
                     continue
 
                 batch_domains = {candidate.key() for candidate in candidates_to_check if candidate.key()}
@@ -1040,6 +1052,8 @@ class Investigator:
                             task.cancel()
                     await asyncio.gather(*tasks, return_exceptions=True)
                 self.db.update_run(run_id, candidate_count=checked_total)
+                if not await flush_screenshots():
+                    return
 
             if findings_count < max_candidates and candidate_total:
                 self.db.add_log(
@@ -1055,29 +1069,8 @@ class Investigator:
                 )
 
             target_reached = findings_count >= max_candidates
-
-            if take_screenshots:
-                queued_ids = {finding_id for finding_id, _ in screenshot_queue}
-                screenshot_queue.extend(
-                    item
-                    for item in self._pending_screenshot_queue(run_id, max_candidates)
-                    if item[0] not in queued_ids
-                )
-
-            if screenshot_queue:
-                candidate_pool.clear()
-                fresh_candidates.clear()
-                candidates.clear()
-                completed = await self._drain_screenshot_queue(
-                    run_id,
-                    screenshot_queue,
-                    screenshot_semaphore,
-                    findings_count=findings_count,
-                    checked_total=checked_total,
-                    cancel_event=cancel_event,
-                )
-                if not completed:
-                    return
+            if not await flush_screenshots():
+                return
 
             if target_reached:
                 self.db.update_run(run_id, status="completed", finished_at=utc_now(), finding_count=findings_count)
@@ -1139,7 +1132,7 @@ class Investigator:
             current = self.db.get_run(run_id) or {}
             status = str(current.get("status") or "")
             findings_count = self.db.count_findings(run_id)
-            if status in {"completed", "canceled", "failed", "interrupted"} or findings_count >= max_candidates:
+            if status in {"completed", "canceled", "failed", "interrupted"}:
                 return
 
             checked_total = int(current.get("candidate_count") or 0)
@@ -1548,7 +1541,13 @@ class Investigator:
                 run_id,
                 "info",
                 "Groq Web Search обработал запрос",
-                {"query": query, "added": len(candidates) - added_before, "requests": requests_made},
+                {
+                    "query": query,
+                    "added": len(candidates) - added_before,
+                    "requests": requests_made,
+                    "backend": meta.get("backend") or "compound",
+                    "compound_status_code": meta.get("compound_status_code"),
+                },
             )
             remaining_delay = 2.05 - (time.monotonic() - request_started)
             if remaining_delay > 0 and requests_made < request_limit:
@@ -3056,7 +3055,8 @@ Critical local-search behavior:
             },
         )
         for queue_index, (finding_id, finding) in enumerate(screenshot_queue, start=1):
-            if self._other_automatic_run_is_active(run_id):
+            run_status = str((self.db.get_run(run_id) or {}).get("status") or "")
+            if recovery and run_status == "completed" and self._other_automatic_run_is_active(run_id):
                 self.db.add_log(
                     run_id,
                     "info",
@@ -3086,7 +3086,7 @@ Critical local-search behavior:
                 screenshot_semaphore,
             )
             if queue_index < len(screenshot_queue):
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.1)
         screenshot_queue.clear()
         gc.collect()
         return True

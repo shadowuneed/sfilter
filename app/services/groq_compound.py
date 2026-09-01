@@ -11,6 +11,7 @@ from app.services.domains import extract_domain, is_candidate_domain, normalize_
 
 
 PUBLIC_URL_RE = re.compile(r"https?://[^\s<>\"')\]}]+", re.IGNORECASE)
+BROWSER_SEARCH_MODEL = "openai/gpt-oss-20b"
 
 
 class GroqCompoundClient:
@@ -19,6 +20,7 @@ class GroqCompoundClient:
         self.model = settings.groq_model
         self.model_version = settings.groq_model_version
         self.timeout_seconds = min(settings.groq_timeout_seconds, 30)
+        self._use_browser_search = False
 
     @property
     def available(self) -> bool:
@@ -47,21 +49,31 @@ class GroqCompoundClient:
         enabled_tools = ["web_search"]
         if str(self.model_version).strip().lower() == "latest" and self.model == "groq/compound":
             enabled_tools.append("visit_website")
-        response = httpx.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-                "Groq-Model-Version": self.model_version,
-            },
-            json={
-                "model": self.model,
-                "messages": [{"role": "user", "content": prompt}],
-                "search_settings": {"country": "kazakhstan"},
-                "compound_custom": {"tools": {"enabled_tools": enabled_tools}},
-            },
-            timeout=self.timeout_seconds,
-        )
+        backend = "browser_search" if self._use_browser_search else "compound"
+        compound_status_code: int | None = None
+        if self._use_browser_search:
+            response = self._post_browser_search(query, requested, subject)
+        else:
+            response = httpx.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                    "Groq-Model-Version": self.model_version,
+                },
+                json={
+                    "model": self.model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "search_settings": {"country": "kazakhstan"},
+                    "compound_custom": {"tools": {"enabled_tools": enabled_tools}},
+                },
+                timeout=self.timeout_seconds,
+            )
+            if response.status_code == 413:
+                compound_status_code = response.status_code
+                self._use_browser_search = True
+                backend = "browser_search"
+                response = self._post_browser_search(query, requested, subject)
         response.raise_for_status()
         payload = response.json()
         message = ((payload.get("choices") or [{}])[0].get("message") or {})
@@ -86,11 +98,42 @@ class GroqCompoundClient:
             "available": True,
             "model": self.model,
             "model_version": self.model_version,
+            "backend": backend,
+            "backend_model": BROWSER_SEARCH_MODEL if backend == "browser_search" else self.model,
+            "compound_status_code": compound_status_code,
             "sources": tool_sources,
             "usage": payload.get("usage") or {},
             "query": query.strip(),
             "rate_limit_remaining_requests": response.headers.get("x-ratelimit-remaining-requests"),
         }
+
+    def _post_browser_search(self, query: str, requested: int, subject: str) -> httpx.Response:
+        prompt = (
+            f"Use browser search once for this exact operator query: {query.strip()!r}. Find {subject}. "
+            f'Return JSON only as {{"candidates": [...]}} with at most {requested} candidates. Each candidate '
+            "must contain direct url, domain, category, why, and source_urls. Return target websites found in "
+            "the search results, not search engines, news, reviews, forums, or social networks. Do not invent "
+            "domains. Exclude sports-betting-only bookmakers. Prefer sites accessible to users in Kazakhstan."
+        )
+        return httpx.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": BROWSER_SEARCH_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 1,
+                "max_completion_tokens": 2048,
+                "top_p": 1,
+                "stream": False,
+                "tool_choice": "required",
+                "tools": [{"type": "browser_search"}],
+                "reasoning_effort": "low",
+            },
+            timeout=self.timeout_seconds,
+        )
 
     @staticmethod
     def _tool_evidence_text(executed_tools: Any) -> str:
