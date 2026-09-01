@@ -192,12 +192,6 @@ class ScreenshotService:
                 )
                 page = await context.new_page()
                 try:
-                    await page.route(
-                        "**/*",
-                        lambda route: route.abort()
-                        if route.request.resource_type in {"media", "font"}
-                        else route.continue_(),
-                    )
                     timeout_ms = max(2_500, int(self.settings.screenshot_timeout_seconds * 1000))
                     settle_ms = max(0, int(self.settings.screenshot_settle_ms))
                     page.set_default_timeout(timeout_ms)
@@ -275,14 +269,6 @@ class ScreenshotService:
                             error=result.error or "browser screenshot was not usable",
                         )
                 finally:
-                    if page:
-                        try:
-                            await page.unroute_all(behavior="wait")
-                        except Exception:
-                            try:
-                                await page.unroute_all(behavior="ignoreErrors")
-                            except Exception:
-                                pass
                     if context:
                         try:
                             await context.close()

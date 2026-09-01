@@ -855,24 +855,27 @@ class Investigator:
                 return
 
             if findings_count >= max_candidates:
+                if take_screenshots:
+                    screenshot_queue.extend(self._pending_screenshot_queue(run_id, max_candidates))
+                    if screenshot_queue:
+                        completed = await self._drain_screenshot_queue(
+                            run_id,
+                            screenshot_queue,
+                            screenshot_semaphore,
+                            findings_count=findings_count,
+                            checked_total=checked_total,
+                            cancel_event=cancel_event,
+                            recovery=True,
+                        )
+                        if not completed:
+                            return
                 self.db.update_run(run_id, status="completed", finished_at=utc_now(), finding_count=findings_count)
                 self.db.add_log(
                     run_id,
                     "info",
                     "Поиск завершен: выбранная цель набрана",
-                    {"findings": findings_count, "target": max_candidates, "screenshots_continue": take_screenshots},
+                    {"findings": findings_count, "target": max_candidates},
                 )
-                if take_screenshots:
-                    screenshot_queue.extend(self._pending_screenshot_queue(run_id, max_candidates))
-                    await self._drain_screenshot_queue(
-                        run_id,
-                        screenshot_queue,
-                        screenshot_semaphore,
-                        findings_count=findings_count,
-                        checked_total=checked_total,
-                        cancel_event=cancel_event,
-                        recovery=True,
-                    )
                 return
 
             discovery_kwargs: dict[str, Any] = {
@@ -1052,14 +1055,6 @@ class Investigator:
                 )
 
             target_reached = findings_count >= max_candidates
-            if target_reached:
-                self.db.update_run(run_id, status="completed", finished_at=utc_now(), finding_count=findings_count)
-                self.db.add_log(
-                    run_id,
-                    "info",
-                    "Поиск завершен: выбранная цель набрана",
-                    {"findings": findings_count, "target": max_candidates, "screenshots_continue": take_screenshots},
-                )
 
             if take_screenshots:
                 queued_ids = {finding_id for finding_id, _ in screenshot_queue}
@@ -1085,6 +1080,13 @@ class Investigator:
                     return
 
             if target_reached:
+                self.db.update_run(run_id, status="completed", finished_at=utc_now(), finding_count=findings_count)
+                self.db.add_log(
+                    run_id,
+                    "info",
+                    "Поиск завершен: выбранная цель набрана",
+                    {"findings": findings_count, "target": max_candidates},
+                )
                 return
 
             self.db.update_run(
@@ -3045,7 +3047,7 @@ Critical local-search behavior:
             (
                 "Восстанавливаю незавершенные скриншоты после перезапуска"
                 if recovery
-                else "Основная проверка завершена: последовательно сохраняю скриншоты"
+                else "Проверка сайтов завершена: последовательно сохраняю скриншоты"
             ),
             {
                 "screenshots": len(screenshot_queue),
