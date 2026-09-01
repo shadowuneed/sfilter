@@ -27,6 +27,7 @@ investigator = Investigator(settings, db, gemini)
 exporter = Exporter(settings, db)
 cancel_events: dict[int, threading.Event] = {}
 run_launch_lock = threading.Lock()
+screenshot_repair_lock = threading.Lock()
 
 app = FastAPI(title="DOFilter", version="1.0.0")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
@@ -86,6 +87,8 @@ def _thread_entry(run_id: int, target: Any, args: tuple[Any, ...]) -> None:
         except Exception as exc:  # noqa: BLE001
             print(f"run={run_id} log_cleanup_error={type(exc).__name__}", flush=True)
         cancel_events.pop(run_id, None)
+        if getattr(target, "__self__", None) is investigator:
+            _start_screenshot_repair()
 
 
 def _start_run_thread(run_id: int, name: str, target: Any, *args: Any) -> None:
@@ -105,6 +108,33 @@ def _normalize_run_target(max_candidates: int) -> int:
 
 def _is_automatic_run(run: dict[str, Any]) -> bool:
     return int(run.get("max_candidates") or 0) > 1
+
+
+def _screenshot_repair_entry() -> None:
+    try:
+        investigator.repair_completed_screenshot_backlog()
+    except Exception as exc:  # noqa: BLE001
+        print(f"screenshot_backlog_error={type(exc).__name__}: {exc}", flush=True)
+    finally:
+        screenshot_repair_lock.release()
+
+
+def _start_screenshot_repair() -> bool:
+    if any(_is_automatic_run(run) for run in db.list_active_runs()):
+        return False
+    if not screenshot_repair_lock.acquire(blocking=False):
+        return False
+    try:
+        thread = threading.Thread(
+            target=_screenshot_repair_entry,
+            daemon=True,
+            name="dofilter-screenshot-backlog",
+        )
+        thread.start()
+    except Exception:
+        screenshot_repair_lock.release()
+        raise
+    return True
 
 
 @app.on_event("startup")
@@ -172,25 +202,7 @@ def resume_active_runs_after_restart() -> None:
 
     if latest_automatic_run_id is not None:
         return
-
-    for run in db.list_runs(limit=5):
-        if not bool(run.get("take_screenshots")):
-            continue
-        run_id = int(run["id"])
-        if not investigator.has_recoverable_screenshots(run_id):
-            continue
-        db.add_log(
-            run_id,
-            "info",
-            "После запуска сервера найдены незавершенные скриншоты",
-        )
-        _start_run_thread(
-            run_id,
-            f"dofilter-screenshot-repair-{run_id}",
-            investigator.repair_pending_screenshots,
-            run_id,
-        )
-        break
+    _start_screenshot_repair()
 
 
 @app.middleware("http")

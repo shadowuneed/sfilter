@@ -278,6 +278,108 @@ class InvestigatorRunTargetTests(unittest.TestCase):
 
             self.assertEqual(captured, [finding_id])
 
+    def test_completed_screenshot_backlog_repairs_recent_runs(self) -> None:
+        with TemporaryDirectory() as tmp:
+            evidence_dir = Path(tmp) / "evidence"
+            db = Database(Path(tmp) / "argus.db")
+            db.init()
+            finding_ids: list[int] = []
+            for run_index in range(2):
+                run_id = db.create_run(seed_query=f"casino {run_index}", max_candidates=2, take_screenshots=True)
+                finding_id = db.insert_finding(
+                    run_id,
+                    {
+                        "url": f"https://casino-{run_index}.example",
+                        "final_url": f"https://casino-{run_index}.example",
+                        "domain": f"casino-{run_index}.example",
+                        "normalized_domain": f"casino-{run_index}.example",
+                        "title": f"Casino {run_index}",
+                        "category": "casino",
+                        "verdict": "high",
+                        "risk_score": 90,
+                        "active": True,
+                        "status_code": 200,
+                        "evidence_json": {"screenshot_pending": True},
+                    },
+                )
+                finding_ids.append(finding_id)
+                db.update_run(run_id, status="completed", finding_count=1)
+
+            investigator = object.__new__(Investigator)
+            investigator.settings = Settings(
+                database_path=Path(tmp) / "argus.db",
+                evidence_dir=evidence_dir,
+                screenshot_concurrency=1,
+            )
+            investigator.db = db
+            captured: list[int] = []
+
+            async def capture(
+                current_run_id: int,
+                finding_id: int,
+                finding: dict,
+                semaphore: asyncio.Semaphore,
+            ) -> None:
+                captured.append(finding_id)
+                db.update_finding_screenshot(
+                    finding_id,
+                    f"evidence/screenshots/repaired-{finding_id}.png",
+                    None,
+                )
+
+            investigator._capture_and_store_screenshot = capture
+
+            repaired_runs = investigator.repair_completed_screenshot_backlog()
+
+            self.assertEqual(repaired_runs, 2)
+            self.assertEqual(captured, list(reversed(finding_ids)))
+
+    def test_screenshot_repair_pauses_for_another_automatic_run(self) -> None:
+        with TemporaryDirectory() as tmp:
+            evidence_dir = Path(tmp) / "evidence"
+            db = Database(Path(tmp) / "argus.db")
+            db.init()
+            completed_run_id = db.create_run(seed_query="old casino", max_candidates=2, take_screenshots=True)
+            finding_id = db.insert_finding(
+                completed_run_id,
+                {
+                    "url": "https://old-casino.example",
+                    "final_url": "https://old-casino.example",
+                    "domain": "old-casino.example",
+                    "normalized_domain": "old-casino.example",
+                    "title": "Old Casino",
+                    "category": "casino",
+                    "verdict": "high",
+                    "risk_score": 90,
+                    "active": True,
+                    "status_code": 200,
+                    "evidence_json": {"screenshot_pending": True},
+                },
+            )
+            db.update_run(completed_run_id, status="completed", finding_count=1)
+            active_run_id = db.create_run(seed_query="new casino", max_candidates=100, take_screenshots=True)
+            db.update_run(active_run_id, status="running")
+
+            investigator = object.__new__(Investigator)
+            investigator.settings = Settings(
+                database_path=Path(tmp) / "argus.db",
+                evidence_dir=evidence_dir,
+                screenshot_concurrency=1,
+            )
+            investigator.db = db
+            captured: list[int] = []
+
+            async def capture(*args, **kwargs) -> None:  # noqa: ANN002, ANN003
+                captured.append(finding_id)
+
+            investigator._capture_and_store_screenshot = capture
+
+            completed = investigator.repair_pending_screenshots(completed_run_id)
+
+            self.assertFalse(completed)
+            self.assertEqual(captured, [])
+            self.assertEqual(len(db.list_pending_screenshot_findings(completed_run_id)), 1)
+
     def test_arbitrary_text_uses_search_pages_without_category_selector(self) -> None:
         self.assertTrue(Investigator._user_search_mode("подозрительные магазины Алматы", "auto"))
 

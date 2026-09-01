@@ -2939,6 +2939,12 @@ Critical local-search behavior:
     def has_recoverable_screenshots(self, run_id: int) -> bool:
         return bool(self._pending_screenshot_queue(run_id, 1))
 
+    def _other_automatic_run_is_active(self, run_id: int) -> bool:
+        return any(
+            int(run.get("id") or 0) != run_id and int(run.get("max_candidates") or 0) > 1
+            for run in self.db.list_active_runs()
+        )
+
     def _screenshot_file_exists(self, screenshot_path: str) -> bool:
         normalized = str(screenshot_path or "").strip().replace("\\", "/")
         if not normalized:
@@ -2983,6 +2989,14 @@ Critical local-search behavior:
             },
         )
         for queue_index, (finding_id, finding) in enumerate(screenshot_queue, start=1):
+            if self._other_automatic_run_is_active(run_id):
+                self.db.add_log(
+                    run_id,
+                    "info",
+                    "Восстановление скриншотов приостановлено: ресурсы отданы активному поиску",
+                    {"pending": len(screenshot_queue) - queue_index + 1},
+                )
+                return False
             if cancel_event and cancel_event.is_set():
                 self.db.update_run(
                     run_id,
@@ -3010,20 +3024,20 @@ Critical local-search behavior:
         gc.collect()
         return True
 
-    def repair_pending_screenshots(self, run_id: int) -> None:
-        asyncio.run(self._repair_pending_screenshots(run_id))
+    def repair_pending_screenshots(self, run_id: int) -> bool:
+        return asyncio.run(self._repair_pending_screenshots(run_id))
 
-    async def _repair_pending_screenshots(self, run_id: int) -> None:
+    async def _repair_pending_screenshots(self, run_id: int) -> bool:
         run = self.db.get_run(run_id)
         if not run or not bool(run.get("take_screenshots")):
-            return
+            return True
         screenshot_queue = self._pending_screenshot_queue(
             run_id,
             max(1, int(run.get("max_candidates") or 500)),
         )
         if not screenshot_queue:
-            return
-        await self._drain_screenshot_queue(
+            return True
+        return await self._drain_screenshot_queue(
             run_id,
             screenshot_queue,
             asyncio.Semaphore(1),
@@ -3031,6 +3045,31 @@ Critical local-search behavior:
             checked_total=int(run.get("candidate_count") or 0),
             recovery=True,
         )
+
+    def repair_completed_screenshot_backlog(self, run_limit: int = 25) -> int:
+        return asyncio.run(self._repair_completed_screenshot_backlog(run_limit))
+
+    async def _repair_completed_screenshot_backlog(self, run_limit: int) -> int:
+        repaired_runs = 0
+        for run in self.db.list_runs(limit=max(1, min(int(run_limit), 100))):
+            if run.get("status") != "completed" or not bool(run.get("take_screenshots")):
+                continue
+            run_id = int(run["id"])
+            if self._other_automatic_run_is_active(run_id):
+                break
+            if not self.has_recoverable_screenshots(run_id):
+                continue
+            self.db.add_log(
+                run_id,
+                "info",
+                "Найдены отсутствующие скриншоты завершенного запуска",
+            )
+            completed = await self._repair_pending_screenshots(run_id)
+            self.db.finish_run_logs(run_id)
+            if not completed:
+                break
+            repaired_runs += 1
+        return repaired_runs
 
     async def _capture_and_store_screenshot(
         self,

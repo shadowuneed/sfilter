@@ -4,6 +4,8 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 ENV MALLOC_ARENA_MAX=2
+ENV EVIDENCE_DIR=/var/data/evidence
+ENV EXPORT_DIR=/var/data/exports
 WORKDIR /app
 
 COPY requirements.txt .
@@ -14,7 +16,7 @@ COPY . .
 
 RUN groupadd --system argus \
     && useradd --system --gid argus --create-home --home-dir /home/argus argus \
-    && mkdir -p /var/data \
+    && mkdir -p /var/data/evidence/screenshots /var/data/exports \
     && chown -R argus:argus /app /ms-playwright /var/data
 
 USER argus
