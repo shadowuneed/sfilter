@@ -149,7 +149,7 @@ class Settings:
     gemini_rpd_limit: int = 250
     gemini_timeout_seconds: int = 90
     groq_api_key: str | None = None
-    groq_model: str = "groq/compound"
+    groq_model: str = "groq/compound-mini"
     groq_model_version: str = "latest"
     groq_timeout_seconds: int = 90
     groq_requests_per_discovery: int = 8
@@ -232,7 +232,7 @@ def get_settings() -> Settings:
         gemini_rpd_limit=_int_env("GEMINI_RPD_LIMIT", _int_env("GEMINI_RPD_PER_KEY", 250)),
         gemini_timeout_seconds=_int_env("GEMINI_TIMEOUT_SECONDS", 90),
         groq_api_key=_optional_env("GROQ_API_KEY"),
-        groq_model=os.getenv("GROQ_MODEL", "groq/compound").strip() or "groq/compound",
+        groq_model=os.getenv("GROQ_MODEL", "groq/compound-mini").strip() or "groq/compound-mini",
         groq_model_version=os.getenv("GROQ_MODEL_VERSION", "latest").strip() or "latest",
         groq_timeout_seconds=max(20, min(_int_env("GROQ_TIMEOUT_SECONDS", 90), 180)),
         groq_requests_per_discovery=max(1, min(_int_env("GROQ_REQUESTS_PER_DISCOVERY", 8), 20)),
