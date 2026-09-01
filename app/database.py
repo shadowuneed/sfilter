@@ -31,6 +31,7 @@ BEARER_RE = re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._~+/=-]{16,}")
 
 
 def redact_string(value: str) -> str:
+    value = value.replace("\x00", "")
     value = SECRET_QUERY_RE.sub(r"\1[redacted]", value)
     value = API_KEY_RE.sub("[redacted-api-key]", value)
     value = BEARER_RE.sub(r"\1[redacted]", value)
@@ -597,7 +598,10 @@ class Database:
             "active": int(bool(finding.get("active"))),
         }
         json_fields = {"dns_json", "tls_json", "evidence_json", "sources_json", "reasons_json"}
-        row_values = [dumps(values.get(col)) if col in json_fields else values.get(col) for col in columns]
+        row_values = [
+            dumps(values.get(col)) if col in json_fields else redact_secrets(values.get(col))
+            for col in columns
+        ]
         return columns, row_values
 
     def _upsert_case_for_finding(self, conn: DatabaseConnection, finding_id: int) -> None:

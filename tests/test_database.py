@@ -49,6 +49,24 @@ class DatabaseBackendTests(unittest.TestCase):
         self.assertEqual(values[active_index], 1)
         self.assertIs(type(values[active_index]), int)
 
+    def test_finding_insert_values_remove_postgres_nul_bytes(self) -> None:
+        db = Database("data/test.db")
+
+        columns, values = db._finding_insert_values(
+            1,
+            {
+                "url": "https://example.com",
+                "normalized_domain": "example.com",
+                "title": "Casino\x00 title",
+                "risk_score": 70,
+                "active": True,
+                "evidence_json": {"html_title": "Casino\x00 title"},
+            },
+        )
+
+        self.assertEqual(values[columns.index("title")], "Casino title")
+        self.assertNotIn("\\u0000", values[columns.index("evidence_json")])
+
     def test_run_attempts_are_persisted_without_duplicates(self) -> None:
         with TemporaryDirectory() as tmp:
             db = Database(Path(tmp) / "argus.db")
