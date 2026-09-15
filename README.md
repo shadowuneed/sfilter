@@ -1,6 +1,10 @@
-# DOFilter
+# 🛡️ Qalqan
 
-DOFilter is a working OSINT investigation platform for suspicious casino, betting, phishing, scam, mirror-domain, and investment-fraud websites. It is built to watch many signals and keep evidence, not just show a loose list of links.
+![Python](https://img.shields.io/badge/python-3.11+-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Status](https://img.shields.io/badge/status-active-success)
+
+> OSINT-платформа для расследования подозрительных казино, беттинг, фишинг и мошеннических сайтов — с автосбором доказательств.
 
 ## What It Does
 
