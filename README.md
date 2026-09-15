@@ -1,10 +1,11 @@
-# 🛡️ Qalqan
+#  Qalqan
 
 ![Python](https://img.shields.io/badge/python-3.11+-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Status](https://img.shields.io/badge/status-active-success)
 
-<img width="253" height="409" alt="image" src="https://github.com/user-attachments/assets/91c2282a-1280-4812-bcc0-e0fcbdcf6b43" />
+<img width="246" height="395" alt="image" src="https://github.com/user-attachments/assets/0939f3f6-8aa2-4a1f-ad41-c8164f89725b" />
+
 
 > OSINT-платформа для расследования подозрительных казино, беттинг, фишинг и мошеннических сайтов — с автосбором доказательств.
 
