@@ -1,8 +1,12 @@
 #  Qalqan
 
-![Python](https://img.shields.io/badge/python-3.11+-blue)
+![Python](https://img.shields.io/badge/python-3.11%2B-blue)
+![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Status](https://img.shields.io/badge/status-active-success)
+![Last commit](https://img.shields.io/github/last-commit/shadowuneed/sfilter)
+![Repo size](https://img.shields.io/github/repo-size/shadowuneed/sfilter)
+![Top language](https://img.shields.io/github/languages/top/shadowuneed/sfilter)
 
 <img width="246" height="395" alt="image" src="https://github.com/user-attachments/assets/0939f3f6-8aa2-4a1f-ad41-c8164f89725b" /> <img width="459" height="267" alt="image" src="https://github.com/user-attachments/assets/8e689118-617f-41a1-8ac5-880ac3b46653" />
 
