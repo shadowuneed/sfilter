@@ -4,6 +4,8 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Status](https://img.shields.io/badge/status-active-success)
 
+<img width="253" height="409" alt="image" src="https://github.com/user-attachments/assets/91c2282a-1280-4812-bcc0-e0fcbdcf6b43" />
+
 > OSINT-платформа для расследования подозрительных казино, беттинг, фишинг и мошеннических сайтов — с автосбором доказательств.
 
 ## What It Does
