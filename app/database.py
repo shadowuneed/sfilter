@@ -427,6 +427,19 @@ class Database:
     def mark_stale_runs_failed(self) -> int:
         return self.mark_stale_runs_interrupted()
 
+    def update_active_run(self, run_id: int, **fields: Any) -> bool:
+        """Apply a lifecycle transition without reopening a completed run."""
+        if not fields:
+            return False
+        assignments = ", ".join(f"{key}=?" for key in fields)
+        values = [dumps(value) if key.endswith("_json") else redact_secrets(value) for key, value in fields.items()]
+        with self.connect() as conn:
+            cursor = conn.execute(
+                f"UPDATE runs SET {assignments} WHERE id=? AND status IN ('queued', 'running', 'canceling')",
+                [*values, run_id],
+            )
+            return bool(cursor.rowcount)
+
     def mark_stale_runs_interrupted(self) -> int:
         with self.connect() as conn:
             cursor = conn.execute(

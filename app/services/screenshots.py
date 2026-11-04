@@ -7,10 +7,11 @@ import os
 import re
 import textwrap
 import threading
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from app.config import Settings
 from app.services.domains import extract_domain
@@ -20,6 +21,10 @@ BROWSER_SCREENSHOT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
+
+_CLEANUP_TIMEOUT_SECONDS = 0.2
+_Result = TypeVar("_Result")
+
 
 _MINIMAL_PNG_BASE64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/"
@@ -146,141 +151,132 @@ class ScreenshotService:
                 error=f"Playwright is not installed or browsers are missing: {type(exc).__name__}: {exc}",
             )
 
+        loop = asyncio.get_running_loop()
+        timeout_seconds = max(0.01, float(self.settings.screenshot_timeout_seconds))
+        deadline = loop.time() + timeout_seconds
+        operation_deadline = deadline
         browser = None
         context = None
-        page = None
+        manager = None
         acquired = False
         try:
             while not self._browser_slots.acquire(blocking=False):
-                await asyncio.sleep(0.2)
+                await self._within_deadline(asyncio.sleep(0.2), operation_deadline)
             acquired = True
-            async with async_playwright() as playwright:
-                browser = await playwright.chromium.launch(
-                    headless=True,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                        "--disable-dev-shm-usage",
-                        "--disable-gpu",
-                        "--disable-extensions",
-                        "--disable-background-networking",
-                        "--disable-component-update",
-                        "--disable-domain-reliability",
-                        "--disable-default-apps",
-                        "--disable-sync",
-                        "--disable-site-isolation-trials",
-                        "--disable-features=BackForwardCache,MediaRouter,OptimizationHints,Translate",
-                        "--disk-cache-size=1",
-                        "--media-cache-size=1",
-                        "--js-flags=--max-old-space-size=64",
-                        "--metrics-recording-only",
-                        "--mute-audio",
-                        "--no-first-run",
-                        "--no-zygote",
-                        "--renderer-process-limit=1",
-                        "--disable-blink-features=AutomationControlled",
-                    ],
-                )
-                context = await browser.new_context(
-                    ignore_https_errors=True,
-                    viewport={"width": 1280, "height": 720},
-                    device_scale_factor=1,
-                    user_agent=BROWSER_SCREENSHOT_USER_AGENT,
-                    locale="ru-RU",
-                    timezone_id="Asia/Almaty",
-                    proxy={"server": self.settings.kz_proxy_url} if self.settings.kz_proxy_url else None,
-                )
-                page = await context.new_page()
+            manager = async_playwright()
+            playwright = await self._within_deadline(manager.start(), operation_deadline)
+            browser = await self._within_deadline(playwright.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-extensions",
+                    "--disable-background-networking",
+                    "--disable-component-update",
+                    "--disable-domain-reliability",
+                    "--disable-default-apps",
+                    "--disable-sync",
+                    "--disable-site-isolation-trials",
+                    "--disable-features=BackForwardCache,MediaRouter,OptimizationHints,Translate",
+                    "--disk-cache-size=1",
+                    "--media-cache-size=1",
+                    "--js-flags=--max-old-space-size=64",
+                    "--metrics-recording-only",
+                    "--mute-audio",
+                    "--no-first-run",
+                    "--no-zygote",
+                    "--renderer-process-limit=1",
+                    "--disable-blink-features=AutomationControlled",
+                ],
+            ), operation_deadline)
+            context = await self._within_deadline(browser.new_context(
+                ignore_https_errors=True,
+                viewport={"width": 1280, "height": 720},
+                device_scale_factor=1,
+                user_agent=BROWSER_SCREENSHOT_USER_AGENT,
+                locale="ru-RU",
+                timezone_id="Asia/Almaty",
+                proxy={"server": self.settings.kz_proxy_url} if self.settings.kz_proxy_url else None,
+            ), operation_deadline)
+            page = await self._within_deadline(context.new_page(), operation_deadline)
+            timeout_ms = max(2_500, int(self.settings.screenshot_timeout_seconds * 1000))
+            settle_ms = max(0, int(self.settings.screenshot_settle_ms))
+            page.set_default_timeout(timeout_ms)
+            navigation_error = None
+            try:
+                await self._within_deadline(page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms), operation_deadline)
+            except Exception as exc:  # noqa: BLE001
+                navigation_error = exc
                 try:
-                    timeout_ms = max(2_500, int(self.settings.screenshot_timeout_seconds * 1000))
-                    settle_ms = max(0, int(self.settings.screenshot_settle_ms))
-                    page.set_default_timeout(timeout_ms)
-                    navigation_error = None
-                    try:
-                        await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-                    except Exception as exc:  # noqa: BLE001
-                        navigation_error = exc
-                        try:
-                            await page.goto(url, wait_until="commit", timeout=max(1_500, timeout_ms // 2))
-                        except Exception:
-                            pass
-                    try:
-                        await page.wait_for_load_state("load", timeout=min(750, timeout_ms))
-                    except Exception:
-                        pass
-                    if settle_ms:
-                        await page.wait_for_timeout(settle_ms)
-                    try:
-                        await page.screenshot(
-                            path=str(output),
-                            full_page=False,
-                            timeout=max(2_000, min(timeout_ms, 3_000)),
-                            animations="disabled",
-                            caret="hide",
+                    await self._within_deadline(page.goto(url, wait_until="commit", timeout=max(1_500, timeout_ms // 2)), operation_deadline)
+                except Exception:
+                    pass
+            try:
+                await self._within_deadline(page.wait_for_load_state("load", timeout=min(750, timeout_ms)), operation_deadline)
+            except Exception:
+                pass
+            if settle_ms:
+                await self._within_deadline(page.wait_for_timeout(settle_ms), operation_deadline)
+            try:
+                await self._within_deadline(page.screenshot(
+                    path=str(output),
+                    full_page=False,
+                    timeout=max(2_000, min(timeout_ms, 3_000)),
+                    animations="disabled",
+                    caret="hide",
+                ), operation_deadline)
+                result = self._capture_result(output, rel_path)
+                if result.path or not self.settings.screenshot_fallback_enabled:
+                    if result.path and navigation_error:
+                        return ScreenshotResult(
+                            path=result.path,
+                            error=f"navigation warning: {type(navigation_error).__name__}: {navigation_error}",
                         )
-                        result = self._capture_result(output, rel_path)
-                        if result.path or not self.settings.screenshot_fallback_enabled:
-                            if result.path and navigation_error:
-                                return ScreenshotResult(
-                                    path=result.path,
-                                    error=f"navigation warning: {type(navigation_error).__name__}: {navigation_error}",
-                                )
-                            return result
-                        return self._fallback_result(
-                            output,
-                            rel_path,
-                            url=url,
-                            title=title,
-                            html_path=html_path,
-                            status_code=status_code,
-                            error=result.error or "browser screenshot was not usable",
+                    return result
+                return self._fallback_result(
+                    output,
+                    rel_path,
+                    url=url,
+                    title=title,
+                    html_path=html_path,
+                    status_code=status_code,
+                    error=result.error or "browser screenshot was not usable",
+                )
+            except Exception:  # noqa: BLE001
+                try:
+                    await self._within_deadline(page.screenshot(
+                        path=str(output),
+                        full_page=False,
+                        timeout=max(1_500, min(timeout_ms // 2, 2_500)),
+                        animations="disabled",
+                        caret="hide",
+                    ), operation_deadline)
+                except Exception:  # noqa: BLE001
+                    client = await self._within_deadline(context.new_cdp_session(page), operation_deadline)
+                    capture = await self._within_deadline(client.send(
+                        "Page.captureScreenshot",
+                        {"format": "png", "fromSurface": True, "captureBeyondViewport": False},
+                    ), operation_deadline)
+                    output.write_bytes(base64.b64decode(capture["data"]))
+                result = self._capture_result(output, rel_path)
+                if result.path or not self.settings.screenshot_fallback_enabled:
+                    if result.path and navigation_error:
+                        return ScreenshotResult(
+                            path=result.path,
+                            error=f"navigation warning: {type(navigation_error).__name__}: {navigation_error}",
                         )
-                    except Exception:  # noqa: BLE001
-                        try:
-                            await page.screenshot(
-                                path=str(output),
-                                full_page=False,
-                                timeout=max(1_500, min(timeout_ms // 2, 2_500)),
-                                animations="disabled",
-                                caret="hide",
-                            )
-                        except Exception:  # noqa: BLE001
-                            client = await context.new_cdp_session(page)
-                            capture = await client.send(
-                                "Page.captureScreenshot",
-                                {"format": "png", "fromSurface": True, "captureBeyondViewport": False},
-                            )
-                            output.write_bytes(base64.b64decode(capture["data"]))
-                        result = self._capture_result(output, rel_path)
-                        if result.path or not self.settings.screenshot_fallback_enabled:
-                            if result.path and navigation_error:
-                                return ScreenshotResult(
-                                    path=result.path,
-                                    error=f"navigation warning: {type(navigation_error).__name__}: {navigation_error}",
-                                )
-                            return result
-                        return self._fallback_result(
-                            output,
-                            rel_path,
-                            url=url,
-                            title=title,
-                            html_path=html_path,
-                            status_code=status_code,
-                            error=result.error or "browser screenshot was not usable",
-                        )
-                finally:
-                    if context:
-                        try:
-                            await context.close()
-                        except Exception:
-                            pass
-                        context = None
-                    if browser:
-                        try:
-                            await browser.close()
-                        except Exception:
-                            pass
-                        browser = None
+                    return result
+                return self._fallback_result(
+                    output,
+                    rel_path,
+                    url=url,
+                    title=title,
+                    html_path=html_path,
+                    status_code=status_code,
+                    error=result.error or "browser screenshot was not usable",
+                )
         except Exception as exc:  # noqa: BLE001
             return self._fallback_result(
                 output,
@@ -292,18 +288,68 @@ class ScreenshotService:
                 error=f"{type(exc).__name__}: {exc}",
             )
         finally:
-            if context:
-                try:
-                    await context.close()
-                except Exception:
-                    pass
-            if browser:
-                try:
-                    await browser.close()
-                except Exception:
-                    pass
-            if acquired:
-                self._browser_slots.release()
+            try:
+                await self._cleanup_browser(context, browser, manager)
+            finally:
+                if acquired:
+                    self._browser_slots.release()
+
+    async def _within_deadline(
+        self,
+        operation: Awaitable[_Result],
+        deadline: float,
+        *,
+        start_before_timeout: bool = False,
+    ) -> _Result:
+        task = asyncio.ensure_future(operation)
+        try:
+            if start_before_timeout:
+                # Driver shutdown must run far enough to request process stop,
+                # even if earlier browser teardown used its remaining budget.
+                await asyncio.sleep(0)
+            remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+            if remaining:
+                done, _ = await asyncio.wait({task}, timeout=remaining)
+                if done:
+                    return task.result()
+            raise TimeoutError(
+                f"screenshot timed out after {self.settings.screenshot_timeout_seconds:g} seconds"
+            )
+        finally:
+            if not task.done():
+                task.cancel()
+                # Do not wait indefinitely for an unresponsive browser operation
+                # to acknowledge cancellation. Driver shutdown runs separately.
+            task.add_done_callback(self._consume_task_result)
+
+    @staticmethod
+    def _consume_task_result(task: asyncio.Future[Any]) -> None:
+        if not task.cancelled():
+            task.exception()
+
+    async def _cleanup_browser(self, context: Any, browser: Any, manager: Any) -> None:
+        closers = []
+        if manager is not None:
+            closers.append(manager.__aexit__)
+        closers.extend(resource.close for resource in (context, browser) if resource is not None)
+        canceled = False
+        loop = asyncio.get_running_loop()
+        # A fresh, shared grace period lets the driver terminate after a capture
+        # timeout without turning one hung close into another unbounded wait.
+        deadline = loop.time() + _CLEANUP_TIMEOUT_SECONDS
+        for index, close in enumerate(closers):
+            remaining = max(0.0, deadline - loop.time())
+            close_budget = remaining / (len(closers) - index)
+            try:
+                await self._within_deadline(
+                    close(), loop.time() + close_budget, start_before_timeout=True
+                )
+            except asyncio.CancelledError:
+                canceled = True
+            except Exception:  # noqa: BLE001
+                pass
+        if canceled:
+            raise asyncio.CancelledError
 
     def _fallback_result(
         self,

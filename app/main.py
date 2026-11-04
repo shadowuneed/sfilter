@@ -79,11 +79,29 @@ def _thread_entry(run_id: int, target: Any, args: tuple[Any, ...]) -> None:
         getattr(target, "__self__", None) is investigator
         and getattr(target, "__func__", None) in {Investigator.run, Investigator.run_manual}
     )
+    worker_error = None
     try:
         target(*args)
+    except Exception as exc:  # noqa: BLE001
+        worker_error = f"Ошибка рабочего потока: {type(exc).__name__}"
+        print(f"run={run_id} worker_error={type(exc).__name__}", flush=True)
     finally:
         try:
             run = db.get_run(run_id)
+            if run and run["status"] in {"queued", "running", "canceling"}:
+                event = cancel_events.get(run_id)
+                canceled = run["status"] == "canceling" or bool(event and event.is_set())
+                message = "Проверка остановлена пользователем" if canceled else (
+                    worker_error or "Рабочий поток завершился без итогового статуса проверки."
+                )
+                db.update_active_run(
+                    run_id,
+                    status="canceled" if canceled else "failed",
+                    finished_at=utc_now(),
+                    error=None if canceled else message,
+                )
+                db.add_log(run_id, "warning" if canceled else "error", message)
+                run = db.get_run(run_id)
             if run and run["status"] not in {"queued", "running", "canceling"}:
                 removed = db.finish_run_logs(run_id)
                 if removed:
@@ -380,8 +398,8 @@ def create_run(request: RunRequest) -> dict[str, Any]:
             max_candidates=max_candidates,
             take_screenshots=request.take_screenshots,
         )
-    cancel_event = threading.Event()
-    cancel_events[run_id] = cancel_event
+        cancel_event = threading.Event()
+        cancel_events[run_id] = cancel_event
     _start_run_thread(
         run_id,
         f"argus-run-{run_id}",
@@ -399,13 +417,14 @@ def create_run(request: RunRequest) -> dict[str, Any]:
 @app.post("/api/manual-check")
 def manual_check(request: ManualCheckRequest) -> dict[str, Any]:
     _ensure_kz_proxy_ready()
-    run_id = db.create_run(
-        seed_query=request.target,
-        max_candidates=1,
-        take_screenshots=request.take_screenshots,
-    )
-    cancel_event = threading.Event()
-    cancel_events[run_id] = cancel_event
+    with run_launch_lock:
+        run_id = db.create_run(
+            seed_query=request.target,
+            max_candidates=1,
+            take_screenshots=request.take_screenshots,
+        )
+        cancel_event = threading.Event()
+        cancel_events[run_id] = cancel_event
     _start_run_thread(
         run_id,
         f"argus-manual-{run_id}",
@@ -421,17 +440,25 @@ def manual_check(request: ManualCheckRequest) -> dict[str, Any]:
 
 @app.post("/api/runs/{run_id}/cancel")
 def cancel_run(run_id: int) -> dict[str, Any]:
-    run = db.get_run(run_id)
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found")
-    if run["status"] not in {"queued", "running", "canceling"}:
-        return {"run_id": run_id, "status": run["status"], "changed": False}
-    event = cancel_events.get(run_id)
-    if event:
-        event.set()
-    db.update_run(run_id, status="canceling")
-    db.add_log(run_id, "warning", "Проверка остановлена пользователем")
-    return {"run_id": run_id, "status": "canceling", "changed": True}
+    with run_launch_lock:
+        run = db.get_run(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        if run["status"] not in {"queued", "running", "canceling"}:
+            return {"run_id": run_id, "status": run["status"], "changed": False}
+        event = cancel_events.get(run_id)
+        fields: dict[str, Any] = {"status": "canceling"}
+        if event is None:
+            fields.update(status="canceled", finished_at=utc_now(), error=None)
+        transitioned = db.update_active_run(run_id, **fields)
+        if transitioned and event is not None:
+            # Persist the request before waking a worker that may finish immediately.
+            event.set()
+        changed = transitioned and (run["status"] != "canceling" or event is None)
+        if changed:
+            db.add_log(run_id, "warning", "Проверка остановлена пользователем")
+        current = db.get_run(run_id) or run
+        return {"run_id": run_id, "status": current["status"], "changed": changed}
 
 
 @app.get("/api/runs")

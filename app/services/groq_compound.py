@@ -12,6 +12,7 @@ from app.services.domains import extract_domain, is_candidate_domain, normalize_
 
 PUBLIC_URL_RE = re.compile(r"https?://[^\s<>\"')\]}]+", re.IGNORECASE)
 BROWSER_SEARCH_MODEL = "openai/gpt-oss-20b"
+RETIRED_COMPOUND_MODELS = {"groq/compound", "groq/compound-mini"}
 
 
 class GroqCompoundClient:
@@ -20,7 +21,9 @@ class GroqCompoundClient:
         self.model = settings.groq_model
         self.model_version = settings.groq_model_version
         self.timeout_seconds = min(settings.groq_timeout_seconds, 30)
-        self._use_browser_search = False
+        # Groq retired both Compound systems on 2026-09-21. Keep existing
+        # deployments working through the supported browser-search backend.
+        self._use_browser_search = self.model == BROWSER_SEARCH_MODEL or self.model in RETIRED_COMPOUND_MODELS
 
     @property
     def available(self) -> bool:

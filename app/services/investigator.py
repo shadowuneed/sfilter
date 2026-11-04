@@ -3079,17 +3079,81 @@ Critical local-search behavior:
                     {"findings": findings_count, "screenshots_saved": queue_index - 1},
                 )
                 return False
-            await self._capture_and_store_screenshot(
+            captured = await self._capture_screenshot_with_stop(
                 run_id,
                 finding_id,
                 finding,
                 screenshot_semaphore,
+                cancel_event,
             )
+            if not captured:
+                self.db.update_run(
+                    run_id,
+                    status="canceled",
+                    finished_at=utc_now(),
+                    finding_count=findings_count,
+                    candidate_count=checked_total,
+                )
+                self.db.add_log(
+                    run_id,
+                    "warning",
+                    "Проверка остановлена пользователем во время сохранения скриншотов",
+                    {"findings": findings_count, "screenshots_saved": queue_index - 1},
+                )
+                return False
             if queue_index < len(screenshot_queue):
                 await asyncio.sleep(0.1)
         screenshot_queue.clear()
         gc.collect()
         return True
+
+    async def _capture_screenshot_with_stop(
+        self,
+        run_id: int,
+        finding_id: int,
+        finding: dict[str, Any],
+        semaphore: asyncio.Semaphore,
+        cancel_event: Event | None,
+    ) -> bool:
+        task = asyncio.create_task(
+            self._capture_and_store_screenshot(run_id, finding_id, finding, semaphore)
+        )
+        loop = asyncio.get_running_loop()
+        # Allow the screenshot service a short cleanup margin after its own deadline.
+        deadline = loop.time() + max(0.01, float(self.settings.screenshot_timeout_seconds)) + 0.25
+        timed_out = False
+        try:
+            while True:
+                if cancel_event and cancel_event.is_set():
+                    return False
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                done, _ = await asyncio.wait({task}, timeout=min(0.1, remaining))
+                if done:
+                    await task
+                    return not (cancel_event and cancel_event.is_set())
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.wait({task}, timeout=0.25)
+            if task.done():
+                if not task.cancelled():
+                    task.exception()
+            else:
+                # Retrieve a delayed cleanup error without blocking the search worker.
+                task.add_done_callback(lambda finished: None if finished.cancelled() else finished.exception())
+        if timed_out:
+            message = f"Таймаут сохранения скриншота ({self.settings.screenshot_timeout_seconds} сек.)"
+            self.db.update_finding_screenshot(finding_id, None, message)
+            self.db.add_log(
+                run_id,
+                "warning",
+                "Скриншот не завершился вовремя: продолжаю поиск",
+                {"finding_id": finding_id, "domain": finding.get("domain"), "error": message},
+            )
+        return not (cancel_event and cancel_event.is_set())
 
     def repair_pending_screenshots(self, run_id: int) -> bool:
         return asyncio.run(self._repair_pending_screenshots(run_id))
