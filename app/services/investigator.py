@@ -9,6 +9,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from io import StringIO
+from itertools import islice
 from pathlib import Path
 from threading import Event, Lock
 from typing import Any, Iterable, Iterator
@@ -2677,7 +2678,9 @@ Critical local-search behavior:
                     break
                 remaining = max_candidates - len(candidates)
                 try:
-                    response = await client.get(source["url"])
+                    response = await self._fetch_osint_source(client, source["url"], timeout, cancel_event)
+                    if response is None:
+                        break
                     response.raise_for_status()
                 except Exception as exc:  # noqa: BLE001
                     self.db.add_log(
@@ -2692,16 +2695,26 @@ Critical local-search behavior:
                     break
 
                 selected, matching, skipped = self._bounded_feed_sample(
-                    self._iter_feed_tokens(response.text, source["parser"]),
+                    self._iter_feed_tokens(
+                        response.text,
+                        source["parser"],
+                        page=feed_page,
+                        line_limit=20_000,
+                    ),
                     source,
                     effective_mode,
                     remaining,
                     feed_page,
+                    cancel_event=cancel_event,
                 )
                 del response
+                if cancel_event and cancel_event.is_set():
+                    return []
 
                 added = 0
                 for token in selected:
+                    if cancel_event and cancel_event.is_set():
+                        return []
                     if len(candidates) >= max_candidates:
                         break
                     domain = extract_domain(token)
@@ -2735,9 +2748,41 @@ Critical local-search behavior:
                         "selected": len(selected),
                         "added": added,
                         "skipped": skipped,
+                        "feed_page": feed_page,
+                        "line_limit": 20_000,
                     },
                 )
-        return candidates
+        return [] if cancel_event and cancel_event.is_set() else candidates
+
+    @staticmethod
+    async def _fetch_osint_source(
+        client: httpx.AsyncClient,
+        url: str,
+        timeout: float,
+        cancel_event: Event | None,
+    ) -> httpx.Response | None:
+        task = asyncio.create_task(client.get(url))
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.01, float(timeout))
+        try:
+            while True:
+                if cancel_event and cancel_event.is_set():
+                    return None
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise TimeoutError(f"OSINT source exceeded total download limit ({timeout:g} sec.)")
+                done, _ = await asyncio.wait({task}, timeout=min(0.1, remaining))
+                if done:
+                    return task.result()
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.wait({task}, timeout=0.1)
+            if task.done():
+                if not task.cancelled():
+                    task.exception()
+            else:
+                task.add_done_callback(lambda finished: None if finished.cancelled() else finished.exception())
 
     def _bounded_feed_sample(
         self,
@@ -2746,6 +2791,8 @@ Critical local-search behavior:
         effective_mode: str,
         limit: int,
         page: int = 0,
+        *,
+        cancel_event: Event | None = None,
     ) -> tuple[list[str], int, int]:
         if limit <= 0:
             return [], 0, 0
@@ -2763,6 +2810,8 @@ Critical local-search behavior:
         regional_seen = 0
 
         for token in tokens:
+            if cancel_event and cancel_event.is_set():
+                break
             domain = extract_domain(token)
             key = registered_domain(domain)
             if not is_candidate_domain(domain) or not key:
@@ -2864,9 +2913,25 @@ Critical local-search behavior:
     def _feed_tokens(self, text: str, parser: str) -> list[str]:
         return list(self._iter_feed_tokens(text, parser))
 
-    def _iter_feed_tokens(self, text: str, parser: str) -> Iterator[str]:
+    def _iter_feed_tokens(
+        self,
+        text: str,
+        parser: str,
+        *,
+        page: int = 0,
+        line_limit: int | None = None,
+    ) -> Iterator[str]:
+        def window(rows):
+            if line_limit is None:
+                return rows
+            limit = max(1, int(line_limit))
+            line_count = text.count("\n") + int(bool(text) and not text.endswith("\n"))
+            windows = max(1, (line_count + limit - 1) // limit)
+            offset = (max(0, int(page)) % windows) * limit
+            return islice(rows, offset, offset + limit)
+
         if parser == "csv":
-            rows = csv.reader(StringIO(text))
+            rows = window(csv.reader(StringIO(text)))
             for row in rows:
                 if not row or str(row[0]).lstrip().startswith("#"):
                     continue
@@ -2874,7 +2939,7 @@ Critical local-search behavior:
                     yield from self._domains_or_urls_from_text(cell)
             return
 
-        for raw_line in StringIO(text):
+        for raw_line in window(StringIO(text)):
             line = raw_line.strip()
             if not line or line.startswith(("#", "!", "//")):
                 continue
