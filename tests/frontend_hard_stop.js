@@ -266,6 +266,16 @@ test("frozen browser mode explains capture preparation and separate content read
   assert.ok(!h.elements.screenshotModeHint.textContent.includes("JavaScript отключён"));
 });
 
+test("native browser mode retains real screenshots and makes completeness review explicit", async () => {
+  const h = harness();
+  h.health = { low_memory_mode: true, screenshot_runtime: { javascript_enabled: true, capture_mode: "browser-native" }, kz_proxy_ready: true };
+  await h.ui.loadHealth();
+  assert.equal(h.elements.takeScreenshots.checked, true);
+  assert.equal(h.elements.takeScreenshots.disabled, false);
+  assert.ok(h.elements.screenshotModeHint.textContent.includes("фактический кадр браузера"));
+  assert.ok(h.elements.screenshotModeHint.textContent.includes("полнота загрузки"));
+});
+
 test("legacy health leaves the screenshot checkbox choice unchanged", async () => {
   const h = harness();
   await h.ui.loadHealth();

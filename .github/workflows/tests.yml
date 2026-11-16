@@ -26,3 +26,30 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: python -B -m unittest discover -s tests
+
+  native-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install browser test dependencies
+        run: |
+          pip install -r requirements.txt
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libatomic1
+          python -m playwright install --with-deps chromium
+
+      - name: Verify native Chromium rendering and hard stop on Linux
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          QALQAN_RUN_BROWSER_TESTS: "1"
+        run: python -B -m unittest tests.test_native_browser_integration tests.test_screenshot_static_browser

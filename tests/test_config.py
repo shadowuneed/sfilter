@@ -9,6 +9,17 @@ from app.config import _api_keys_from_env, _bool_env, _first_env, _optional_env,
 
 class ConfigTests(unittest.TestCase):
     @patch("app.config._load_dotenv", lambda: None)
+    def test_screenshot_backend_defaults_to_auto_and_validates_explicit_choice(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(get_settings().screenshot_backend, "auto")
+        for backend in ("native", "playwright", "auto"):
+            with patch.dict(os.environ, {"SCREENSHOT_BACKEND": backend.upper()}, clear=True):
+                self.assertEqual(get_settings().screenshot_backend, backend)
+        with patch.dict(os.environ, {"SCREENSHOT_BACKEND": "unknown"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "SCREENSHOT_BACKEND"):
+                get_settings()
+
+    @patch("app.config._load_dotenv", lambda: None)
     def test_browser_javascript_is_enabled_by_default_and_can_be_disabled_explicitly(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             self.assertTrue(get_settings().screenshot_javascript_enabled)

@@ -37,6 +37,7 @@ class RuntimeLimitsTests(unittest.TestCase):
         self.assertTrue(effective.screenshots_enabled)
         self.assertTrue(effective.browser_screenshots_enabled)
         self.assertTrue(effective.screenshot_javascript_enabled)
+        self.assertEqual(effective.screenshot_backend, "native")
         self.assertTrue(effective.screenshot_freeze_after_render)
         self.assertTrue(effective.screenshot_fallback_enabled)
         self.assertEqual(self.settings.scan_concurrency, 3)
@@ -91,6 +92,16 @@ class RuntimeLimitsTests(unittest.TestCase):
                 self.assertIs(effective, configured)
                 self.assertFalse(info["low_memory_mode"])
                 self.assertEqual(effective.screenshot_javascript_enabled, javascript)
+
+    def test_auto_backend_uses_native_only_for_known_low_memory_and_preserves_explicit_choice(self):
+        for memory in (512, 2048):
+            self.v2.write_text(str(memory * MIB), encoding="ascii")
+            for backend in ("auto", "native", "playwright"):
+                with self.subTest(memory=memory, backend=backend):
+                    configured = replace(self.settings, screenshot_backend=backend)
+                    effective, _ = self.apply(configured)
+                    expected = "native" if memory == 512 and backend == "auto" else backend
+                    self.assertEqual(effective.screenshot_backend, expected)
 
     def test_threshold_uses_bytes_and_includes_exactly_768_mib(self):
         for limit, low in [(768 * MIB, True), (768 * MIB + 1, False)]:
