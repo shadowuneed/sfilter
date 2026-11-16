@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import unittest
-from unittest.mock import patch
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
 
@@ -10,6 +12,7 @@ os.environ["DATABASE_URL"] = ""
 os.environ.setdefault("DATABASE_PATH", "data/test_api_auth.db")
 
 from app import main
+from app.database import Database
 from app.services.kz_access import KzAccessCheck
 
 
@@ -27,6 +30,26 @@ class ApiAuthTests(unittest.TestCase):
     def setUp(self) -> None:
         set_auth(required=True, token="test-secret")
         set_kz_proxy(required=True, url="http://proxy.kz:8080")
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        database = Database(Path(temporary.name) / "api.db")
+        database.init()
+        database_patch = patch.object(main, "db", database)
+        database_patch.start()
+        self.addCleanup(database_patch.stop)
+        self.manager = Mock()
+        # Tests which read a queued fixture represent an owned live process.
+        # Orphan recovery has dedicated negative cases in test_run_lifecycle.
+        self.manager.is_running.return_value = True
+        manager_patch = patch.object(main, "worker_manager", self.manager)
+        manager_patch.start()
+        self.addCleanup(manager_patch.stop)
+        repair_patch = patch.object(main, "_start_screenshot_repair", return_value=False)
+        repair_patch.start()
+        self.addCleanup(repair_patch.stop)
+        repair_flag_patch = patch.object(main, "_allow_screenshot_repair", False)
+        repair_flag_patch.start()
+        self.addCleanup(repair_flag_patch.stop)
         self.client = TestClient(main.app)
 
     def tearDown(self) -> None:
@@ -92,6 +115,34 @@ class ApiAuthTests(unittest.TestCase):
         response = self.client.post("/api/manual-check", json={"target": "example.com"})
 
         self.assertEqual(response.status_code, 401)
+
+    def test_hard_stop_all_rejects_missing_token_without_touching_workers(self) -> None:
+        response = self.client.post("/api/runs/cancel-all")
+
+        self.assertEqual(response.status_code, 401)
+        self.manager.stop_all.assert_not_called()
+
+    def test_hard_stop_all_accepts_bearer_token(self) -> None:
+        response = self.client.post(
+            "/api/runs/cancel-all", headers={"Authorization": "Bearer test-secret"}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["run_ids"], [])
+        self.assertTrue(response.json()["force"])
+        self.manager.stop_all.assert_called_once_with()
+
+    def test_hard_stop_failure_returns_503_and_keeps_retryable_state(self) -> None:
+        run_id = main.db.create_run("stop fixture", 100, False)
+        self.manager.force_stop.side_effect = TimeoutError("fixture")
+
+        response = self.client.post(
+            f"/api/runs/{run_id}/cancel", headers={"Authorization": "Bearer test-secret"}
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(main.db.get_run(run_id)["status"], "canceling")
+        self.assertIsNone(main.db.get_run(run_id)["finished_at"])
 
     def test_protected_api_accepts_bearer_token(self) -> None:
         response = self.client.get("/api/runs", headers={"Authorization": "Bearer test-secret"})
@@ -170,15 +221,14 @@ class ApiAuthTests(unittest.TestCase):
         self.assertEqual([item["message"] for item in response.json()["logs"]], ["third"])
         self.assertGreater(response.json()["log_cursor"], cursor)
 
-    def test_finished_thread_clears_live_logs(self) -> None:
+    def test_finished_worker_clears_live_logs(self) -> None:
         run_id = main.db.create_run(seed_query="live logs", max_candidates=1, take_screenshots=False)
 
-        def finish_run() -> None:
-            main.db.add_log(run_id, "info", "visible while running")
-            main.db.add_log(run_id, "error", "stored after completion")
-            main.db.update_run(run_id, status="completed")
+        main.db.add_log(run_id, "info", "visible while running")
+        main.db.add_log(run_id, "error", "stored after completion")
+        main.db.update_run(run_id, status="completed")
 
-        main._thread_entry(run_id, finish_run, ())
+        main._worker_finished(run_id, exit_code=0, force_stopped=False)
 
         self.assertEqual(
             [item["message"] for item in main.db.list_logs(run_id)],
