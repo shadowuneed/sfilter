@@ -36,7 +36,8 @@ class RuntimeLimitsTests(unittest.TestCase):
         self.assertEqual(effective.screenshot_concurrency, 1)
         self.assertTrue(effective.screenshots_enabled)
         self.assertTrue(effective.browser_screenshots_enabled)
-        self.assertFalse(effective.screenshot_javascript_enabled)
+        self.assertTrue(effective.screenshot_javascript_enabled)
+        self.assertTrue(effective.screenshot_freeze_after_render)
         self.assertTrue(effective.screenshot_fallback_enabled)
         self.assertEqual(self.settings.scan_concurrency, 3)
         self.assertEqual(self.settings.screenshot_concurrency, 3)
@@ -62,18 +63,24 @@ class RuntimeLimitsTests(unittest.TestCase):
                 self.assertEqual(effective.browser_screenshots_enabled, browser)
                 self.assertEqual(effective.screenshot_fallback_enabled, fallback)
 
-    def test_verified_low_memory_gives_cold_browser_a_bounded_45_second_budget(self):
+    def test_verified_low_memory_gives_render_and_freeze_a_bounded_90_second_budget(self):
         self.v2.write_text(str(512 * MIB), encoding="ascii")
         effective, info = self.apply()
         self.assertTrue(info["low_memory_mode"])
-        self.assertEqual(effective.screenshot_timeout_seconds, 45)
+        self.assertEqual(effective.screenshot_timeout_seconds, 90)
         self.assertEqual(self.settings.screenshot_timeout_seconds, 10)
 
     def test_low_memory_preserves_a_longer_explicit_screenshot_budget(self):
         self.v2.write_text(str(512 * MIB), encoding="ascii")
-        configured = replace(self.settings, screenshot_timeout_seconds=60)
+        configured = replace(self.settings, screenshot_timeout_seconds=120)
         effective, _ = self.apply(configured)
-        self.assertEqual(effective.screenshot_timeout_seconds, 60)
+        self.assertEqual(effective.screenshot_timeout_seconds, 120)
+
+    def test_low_memory_preserves_explicitly_disabled_javascript_without_freezing(self):
+        self.v2.write_text(str(512 * MIB), encoding="ascii")
+        effective, _ = self.apply(replace(self.settings, screenshot_javascript_enabled=False))
+        self.assertFalse(effective.screenshot_javascript_enabled)
+        self.assertFalse(effective.screenshot_freeze_after_render)
 
     def test_large_container_preserves_explicit_browser_javascript_choice(self):
         self.v2.write_text(str(2048 * MIB), encoding="ascii")

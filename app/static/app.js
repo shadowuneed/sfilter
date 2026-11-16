@@ -722,12 +722,14 @@ function setHealthDetailsOpen(open) {
 async function loadHealth() {
   try {
     const health = await api("/api/health");
-    const staticCaptureHint = health.screenshot_runtime?.javascript_enabled === false
-      ? " Снимки внешних сайтов: HTML, CSS и изображения; JavaScript отключён."
-      : "";
+    const captureModeHint = health.screenshot_runtime?.capture_mode === "browser-frozen"
+      ? " Перед снимком внешнего сайта JavaScript приостанавливается после отрисовки содержимого."
+      : health.screenshot_runtime?.javascript_enabled === false
+        ? " Снимки внешних сайтов: HTML, CSS и изображения; JavaScript отключён."
+        : "";
     const lowMemoryHint = health.low_memory_mode
-      ? `Режим 512 МБ: проверки и скриншоты выполняются по одному.${staticCaptureHint}`
-      : staticCaptureHint.trim();
+      ? `Режим 512 МБ: проверки и скриншоты выполняются по одному.${captureModeHint}`
+      : captureModeHint.trim();
     if (els.takeScreenshots) {
       els.takeScreenshots.disabled = false;
       els.takeScreenshots.title = lowMemoryHint;
@@ -1856,7 +1858,9 @@ function positiveSignals(finding) {
       ? "Сохранена резервная карточка доказательств; снимок сайта не получен"
       : String(evidence.screenshot_error || "").includes("JavaScript disabled")
         ? "Сохранен снимок HTML/CSS страницы с изображениями, без JavaScript"
-        : "Скриншот страницы сохранен");
+        : String(evidence.screenshot_error || "").includes("JavaScript was paused")
+          ? "Скриншот страницы сохранен после приостановки JavaScript"
+          : "Скриншот страницы сохранен");
   }
   if (evidence.response_time_ms && evidence.response_time_ms < 1500) signals.push(`Быстрый ответ: ${formatResponseTime(evidence.response_time_ms)}`);
   if (evidence.access_origin) signals.push(`Проверено через: ${evidence.access_origin}`);

@@ -173,6 +173,7 @@ class Settings:
     screenshots_enabled: bool = True
     browser_screenshots_enabled: bool = True
     screenshot_javascript_enabled: bool = True
+    screenshot_freeze_after_render: bool = False
     screenshot_fallback_enabled: bool = True
     screenshot_concurrency: int = 1
     osint_feeds_enabled: bool = True

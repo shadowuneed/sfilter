@@ -256,6 +256,88 @@ class ScreenshotDeadlineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("navigation warning", result.error)
         self.assertNotIn("fallback evidence image", result.error)
 
+    async def test_freeze_waits_for_visible_content_before_pausing_and_capturing(self) -> None:
+        self.service.settings = replace(self.settings, screenshot_freeze_after_render=True)
+        operations = []
+
+        async def content(*args, **kwargs):
+            operations.append("visible content")
+            return {"ready": True, "text_length": 100, "large_image_count": 2}
+
+        async def command(method, params=None):
+            operations.append(method)
+            return {"data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/l6wG6QAAAABJRU5ErkJggg=="}
+
+        self.page.evaluate = AsyncMock(side_effect=content)
+        self.cdp.send.side_effect = command
+
+        result = await self._bounded_result(asyncio.create_task(self.service.capture("https://example.com", 7)))
+
+        self.assertEqual(operations, ["visible content", "Emulation.setScriptExecutionDisabled", "Page.captureScreenshot"])
+        self.assertTrue(self.browser.new_context.await_args.kwargs["java_script_enabled"])
+        self.assertIn("JavaScript was paused", result.error)
+        self.assertEqual(result.path, "evidence/test.png")
+
+    async def test_late_ready_content_can_use_reserved_time_to_create_session_and_freeze(self) -> None:
+        self.service.settings = replace(self.settings, screenshot_timeout_seconds=90, screenshot_freeze_after_render=True)
+        clock = {"now": 100.0}
+
+        async def late_content(*args):
+            clock["now"] = 174.99  # Content arrives just before the 75-second readiness boundary.
+            return True
+
+        async def create_session(*args):
+            clock["now"] += 0.1  # Session setup legitimately crosses that boundary.
+            return self.cdp
+
+        async def within_deadline(operation, deadline, **kwargs):
+            if clock["now"] >= deadline:
+                operation.close()
+                raise TimeoutError("fixture deadline exhausted")
+            return await operation
+
+        self.service._wait_for_visible_content = AsyncMock(side_effect=late_content)
+        self.service._within_deadline = within_deadline
+        self.context.new_cdp_session.side_effect = create_session
+        self.cdp.send.return_value = {"data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/l6wG6QAAAABJRU5ErkJggg=="}
+        # Every operation is in-memory and immediate; the synthetic clock never
+        # schedules real event-loop timers or relies on wall-clock sleeps.
+        with patch("app.services.screenshots.asyncio.get_running_loop", return_value=SimpleNamespace(time=lambda: clock["now"])):
+            result = await self.service.capture("https://example.com", 7)
+
+        self.assertEqual(result.path, "evidence/test.png", "Readiness must not consume the separate freeze/capture reserve")
+        self.cdp.send.assert_any_await("Emulation.setScriptExecutionDisabled", {"value": True})
+        self.assertGreaterEqual(190 - clock["now"], 10, "At least ten seconds remain for actual PNG capture")
+
+    async def test_loading_skeleton_is_not_accepted_as_a_successful_frozen_screenshot(self) -> None:
+        self.service.settings = replace(self.settings, screenshot_freeze_after_render=True)
+        self.page.evaluate = AsyncMock(return_value={"ready": False, "text_length": 10, "large_image_count": 1})
+
+        result = await self._bounded_result(asyncio.create_task(self.service.capture("https://example.com", 7)))
+
+        self.assertIsNone(result.path)
+        self.assertIn("insufficient visible main content", result.error)
+        self.service._capture_result.assert_not_called()
+        self.cdp.send.assert_not_awaited()
+        self._assert_slot_released()
+
+    async def test_stop_interrupts_content_readiness_wait_and_cleans_up(self) -> None:
+        self.service.settings = replace(self.settings, screenshot_freeze_after_render=True)
+        reached = asyncio.Event()
+
+        async def pending_content(*args, **kwargs):
+            reached.set()
+            await self._hang()
+
+        self.page.evaluate = AsyncMock(side_effect=pending_content)
+        task = asyncio.create_task(self.service.capture("https://example.com", 7))
+        await asyncio.wait_for(reached.wait(), timeout=0.2)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await self._bounded_result(task)
+        self.manager.__aexit__.assert_awaited()
+        self._assert_slot_released()
+
     async def test_hanging_close_cannot_prevent_success_or_leak_slot(self) -> None:
         self.context.close.side_effect = self._hang
 

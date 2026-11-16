@@ -250,6 +250,17 @@ test("evidence facts distinguish a rendered screenshot from a fallback card", ()
   assert.ok(!fallback.includes("Скриншот страницы сохранен"));
   const staticCapture = h.ui.positiveSignals({ ...finding, evidence: { screenshot_error: "Browser screenshot captured with JavaScript disabled (HTML, CSS and images)" } });
   assert.ok(staticCapture.some((value) => value.includes("снимок HTML/CSS страницы")));
+  const frozenCapture = h.ui.positiveSignals({ ...finding, evidence: { screenshot_error: "Browser screenshot captured after JavaScript was paused; dynamic content may be incomplete" } });
+  assert.ok(frozenCapture.some((value) => value.includes("после приостановки JavaScript")));
+});
+
+test("frozen browser mode explains that page contents render before scripts are paused", async () => {
+  const h = harness();
+  h.health = { low_memory_mode: true, screenshot_runtime: { javascript_enabled: true, capture_mode: "browser-frozen" }, kz_proxy_ready: true };
+  await h.ui.loadHealth();
+  assert.equal(h.elements.takeScreenshots.disabled, false);
+  assert.ok(h.elements.screenshotModeHint.textContent.includes("после отрисовки содержимого"));
+  assert.ok(!h.elements.screenshotModeHint.textContent.includes("JavaScript отключён"));
 });
 
 test("legacy health leaves the screenshot checkbox choice unchanged", async () => {

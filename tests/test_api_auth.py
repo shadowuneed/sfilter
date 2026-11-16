@@ -42,12 +42,19 @@ class ApiAuthTests(unittest.TestCase):
         # Orphan recovery has dedicated negative cases in test_run_lifecycle.
         self.manager.is_running.return_value = True
         self.manager.running_ids.return_value = []
+        self.manager.stop_all.return_value = []
         manager_patch = patch.object(main, "worker_manager", self.manager)
         manager_patch.start()
         self.addCleanup(manager_patch.stop)
         stop_intent_patch = patch.object(main, "_hard_stop_requested_run_ids", {})
         stop_intent_patch.start()
         self.addCleanup(stop_intent_patch.stop)
+        owned_patch = patch.object(main, "_owned_run_ids", set(), create=True)
+        owned_patch.start()
+        self.addCleanup(owned_patch.stop)
+        stopping_patch = patch.object(main, "_server_stopping", False, create=True)
+        stopping_patch.start()
+        self.addCleanup(stopping_patch.stop)
         repair_patch = patch.object(main, "_start_screenshot_repair", return_value=False)
         repair_patch.start()
         self.addCleanup(repair_patch.stop)
@@ -138,6 +145,7 @@ class ApiAuthTests(unittest.TestCase):
 
     def test_hard_stop_failure_returns_503_and_keeps_retryable_state(self) -> None:
         run_id = main.db.create_run("stop fixture", 100, False)
+        main._owned_run_ids.add(run_id)
         self.manager.force_stop.side_effect = TimeoutError("fixture")
 
         response = self.client.post(

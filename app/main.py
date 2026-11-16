@@ -29,6 +29,8 @@ investigator = Investigator(settings, db, gemini)
 exporter = Exporter(settings, db)
 run_launch_lock = threading.RLock()
 _allow_screenshot_repair = True
+_server_stopping = False
+_owned_run_ids: set[int] = set()
 _hard_stop_requested_run_ids: dict[int, None] = {}
 _STOP_INTENT_LIMIT = 128
 
@@ -99,10 +101,20 @@ def _remember_stop_requests(run_ids: Any) -> None:
         _hard_stop_requested_run_ids.pop(oldest, None)
 
 
+def _local_run_ids_for_stop() -> set[int]:
+    return (_owned_run_ids | set(_hard_stop_requested_run_ids)
+            | set(worker_manager.running_ids()))
+
+
 def _worker_finished(run_id: int, exit_code: int | None, force_stopped: bool) -> None:
     if run_id == 0:  # Screenshot repair does not own a runs-table row.
         return
     with run_launch_lock:
+        # A retiring pod may share the runs table with its replacement, which
+        # can already have resumed this same ID. Stop local processes only;
+        # a late callback from the retiring pod must not finalize that new run.
+        if _server_stopping:
+            return
         try:
             run = db.get_run(run_id)
             if run and run["status"] in {"queued", "running", "canceling"}:
@@ -122,11 +134,13 @@ def _worker_finished(run_id: int, exit_code: int | None, force_stopped: bool) ->
                 run = db.get_run(run_id)
             if run and run["status"] not in {"queued", "running", "canceling"}:
                 _hard_stop_requested_run_ids.pop(run_id, None)
+                _owned_run_ids.discard(run_id)
                 removed = db.finish_run_logs(run_id)
                 if removed:
                     print(f"run={run_id} cleared_legacy_logs={removed}", flush=True)
             elif run is None:
                 _hard_stop_requested_run_ids.pop(run_id, None)
+                _owned_run_ids.discard(run_id)
         except Exception as exc:  # noqa: BLE001
             print(f"run={run_id} worker_finalize_error={type(exc).__name__}", flush=True)
             return
@@ -142,6 +156,7 @@ def _start_run_worker(run_id: int, job: dict[str, Any]) -> None:
     # Called under run_launch_lock: stop cannot race the interval between the
     # runs-table insert and process registration/start.
     global _allow_screenshot_repair
+    _owned_run_ids.add(run_id)
     try:
         # No active run is admitted here. Also reap a completed worker's
         # remaining browser tree before granting the next job the RAM budget.
@@ -151,6 +166,7 @@ def _start_run_worker(run_id: int, job: dict[str, Any]) -> None:
     except Exception as exc:  # noqa: BLE001
         message = f"Не удалось запустить рабочий процесс: {type(exc).__name__}"
         db.update_active_run(run_id, status="failed", finished_at=utc_now(), error=message)
+        _owned_run_ids.discard(run_id)
         db.add_log(run_id, "error", message)
         raise HTTPException(status_code=503, detail=message) from exc
 
@@ -162,23 +178,33 @@ def _reconcile_finished_runs() -> None:
     # update_active_run also guards against a concurrently completed row.
     active_runs = db.list_active_runs()
     with run_launch_lock:
+        if _server_stopping:
+            return
         for run in active_runs:
             run_id = int(run["id"])
+            # A replacement pod can already own a newer run in this shared
+            # database. Missing from our process registry is not evidence of
+            # a foreign worker's death. Startup handles pre-existing runs.
+            if run_id not in _owned_run_ids and run_id not in _hard_stop_requested_run_ids:
+                continue
             if worker_manager.is_running(run_id):
                 continue
             canceled = run["status"] == "canceling" or run_id in _hard_stop_requested_run_ids
             message = "Проверка остановлена; рабочего процесса больше нет." if canceled else (
                 "Рабочий процесс проверки завершился. Можно начать новый запуск."
             )
-            if db.update_active_run(
+            transitioned = db.update_active_run(
                 run_id,
                 status="canceled" if canceled else "interrupted",
                 finished_at=utc_now(),
                 error=None if canceled else message,
-            ):
+            )
+            # A false guarded update also proves the row is terminal/deleted.
+            _hard_stop_requested_run_ids.pop(run_id, None)
+            _owned_run_ids.discard(run_id)
+            if transitioned:
                 db.add_log(run_id, "warning", message)
                 db.finish_run_logs(run_id)
-                _hard_stop_requested_run_ids.pop(run_id, None)
 
 
 def _normalize_run_target(max_candidates: int) -> int:
@@ -208,7 +234,9 @@ def _start_screenshot_repair() -> bool:
 
 @app.on_event("startup")
 def resume_active_runs_after_restart() -> None:
-    global _allow_screenshot_repair
+    global _allow_screenshot_repair, _server_stopping
+    with run_launch_lock:
+        _server_stopping = False
     if not settings.resume_active_runs:
         db.mark_stale_runs_interrupted()
         return
@@ -278,15 +306,13 @@ def resume_active_runs_after_restart() -> None:
 @app.on_event("shutdown")
 def stop_workers_on_shutdown() -> None:
     # Isolated children must not survive the API process during a deployment.
-    global _allow_screenshot_repair
+    global _allow_screenshot_repair, _server_stopping
     with run_launch_lock:
+        _server_stopping = True
         _allow_screenshot_repair = False
         worker_manager.stop_all()
-        for run in db.list_active_runs():
-            db.update_active_run(
-                int(run["id"]), status="interrupted", finished_at=utc_now(),
-                error="Сервер был остановлен до завершения проверки.",
-            )
+        # Do not rewrite shared database state during a rolling deployment.
+        # The replacement API reconciles/resumes runs after its own startup.
 
 
 @app.middleware("http")
@@ -495,30 +521,43 @@ def manual_check(request: ManualCheckRequest) -> dict[str, Any]:
 def cancel_all_runs() -> dict[str, Any]:
     global _allow_screenshot_repair
     with run_launch_lock:
+        if _server_stopping:
+            raise HTTPException(status_code=503, detail="Сервер обновляется. Повторите остановку после обновления страницы.")
         _allow_screenshot_repair = False
-        _remember_stop_requests(worker_manager.running_ids())
+        local_run_ids = _local_run_ids_for_stop()
+        _remember_stop_requests(local_run_ids)
         try:
             # Stop owned processes before any PostgreSQL/TLS round trip. The
             # launch lock keeps exit callbacks from finalizing midway through.
-            worker_manager.stop_all()
+            stopped_run_ids = worker_manager.stop_all()
+            local_run_ids.update(stopped_run_ids)
+            _remember_stop_requests(stopped_run_ids)
         except Exception as exc:  # noqa: BLE001
             try:
                 runs = db.list_active_runs()
-                _remember_stop_requests(int(run["id"]) for run in runs)
                 for run in runs:
-                    db.update_active_run(int(run["id"]), status="canceling")
+                    if int(run["id"]) in local_run_ids:
+                        db.update_active_run(int(run["id"]), status="canceling")
             except Exception as persistence_error:  # noqa: BLE001
                 print(f"hard_stop_state_error={type(persistence_error).__name__}", flush=True)
             raise HTTPException(
                 status_code=503, detail="Не удалось подтвердить остановку всех процессов. Повторите жёсткий стоп."
             ) from exc
-        runs = db.list_active_runs()
-        _remember_stop_requests(int(run["id"]) for run in runs)
+        active_runs = db.list_active_runs()
+        runs = [run for run in active_runs if int(run["id"]) in local_run_ids]
+        foreign_runs = [run for run in active_runs if int(run["id"]) not in local_run_ids]
         for run in runs:
             run_id = int(run["id"])
             db.update_active_run(run_id, status="canceled", finished_at=utc_now(), error=None)
             _hard_stop_requested_run_ids.pop(run_id, None)
+            _owned_run_ids.discard(run_id)
             db.add_log(run_id, "warning", "Все проверки прерваны жёсткой остановкой")
+        if foreign_runs:
+            raise HTTPException(
+                status_code=503,
+                detail=("Этот экземпляр сервера не владеет частью активных проверок. "
+                        "Их остановка не подтверждена. Обновите страницу и повторите после обновления сервера."),
+            )
         return {"status": "canceled", "run_ids": [int(run["id"]) for run in runs],
                 "stopped_count": len(runs), "force": True}
 
@@ -527,37 +566,56 @@ def cancel_all_runs() -> dict[str, Any]:
 def cancel_run(run_id: int) -> dict[str, Any]:
     global _allow_screenshot_repair
     with run_launch_lock:
+        if _server_stopping:
+            raise HTTPException(status_code=503, detail="Сервер обновляется. Повторите остановку после обновления страницы.")
         _allow_screenshot_repair = False
-        _remember_stop_requests([run_id])
+        locally_owned = run_id in _local_run_ids_for_stop()
+        if locally_owned:
+            _remember_stop_requests([run_id])
         try:
-            worker_manager.force_stop(run_id)
+            if worker_manager.force_stop(run_id):
+                locally_owned = True
+                _remember_stop_requests([run_id])
         except Exception as exc:  # noqa: BLE001
-            try:
-                if not db.update_active_run(run_id, status="canceling"):
-                    _hard_stop_requested_run_ids.pop(run_id, None)
-            except Exception as persistence_error:  # noqa: BLE001
-                print(f"run={run_id} hard_stop_state_error={type(persistence_error).__name__}", flush=True)
+            if locally_owned:
+                try:
+                    if not db.update_active_run(run_id, status="canceling"):
+                        _hard_stop_requested_run_ids.pop(run_id, None)
+                        _owned_run_ids.discard(run_id)
+                except Exception as persistence_error:  # noqa: BLE001
+                    print(f"run={run_id} hard_stop_state_error={type(persistence_error).__name__}", flush=True)
             raise HTTPException(
                 status_code=503, detail="Процесс ещё не остановлен. Повторите жёсткий стоп."
             ) from exc
         run = db.get_run(run_id)
         if not run:
             _hard_stop_requested_run_ids.pop(run_id, None)
+            _owned_run_ids.discard(run_id)
             raise HTTPException(status_code=404, detail="Run not found")
         if run["status"] not in {"queued", "running", "canceling"}:
             _hard_stop_requested_run_ids.pop(run_id, None)
+            _owned_run_ids.discard(run_id)
             return {"run_id": run_id, "status": run["status"], "changed": False, "force": True}
+        if not locally_owned:
+            raise HTTPException(
+                status_code=503,
+                detail=("Этот экземпляр сервера не владеет запуском. Его остановка не подтверждена. "
+                        "Обновите страницу и повторите после обновления сервера."),
+            )
         transitioned = db.update_active_run(run_id, status="canceled", finished_at=utc_now(), error=None)
         if transitioned:
             _hard_stop_requested_run_ids.pop(run_id, None)
+            _owned_run_ids.discard(run_id)
             db.add_log(run_id, "warning", "Проверка прервана жёсткой остановкой")
             return {"run_id": run_id, "status": "canceled", "changed": True, "force": True}
         current = db.get_run(run_id)
         if not current:
             _hard_stop_requested_run_ids.pop(run_id, None)
+            _owned_run_ids.discard(run_id)
             raise HTTPException(status_code=404, detail="Run not found")
         if current["status"] not in {"queued", "running", "canceling"}:
             _hard_stop_requested_run_ids.pop(run_id, None)
+            _owned_run_ids.discard(run_id)
         return {"run_id": run_id, "status": current["status"], "changed": transitioned, "force": True}
 
 
@@ -568,6 +626,7 @@ def list_runs(limit: int = 25) -> dict[str, Any]:
     for run in runs:
         if run["status"] not in {"queued", "running", "canceling"}:
             _hard_stop_requested_run_ids.pop(int(run["id"]), None)
+            _owned_run_ids.discard(int(run["id"]))
     return {"runs": runs}
 
 
@@ -584,9 +643,11 @@ def get_run(
     run = db.get_run(run_id)
     if not run:
         _hard_stop_requested_run_ids.pop(run_id, None)
+        _owned_run_ids.discard(run_id)
         raise HTTPException(status_code=404, detail="Run not found")
     if run["status"] not in {"queued", "running", "canceling"}:
         _hard_stop_requested_run_ids.pop(run_id, None)
+        _owned_run_ids.discard(run_id)
     logs = db.list_logs(
         run_id,
         limit=max(1, min(log_limit, 1000)),

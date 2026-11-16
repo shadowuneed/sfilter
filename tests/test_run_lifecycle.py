@@ -6,6 +6,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import FunctionType
 from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
@@ -38,6 +39,12 @@ class RunLifecycleTests(unittest.TestCase):
         stop_intent_patch = patch.object(main, "_hard_stop_requested_run_ids", {})
         stop_intent_patch.start()
         self.addCleanup(stop_intent_patch.stop)
+        owned_patch = patch.object(main, "_owned_run_ids", set(), create=True)
+        owned_patch.start()
+        self.addCleanup(owned_patch.stop)
+        stopping_patch = patch.object(main, "_server_stopping", False, create=True)
+        stopping_patch.start()
+        self.addCleanup(stopping_patch.stop)
         repair_flag_patch = patch.object(main, "_allow_screenshot_repair", True)
         repair_flag_patch.start()
         self.addCleanup(repair_flag_patch.stop)
@@ -46,6 +53,7 @@ class RunLifecycleTests(unittest.TestCase):
         self.addCleanup(repair_patch.stop)
         self.run_id = self.db.create_run("fixture", 100, True)
         self.db.update_run(self.run_id, status="running")
+        main._owned_run_ids.add(self.run_id)
 
     def test_hard_stop_kills_before_database_transition_and_terminal_afterward(self) -> None:
         statuses_at_kill = []
@@ -81,12 +89,51 @@ class RunLifecycleTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.manager.force_stop.assert_called_once_with(self.run_id)
         self.assertNotIn(self.run_id, main._hard_stop_requested_run_ids)
+        self.assertNotIn(self.run_id, main._owned_run_ids)
 
     def test_canceling_run_without_worker_gets_terminal_status(self) -> None:
         self.db.update_run(self.run_id, status="canceling")
         result = main.cancel_run(self.run_id)
         self.assertEqual(result["status"], "canceled")
         self.assertIsNotNone(self.db.get_run(self.run_id)["finished_at"])
+
+    def test_cancel_does_not_claim_a_foreign_active_worker_was_stopped(self) -> None:
+        main._owned_run_ids.clear()
+        self.manager.force_stop.return_value = False
+
+        with self.assertRaises(HTTPException) as error:
+            main.cancel_run(self.run_id)
+
+        self.assertEqual(error.exception.status_code, 503)
+        self.assertEqual(self.db.get_run(self.run_id)["status"], "running")
+        self.assertIsNone(self.db.get_run(self.run_id)["finished_at"])
+        self.assertNotIn(self.run_id, main._hard_stop_requested_run_ids)
+
+    def test_cancel_all_only_finalizes_owned_workers_and_reports_foreign_runs(self) -> None:
+        foreign_id = self.db.create_run("other pod", 1, True)
+        self.db.update_run(foreign_id, status="running")
+        self.manager.stop_all.return_value = [self.run_id]
+
+        with self.assertRaises(HTTPException) as error:
+            main.cancel_all_runs()
+
+        self.assertEqual(error.exception.status_code, 503)
+        self.assertEqual(self.db.get_run(self.run_id)["status"], "canceled")
+        self.assertEqual(self.db.get_run(foreign_id)["status"], "running")
+        self.assertIsNone(self.db.get_run(foreign_id)["finished_at"])
+        self.assertNotIn(foreign_id, main._hard_stop_requested_run_ids)
+
+    def test_stopping_instance_rejects_stop_without_touching_workers_or_database(self) -> None:
+        main._server_stopping = True
+        with patch.object(self.db, "get_run") as get_run, patch.object(self.db, "list_active_runs") as active_runs:
+            for stop in (lambda: main.cancel_run(self.run_id), main.cancel_all_runs):
+                with self.assertRaises(HTTPException) as error:
+                    stop()
+                self.assertEqual(error.exception.status_code, 503)
+            get_run.assert_not_called()
+            active_runs.assert_not_called()
+        self.manager.force_stop.assert_not_called()
+        self.manager.stop_all.assert_not_called()
 
     def test_failed_kill_does_not_claim_success_or_release_run(self) -> None:
         self.manager.force_stop.side_effect = TimeoutError("fixture process is still alive")
@@ -98,6 +145,7 @@ class RunLifecycleTests(unittest.TestCase):
 
     def test_stop_all_stops_background_repair_and_preserves_saved_findings(self) -> None:
         manual_id = self.db.create_run("manual fixture", 1, True)
+        main._owned_run_ids.add(manual_id)
         self.db.insert_finding(self.run_id, {
             "url": "https://fixture.example", "domain": "fixture.example",
             "normalized_domain": "fixture.example", "category": "casino",
@@ -279,10 +327,12 @@ class RunLifecycleTests(unittest.TestCase):
 
     def test_unknown_run_releases_stop_intent_after_404(self) -> None:
         unknown_id = self.run_id + 100
+        main._owned_run_ids.add(unknown_id)
         with self.assertRaises(HTTPException) as error:
             main.cancel_run(unknown_id)
         self.assertEqual(error.exception.status_code, 404)
         self.assertNotIn(unknown_id, main._hard_stop_requested_run_ids)
+        self.assertNotIn(unknown_id, main._owned_run_ids)
 
     def test_stop_intent_memory_is_bounded_and_ignores_repair_worker(self) -> None:
         main._remember_stop_requests(range(main._STOP_INTENT_LIMIT + 20))
@@ -319,9 +369,11 @@ class RunLifecycleTests(unittest.TestCase):
         with patch.object(self.db, "update_active_run", side_effect=RuntimeError("temporary database failure")):
             main._worker_finished(self.run_id, exit_code=-9, force_stopped=True)
         self.assertEqual(self.db.get_run(self.run_id)["status"], "canceling")
+        self.assertIn(self.run_id, main._owned_run_ids)
         result = main.get_run(self.run_id)
         self.assertEqual(result["run"]["status"], "canceled")
         self.assertIsNotNone(result["run"]["finished_at"])
+        self.assertNotIn(self.run_id, main._owned_run_ids)
 
     def test_poll_does_not_interrupt_a_live_worker_even_if_old(self) -> None:
         self.db.update_run(self.run_id, started_at="2020-01-01T00:00:00+00:00")
@@ -329,6 +381,15 @@ class RunLifecycleTests(unittest.TestCase):
         result = main.list_runs()
         self.assertEqual(result["runs"][0]["status"], "running")
         self.manager.force_stop.assert_not_called()
+
+    def test_poll_does_not_claim_an_unknown_foreign_running_run(self) -> None:
+        main._owned_run_ids.clear()
+
+        result = main.list_runs()
+
+        self.assertEqual(result["runs"][0]["status"], "running")
+        self.assertIsNone(self.db.get_run(self.run_id)["finished_at"])
+        self.manager.is_running.assert_not_called()
 
     def test_launch_failure_is_terminal_instead_of_permanently_queued(self) -> None:
         self.manager.start.side_effect = RuntimeError("process start failed")
@@ -339,6 +400,7 @@ class RunLifecycleTests(unittest.TestCase):
         failed = self.db.list_runs()[0]
         self.assertEqual(failed["status"], "failed")
         self.assertIsNotNone(failed["finished_at"])
+        self.assertNotIn(failed["id"], main._owned_run_ids)
         self.assertEqual(self.db.list_active_runs(), [])
 
     def test_launch_registers_worker_while_cancel_lock_is_held(self) -> None:
@@ -357,6 +419,7 @@ class RunLifecycleTests(unittest.TestCase):
             self.assertFalse(competitor.is_alive())
             self.assertEqual(self.db.get_run(run_id)["status"], "queued")
             self.assertEqual(job["run_id"], run_id)
+            self.assertIn(run_id, main._owned_run_ids)
 
         self.manager.start.side_effect = start
         with patch.object(main, "_ensure_kz_proxy_ready"):
@@ -382,6 +445,44 @@ class RunLifecycleTests(unittest.TestCase):
                 self.assertTrue(response.json()["ok"])
                 self.assertEqual(self.db.get_run(self.run_id)["status"], "failed")
                 self.assertIsNotNone(self.db.get_run(self.run_id)["finished_at"])
+
+    def test_shutdown_stops_processes_without_rewriting_shared_runs(self) -> None:
+        foreign_id = self.db.create_run("new instance", 1, True)
+        self.db.update_run(foreign_id, status="running")
+        self.manager.running_ids.return_value = [self.run_id]
+
+        main.stop_workers_on_shutdown()
+
+        self.manager.stop_all.assert_called_once_with()
+        self.assertEqual(self.db.get_run(foreign_id)["status"], "running")
+        # Even a locally owned ID can already be resumed in the next pod.
+        self.assertEqual(self.db.get_run(self.run_id)["status"], "running")
+        self.assertIsNone(self.db.get_run(foreign_id)["finished_at"])
+
+    def test_old_shutdown_callback_cannot_interrupt_same_id_resumed_in_new_instance(self) -> None:
+        # Separate global namespaces model old/new API processes sharing the
+        # database. The late old callback must not finalize the new worker.
+        old_callback = FunctionType(main._worker_finished.__code__, {
+            **main.__dict__, "_server_stopping": True,
+        })
+        main._server_stopping = True
+        with patch.object(main, "settings", replace(main.settings, resume_active_runs=True)):
+            main.resume_active_runs_after_restart()
+        self.db.update_run(self.run_id, status="running")
+
+        old_callback(self.run_id, exit_code=-9, force_stopped=True)
+
+        self.assertFalse(main._server_stopping)
+        self.assertEqual(self.db.get_run(self.run_id)["status"], "running")
+        self.assertIsNone(self.db.get_run(self.run_id)["finished_at"])
+
+    def test_poll_from_stopping_instance_does_not_reconcile_another_instance_run(self) -> None:
+        main._server_stopping = True
+
+        main.list_runs()
+
+        self.assertEqual(self.db.get_run(self.run_id)["status"], "running")
+        self.assertIsNone(self.db.get_run(self.run_id)["finished_at"])
 
     def test_late_completed_callback_after_stop_does_not_restart_browser_repair(self) -> None:
         # A process can commit its completed row immediately before Stop takes

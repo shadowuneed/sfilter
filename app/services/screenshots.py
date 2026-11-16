@@ -28,6 +28,54 @@ _CLEANUP_TIMEOUT_SECONDS = 0.2
 _LOGGER = logging.getLogger(__name__)
 _Result = TypeVar("_Result")
 
+# Count only visible content in the screenshot's viewport. Header/footer text,
+# hidden SSR nodes and tiny logos must not make a loading skeleton pass.
+_VISIBLE_CONTENT_SCRIPT = """() => {
+  const root = document.querySelector('main, [role="main"]') || document.body;
+  if (!root) return {ready: false, text_length: 0, large_image_count: 0};
+  const visibility = new WeakMap();
+  const visible = (element) => {
+    if (!element || element.closest('header, footer, nav, script, style, noscript, template, [hidden], [aria-hidden="true"]')) return false;
+    let current = element;
+    while (current) {
+      if (visibility.has(current)) { if (!visibility.get(current)) return false; }
+      else {
+        const style = getComputedStyle(current);
+        const shown = style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) !== 0;
+        visibility.set(current, shown);
+        if (!shown) return false;
+      }
+      current = current.parentElement;
+    }
+    return true;
+  };
+  const inViewport = (rect) => rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0 && rect.top < innerHeight && rect.left < innerWidth;
+  const visibleArea = (rect) => Math.max(0, Math.min(rect.right, innerWidth) - Math.max(rect.left, 0)) * Math.max(0, Math.min(rect.bottom, innerHeight) - Math.max(rect.top, 0));
+  let largeImages = 0;
+  for (const image of Array.from(root.querySelectorAll('img')).slice(0, 200)) {
+    const rect = image.getBoundingClientRect();
+    const width = Math.min(rect.right, innerWidth) - Math.max(rect.left, 0);
+    const height = Math.min(rect.bottom, innerHeight) - Math.max(rect.top, 0);
+    if (image.complete && image.naturalWidth >= 80 && image.naturalHeight >= 50 && width >= 80 && height >= 50 && visible(image)) largeImages++;
+    if (largeImages >= 2) break;
+  }
+  let textLength = 0, scanned = 0;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  while (scanned++ < 300 && textLength < 80) {
+    const node = walker.nextNode();
+    if (!node) break;
+    const text = node.textContent.trim();
+    if (!text || !visible(node.parentElement)) continue;
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    const rects = Array.from(range.getClientRects());
+    const totalArea = rects.reduce((sum, rect) => sum + rect.width * rect.height, 0);
+    const shownArea = rects.filter(inViewport).reduce((sum, rect) => sum + visibleArea(rect), 0);
+    if (totalArea > 0) textLength += Math.floor(text.length * shownArea / totalArea);
+  }
+  return {ready: textLength >= 80 || largeImages >= 2, text_length: textLength, large_image_count: largeImages};
+}"""
+
 
 _MINIMAL_PNG_BASE64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/"
@@ -55,13 +103,16 @@ class ScreenshotService:
         mode = "disabled"
         if self.settings.screenshots_enabled:
             if self.settings.browser_screenshots_enabled:
-                mode = "browser-javascript" if self.settings.screenshot_javascript_enabled else "browser-static"
+                mode = "browser-static"
+                if self.settings.screenshot_javascript_enabled:
+                    mode = "browser-frozen" if self.settings.screenshot_freeze_after_render else "browser-javascript"
             elif self.settings.screenshot_fallback_enabled:
                 mode = "fallback-evidence"
         status: dict[str, Any] = {
             "enabled": self.settings.screenshots_enabled,
             "browser_enabled": self.settings.browser_screenshots_enabled,
             "javascript_enabled": self.settings.screenshot_javascript_enabled,
+            "freeze_after_render": self.settings.screenshot_freeze_after_render,
             "capture_mode": mode,
             "fallback_enabled": self.settings.screenshot_fallback_enabled,
             "concurrency": self.settings.screenshot_concurrency,
@@ -176,6 +227,8 @@ class ScreenshotService:
         process_scope = None
         process_tracking_failed = False
         stage = "waiting for browser slot"
+        javascript_paused = False
+        capture_client = None
         try:
             while not self._browser_slots.acquire(blocking=False):
                 await self._within_deadline(asyncio.sleep(0.2), operation_deadline)
@@ -260,12 +313,30 @@ class ScreenshotService:
                 stage = "settling browser viewport"
                 settle_seconds = min(settle_ms / 1000, max(0.0, operation_deadline - loop.time()) * 0.1)
                 await self._within_deadline(asyncio.sleep(settle_seconds), operation_deadline)
+            if self.settings.screenshot_freeze_after_render and self.settings.screenshot_javascript_enabled:
+                # Verified low-memory settings provide 90 seconds overall and
+                # reserve at least 15 seconds for capture after content is ready.
+                capture_reserve = min(15.0, timeout_seconds / 3)
+                readiness_deadline = operation_deadline - capture_reserve
+                stage = "waiting for visible page content"
+                if not await self._wait_for_visible_content(page, readiness_deadline):
+                    raise TimeoutError("Page is still loading: insufficient visible main content; no usable browser screenshot captured")
+                stage = "pausing JavaScript after rendering"
+                # Session setup and pause may use a little of the reserved time
+                # when content becomes ready at the last moment. Keep at least
+                # ten seconds for PNG on the 90-second low-memory budget.
+                freeze_deadline = min(operation_deadline - min(10.0, timeout_seconds / 4), loop.time() + 3.0)
+                capture_client = await self._within_deadline(context.new_cdp_session(page), freeze_deadline)
+                await self._within_deadline(capture_client.send(
+                    "Emulation.setScriptExecutionDisabled", {"value": True},
+                ), freeze_deadline)
+                javascript_paused = True
             stage = "capturing CDP browser PNG"
             try:
                 capture_deadline = loop.time() + min(15.0, max(0.0, operation_deadline - loop.time()) * 0.75)
                 # Capture the genuine rendered viewport without Playwright's
                 # font-readiness/animation traversal holding a small container.
-                client = await self._within_deadline(context.new_cdp_session(page), capture_deadline)
+                client = capture_client or await self._within_deadline(context.new_cdp_session(page), capture_deadline)
                 capture = await self._within_deadline(client.send(
                     "Page.captureScreenshot",
                     {"format": "png", "fromSurface": True, "captureBeyondViewport": False, "optimizeForSpeed": True},
@@ -273,7 +344,7 @@ class ScreenshotService:
                 output.write_bytes(base64.b64decode(capture["data"]))
                 result = self._capture_result(output, rel_path)
                 if result.path or not self.settings.screenshot_fallback_enabled:
-                    return self._with_browser_warnings(result, navigation_error)
+                    return self._with_browser_warnings(result, navigation_error, javascript_paused)
                 return self._fallback_result(
                     output,
                     rel_path,
@@ -304,7 +375,7 @@ class ScreenshotService:
                     output.write_bytes(base64.b64decode(capture["data"]))
                 result = self._capture_result(output, rel_path)
                 if result.path or not self.settings.screenshot_fallback_enabled:
-                    return self._with_browser_warnings(result, navigation_error)
+                    return self._with_browser_warnings(result, navigation_error, javascript_paused)
                 return self._fallback_result(
                     output,
                     rel_path,
@@ -485,12 +556,28 @@ class ScreenshotService:
         output.parent.mkdir(parents=True, exist_ok=True)
         image.save(output, format="PNG")
 
-    def _with_browser_warnings(self, result: ScreenshotResult, navigation_error: Exception | None) -> ScreenshotResult:
+    async def _wait_for_visible_content(self, page: Any, deadline: float) -> bool:
+        loop = asyncio.get_running_loop()
+        while loop.time() < deadline:
+            try:
+                content = await self._within_deadline(page.evaluate(_VISIBLE_CONTENT_SCRIPT), min(deadline, loop.time() + 2.0))
+                if isinstance(content, dict) and content.get("ready") is True:
+                    return True
+            except Exception:
+                # Navigation may replace the execution context while the SPA
+                # hydrates. Retry within the same finite readiness budget.
+                pass
+            await asyncio.sleep(min(0.5, max(0.0, deadline - loop.time())))
+        return False
+
+    def _with_browser_warnings(self, result: ScreenshotResult, navigation_error: Exception | None, javascript_paused: bool = False) -> ScreenshotResult:
         if not result.path:
             return result
         warnings = [result.error] if result.error else []
         if not self.settings.screenshot_javascript_enabled:
             warnings.append("Browser screenshot captured with JavaScript disabled (HTML, CSS and images); dynamic content may be missing")
+        elif javascript_paused:
+            warnings.append("Browser screenshot captured after JavaScript was paused; dynamic content may be incomplete")
         if navigation_error:
             warnings.append(f"navigation warning: {type(navigation_error).__name__}: {navigation_error}")
         return ScreenshotResult(path=result.path, error="; ".join(warnings) or None)

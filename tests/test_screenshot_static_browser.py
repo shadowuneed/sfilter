@@ -14,11 +14,96 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from app.config import Settings
-from app.services.screenshots import ScreenshotService
+from app.services.screenshots import ScreenshotService, _VISIBLE_CONTENT_SCRIPT
 
 
 @unittest.skipUnless(os.getenv("QALQAN_RUN_BROWSER_TESTS") == "1", "Opt-in real Chromium rendering test")
 class StaticBrowserRenderingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dynamic_content_renders_before_javascript_is_frozen(self):
+        allow_render = threading.Event()
+        resources = {
+            "/": ("text/html", b'<!doctype html><html><head><link rel="stylesheet" href="/style.css"><script defer src="/run.js"></script></head><body><header>Logo and navigation text that must never qualify as rendered main content by itself.</header><main>Loading...<img src="/pixel.svg" width="160" height="100"><img src="/pixel.svg" width="160" height="100"></main><footer>Long footer content is outside the viewport and must not make a loading skeleton pass the screenshot readiness gate.</footer></body></html>'),
+            "/style.css": ("text/css", b'body{background:#172d49;color:white;margin:0;font:20px Arial}header{padding:16px;background:#382b4b}main{padding:24px}h1{margin:0 0 12px}p{max-width:900px}img{border:6px solid #f3b83f;margin-right:20px}footer{position:absolute;top:2000px}'),
+            "/image.svg": ("image/svg+xml", b'<svg xmlns="http://www.w3.org/2000/svg" width="240" height="120"><rect width="240" height="120" fill="#20b8b4"/><circle cx="120" cy="60" r="45" fill="#f3d532"/></svg>'),
+            "/pixel.svg": ("image/svg+xml", b'<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1" fill="#ffffff"/></svg>'),
+            "/run.js": ("text/javascript", b'window.frameCounter=0;function animate(){const until=performance.now()+4;while(performance.now()<until){}window.frameCounter++;requestAnimationFrame(animate)}animate();setTimeout(()=>{const main=document.querySelector("main");main.textContent="";const h=document.createElement("h1");h.textContent="DYNAMIC CONTENT LOADED";const p=document.createElement("p");p.textContent="This actual visible content was mounted by JavaScript after the loading skeleton. Both external images and styles remain visible in the frozen browser screenshot.";main.append(h,p);for(let i=0;i<2;i++){const image=document.createElement("img");image.src="/image.svg";image.width=240;image.height=120;main.append(image)}},600);'),
+        }
+        resources["/run.js"] = ("text/javascript", resources["/run.js"][1].replace(b"setTimeout(()=>{", b'fetch("/release").then(()=>{').replace(b"},600);", b"});"))
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/release":
+                    allow_render.wait(5)
+                    self.send_response(204)
+                    self.end_headers()
+                    return
+                kind, body = resources.get(self.path, ("text/plain", b"not found"))
+                self.send_response(200 if self.path in resources else 404)
+                self.send_header("Content-Type", kind)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        class ObservedService(ScreenshotService):
+            initial_content = None
+            frozen_counters = None
+
+            async def _wait_for_visible_content(self, page, deadline):
+                await self._within_deadline(page.wait_for_function("Array.from(document.querySelectorAll('main img')).every(image => image.complete && image.naturalWidth > 0)"), deadline)
+                self.initial_content = await page.evaluate(_VISIBLE_CONTENT_SCRIPT)
+                allow_render.set()
+                return await super()._wait_for_visible_content(page, deadline)
+
+            async def _within_deadline(self, operation, deadline, **kwargs):
+                frame = getattr(operation, "cr_frame", None)
+                local_values = frame.f_locals if frame else {}
+                freeze = local_values.get("method") == "Emulation.setScriptExecutionDisabled"
+                client = local_values.get("self") if freeze else None
+                result = await super()._within_deadline(operation, deadline, **kwargs)
+                if freeze:
+                    first = await client.send("Runtime.evaluate", {"expression": "window.frameCounter", "returnByValue": True})
+                    import asyncio
+
+                    await asyncio.sleep(0.2)
+                    second = await client.send("Runtime.evaluate", {"expression": "window.frameCounter", "returnByValue": True})
+                    self.frozen_counters = (first["result"]["value"], second["result"]["value"])
+                return result
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.daemon_threads = True
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        service = ObservedService(Settings(
+            evidence_dir=root / "evidence", screenshot_timeout_seconds=10,
+            screenshot_settle_ms=0, screenshot_fallback_enabled=False,
+            screenshot_javascript_enabled=True, screenshot_freeze_after_render=True,
+        ))
+        started = time.monotonic()
+        result = await service.capture(f"http://127.0.0.1:{server.server_port}/", 505)
+        self.assertIsNotNone(result.path, result.error)
+        self.assertFalse(service.initial_content["ready"], "Header and offscreen footer must not pass a loader")
+        self.assertGreater(service.frozen_counters[0], 0, "JavaScript must execute and mount the content first")
+        self.assertEqual(*service.frozen_counters, "Animation callbacks must stop before capture")
+        self.assertIn("JavaScript was paused", result.error)
+        self.assertNotIn("fallback evidence", result.error)
+        from PIL import Image
+
+        output = root / result.path
+        with Image.open(output).convert("RGB") as image:
+            self.assertEqual(image.size, (1280, 720))
+            colors = {color: count for count, color in image.getcolors(1280 * 720)}
+            self.assertGreater(colors.get((32, 184, 180), 0), 1000, "Loaded external images must be present")
+        artifact = Path(tempfile.gettempdir()) / f"qalqan-frozen-content-{uuid.uuid4().hex}.png"
+        shutil.copy2(output, artifact)
+        print(json.dumps({"actual_frozen_png": str(artifact), "seconds": round(time.monotonic() - started, 3), "frame_counter": service.frozen_counters, "warning": result.error}))
+
     async def test_static_browser_preserves_ssr_css_and_images_without_executing_page_scripts(self):
         requests = []
         resources = {
