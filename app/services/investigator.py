@@ -944,7 +944,9 @@ class Investigator:
                 )
 
             concurrency = max(1, min(self.settings.scan_concurrency, len(candidate_pool) or 1))
-            batch_size = max(12, min(36, concurrency * 8))
+            # With one worker, flush its saved finding and screenshot before the
+            # next candidate can spend a full timeout waiting on another site.
+            batch_size = 1 if self.settings.scan_concurrency == 1 else max(12, min(36, concurrency * 8))
             semaphore = asyncio.Semaphore(concurrency)
 
             for batch_start in range(0, candidate_total, batch_size):

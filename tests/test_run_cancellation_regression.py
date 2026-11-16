@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import unittest
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Event, Thread
+from threading import Event, RLock, Thread
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from app.config import Settings
-from app.database import Database
+from app.database import Database, DatabaseConnection
 from app.services.investigator import Candidate, Investigator
 from app.services.screenshots import ScreenshotResult, ScreenshotService
 
@@ -21,6 +23,25 @@ class RunScreenshotCancellationRegressionTests(unittest.IsolatedAsyncioTestCase)
         self.addCleanup(self.directory.cleanup)
         root = Path(self.directory.name)
         self.db = Database(root / "argus.db")
+        # These short cancellation deadlines exercise the async/browser seam,
+        # not Windows disk-fsync latency. Keep real SQL and transactions while
+        # sharing one in-memory connection across the fixture's worker thread.
+        connection = sqlite3.connect(":memory:", check_same_thread=False)
+        connection.row_factory = sqlite3.Row
+        self.addCleanup(connection.close)
+        connection_lock = RLock()
+
+        @contextmanager
+        def fixture_connection():
+            with connection_lock:
+                try:
+                    yield DatabaseConnection(connection, "sqlite")
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    raise
+
+        self.db.connect = fixture_connection
         self.db.init()
         self.run_id = self.db.create_run(seed_query="casino", max_candidates=3, take_screenshots=True)
         self.investigator = object.__new__(Investigator)

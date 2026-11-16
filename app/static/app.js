@@ -30,6 +30,13 @@ const state = {
   visibleRunStatus: "",
   runHistoryExpanded: false,
   stoppingRunIds: new Set(),
+  hardStopInFlight: false,
+  stopConfirmationPending: false,
+  stopConfirmationGlobal: false,
+  stopConfirmationRunIds: new Set(),
+  stopConfirmationStatuses: new Map(),
+  runReadEpoch: 0,
+  readControllers: new Set(),
   healthActionBlocked: false,
   healthActionReason: "",
   kzProxyConfigured: false,
@@ -41,6 +48,8 @@ const MAX_RUN_CANDIDATES = 500;
 const POLL_INTERVAL_MS = 3000;
 const CASE_REFRESH_INTERVAL_MS = 15000;
 const MAX_CACHED_LOGS = 500;
+const API_REQUEST_TIMEOUT_MS = 15000;
+const STOP_REQUEST_TIMEOUT_MS = 5000;
 
 const els = {
   scanForm: document.getElementById("scanForm"),
@@ -54,6 +63,7 @@ const els = {
   seedQuery: document.getElementById("seedQuery"),
   runSize: document.getElementById("runSize"),
   takeScreenshots: document.getElementById("takeScreenshots"),
+  screenshotModeHint: document.getElementById("screenshotModeHint"),
   manualTarget: document.getElementById("manualTarget"),
   manualBtn: document.getElementById("manualBtn"),
   activityPanel: document.getElementById("activityPanel"),
@@ -213,25 +223,50 @@ const activityStages = [
 ];
 
 async function api(path, options = {}) {
+  const { timeoutMs = API_REQUEST_TIMEOUT_MS, signal, ...requestOptions } = options;
+  const controller = new AbortController();
+  const isRead = !requestOptions.method || requestOptions.method.toUpperCase() === "GET";
+  const isRunRead = isRead && (path.startsWith("/api/runs") || path.startsWith("/api/cases"));
+  if (isRunRead) state.readControllers.add(controller);
+  const abortFromCaller = () => controller.abort(signal.reason);
+  if (signal?.aborted) abortFromCaller();
+  else signal?.addEventListener("abort", abortFromCaller, { once: true });
   const headers = {
     "Content-Type": "application/json",
-    ...(options.headers || {}),
+    ...(requestOptions.headers || {}),
   };
   if (state.apiToken) {
     headers.Authorization = `Bearer ${state.apiToken}`;
   }
-  const response = await fetch(path, {
-    ...options,
-    headers,
+  let abortListener;
+  const aborted = new Promise((_, reject) => {
+    abortListener = () => reject(controller.signal.reason || new DOMException("Запрос прерван", "AbortError"));
+    if (controller.signal.aborted) abortListener();
+    else controller.signal.addEventListener("abort", abortListener, { once: true });
   });
-  if (!response.ok) {
-    const text = await response.text();
-    if (response.status === 401) {
-      showAuth(text || response.statusText);
-    }
-    throw new Error(text || response.statusText);
+  const timer = setTimeout(() => {
+    controller.abort(new Error("Истекло время ожидания ответа сервера. Запрос можно повторить."));
+  }, timeoutMs);
+  try {
+    const request = (async () => {
+      const response = await fetch(path, { ...requestOptions, headers, signal: controller.signal });
+      if (controller.signal.aborted) throw controller.signal.reason;
+      if (!response.ok) {
+        const text = await response.text();
+        if (controller.signal.aborted) throw controller.signal.reason;
+        if (response.status === 401) showAuth(text || response.statusText);
+        throw new Error(text || response.statusText);
+      }
+      return response.json();
+    })();
+    // Bound response-body reads as well as fetch, even after headers arrived.
+    return await Promise.race([request, aborted]);
+  } finally {
+    clearTimeout(timer);
+    controller.signal.removeEventListener("abort", abortListener);
+    signal?.removeEventListener("abort", abortFromCaller);
+    state.readControllers.delete(controller);
   }
-  return response.json();
 }
 
 async function downloadFile(path) {
@@ -298,17 +333,21 @@ function setActionLock(locked, reason = "") {
 
 function syncActionButtons() {
   const activeRun = hasRunningRuns();
+  const stopping = state.hardStopInFlight || state.stoppingRunIds.size > 0;
+  const awaitingStop = state.stopConfirmationPending;
   if (els.runBtn) {
-    els.runBtn.disabled = state.healthActionBlocked || activeRun;
+    els.runBtn.disabled = state.healthActionBlocked || activeRun || stopping || awaitingStop;
     els.runBtn.title = state.healthActionBlocked
       ? state.healthActionReason
-      : activeRun
-        ? "Сначала остановите или дождитесь завершения текущего запуска"
-        : "";
-    els.runBtn.textContent = activeRun ? "Запуск идет" : "Запустить";
+      : stopping || awaitingStop
+        ? "Ожидаю подтверждения остановки от сервера. Жёсткий стоп можно повторить."
+        : activeRun
+          ? "Сначала остановите или дождитесь завершения текущего запуска"
+          : "";
+    els.runBtn.textContent = stopping ? "Прерываю" : awaitingStop ? "Проверяю остановку" : activeRun ? "Запуск идет" : "Запустить";
   }
   if (els.manualBtn) {
-    els.manualBtn.disabled = state.healthActionBlocked;
+    els.manualBtn.disabled = state.healthActionBlocked || stopping || awaitingStop;
     els.manualBtn.title = state.healthActionReason;
   }
 }
@@ -421,10 +460,49 @@ function activeRunIdForStop() {
 function syncStopButton() {
   if (!els.stopBtn) return;
   const runId = activeRunIdForStop();
-  const stopping = Boolean(runId && state.stoppingRunIds.has(runId));
-  els.stopBtn.disabled = !runId || stopping;
+  const stopping = state.hardStopInFlight;
+  els.stopBtn.disabled = stopping;
   els.stopBtn.dataset.activeRunId = runId ? String(runId) : "";
-  els.stopBtn.textContent = stopping ? "Останавливаю" : "Стоп";
+  els.stopBtn.textContent = stopping ? "Прерываю" : "Жёсткий стоп";
+  els.stopBtn.title = "Прервать все проверки и фоновые задачи. Найденные записи сохраняются.";
+}
+
+function invalidateRunReads() {
+  state.runReadEpoch += 1;
+  state.stopConfirmationStatuses.clear();
+  for (const controller of state.readControllers) {
+    controller.abort(new DOMException("Обновление прервано жёстким стопом", "AbortError"));
+  }
+  stopPolling();
+  state.pollInFlight = false;
+  return state.runReadEpoch;
+}
+
+function rememberFreshRunStatus(run) {
+  if (state.stopConfirmationPending) {
+    state.stopConfirmationStatuses.set(Number(run.id), run.status);
+  }
+}
+
+function confirmStoppedRuns() {
+  if (!state.stopConfirmationPending) return;
+  const confirmed = Array.from(state.stopConfirmationRunIds).every(
+    (runId) => terminalStatus(state.stopConfirmationStatuses.get(runId)),
+  );
+  if (confirmed && (!state.stopConfirmationGlobal || !hasRunningRuns())) {
+    state.stopConfirmationPending = false;
+  }
+}
+
+function beginStopConfirmation(runIds, allRuns = false) {
+  if (!state.stopConfirmationPending) {
+    state.stopConfirmationRunIds.clear();
+    state.stopConfirmationGlobal = false;
+  }
+  if (allRuns) state.stopConfirmationGlobal = true;
+  runIds.forEach((runId) => state.stopConfirmationRunIds.add(Number(runId)));
+  state.stopConfirmationPending = true;
+  return invalidateRunReads();
 }
 
 function latestLog(logs = []) {
@@ -644,6 +722,18 @@ function setHealthDetailsOpen(open) {
 async function loadHealth() {
   try {
     const health = await api("/api/health");
+    const lowMemoryHint = health.low_memory_mode
+      ? "Режим 512 МБ: проверки и скриншоты выполняются по одному."
+      : "";
+    if (els.takeScreenshots) {
+      els.takeScreenshots.disabled = false;
+      els.takeScreenshots.title = lowMemoryHint;
+      els.takeScreenshots.setAttribute("aria-describedby", "screenshotModeHint");
+    }
+    if (els.screenshotModeHint) {
+      els.screenshotModeHint.textContent = lowMemoryHint;
+      els.screenshotModeHint.hidden = !lowMemoryHint;
+    }
     state.authRequired = Boolean(health.auth_required);
     state.authConfigured = Boolean(health.auth_configured);
     state.kzProxyConfigured = Boolean(health.kz_proxy_configured);
@@ -686,7 +776,7 @@ async function loadHealth() {
     const concurrency = health.scan_concurrency || 3;
     const timeout = health.candidate_timeout_seconds || 15;
     const maxRun = Math.min(Number(health.max_candidates_per_run || MAX_RUN_CANDIDATES), MAX_RUN_CANDIDATES);
-    els.healthLine.textContent = `${groqHint}. ${geminiHint}. ${mlHint}. ${cyberHint}. ${kzHint}. Цель запуска: до ${maxRun} находок, потоков: ${concurrency}, таймаут сайта: ${timeout} сек.`;
+    els.healthLine.textContent = `${lowMemoryHint ? `${lowMemoryHint} ` : ""}${groqHint}. ${geminiHint}. ${mlHint}. ${cyberHint}. ${kzHint}. Цель запуска: до ${maxRun} находок, потоков: ${concurrency}, таймаут сайта: ${timeout} сек.`;
     const actionBlocked = authMissing || !kzReady;
     const actionReason = authMissing
       ? "На сервере не настроен ADMIN_TOKEN"
@@ -710,6 +800,7 @@ async function loadHealth() {
 async function startRun(event) {
   event?.preventDefault();
   if (!els.runBtn || !els.seedQuery || !els.takeScreenshots) return;
+  if (state.healthActionBlocked || state.stopConfirmationPending || state.hardStopInFlight || hasRunningRuns()) return;
   els.runBtn.disabled = true;
   els.runBtn.textContent = "Запускаю";
   showActivity(
@@ -740,6 +831,7 @@ async function startRun(event) {
 }
 
 async function startManualCheck() {
+  if (state.healthActionBlocked || state.stopConfirmationPending || state.hardStopInFlight) return;
   const target = els.manualTarget?.value.trim() || "";
   if (!target) {
     alert("Укажите домен или URL для ручной проверки.");
@@ -768,46 +860,106 @@ async function startManualCheck() {
   } catch (error) {
     alert(`Не удалось запустить ручную проверку: ${error.message}`);
   } finally {
-    els.manualBtn.disabled = state.healthActionBlocked;
     els.manualBtn.textContent = "Проверить сайт";
+    syncActionButtons();
+  }
+}
+
+async function refreshAfterStop(runIds, epoch) {
+  if (epoch !== state.runReadEpoch) return;
+  runIds.forEach((runId) => state.stopConfirmationRunIds.add(Number(runId)));
+  const freshEpoch = invalidateRunReads();
+  await loadRuns({ timeoutMs: STOP_REQUEST_TIMEOUT_MS });
+  if (freshEpoch !== state.runReadEpoch) return;
+  const detailIds = new Set(Array.from(state.stopConfirmationRunIds).filter(
+    (runId) => !state.stopConfirmationStatuses.has(runId),
+  ));
+  if (state.selectedRunId && state.stopConfirmationRunIds.has(Number(state.selectedRunId))) {
+    detailIds.add(Number(state.selectedRunId));
+  }
+  try {
+    await Promise.all(Array.from(detailIds, (runId) => loadRun(runId, {
+      force: true,
+      statusOnly: Number(state.selectedRunId) !== runId,
+      stopVerification: true,
+      timeoutMs: STOP_REQUEST_TIMEOUT_MS,
+    })));
+  } catch (error) {
+    if (state.stopConfirmationPending) throw error;
+    console.error(error);
+  }
+  if (freshEpoch !== state.runReadEpoch) return;
+  confirmStoppedRuns();
+  if (state.stopConfirmationPending) {
+    throw new Error("Сервер ещё не подтвердил остановку всех проверок. Жёсткий стоп можно повторить.");
+  }
+}
+
+function showStopUnconfirmed() {
+  if (els.activityDiagnostic) {
+    els.activityDiagnostic.textContent = "Остановка пока не подтверждена сервером. Найденные записи сохранены. Повторите жёсткий стоп.";
+  }
+}
+
+async function hardStopAll() {
+  if (state.hardStopInFlight) return;
+  const knownActiveIds = new Set(state.runs.filter((run) => runningStatus(run.status)).map((run) => Number(run.id)));
+  state.runStatuses.forEach((status, runId) => {
+    if (runningStatus(status)) knownActiveIds.add(Number(runId));
+  });
+  const epoch = beginStopConfirmation(Array.from(knownActiveIds), true);
+  state.hardStopInFlight = true;
+  syncStopButton();
+  syncActionButtons();
+  renderRuns();
+  try {
+    const result = await api("/api/runs/cancel-all", { method: "POST", timeoutMs: STOP_REQUEST_TIMEOUT_MS });
+    await refreshAfterStop(result.run_ids || [], epoch);
+    return result;
+  } catch (error) {
+    if (state.stopConfirmationPending) showStopUnconfirmed();
+    throw error;
+  } finally {
+    state.hardStopInFlight = false;
+    syncStopButton();
+    syncActionButtons();
+    renderRuns();
+    if (state.stopConfirmationPending || hasRunningRuns()) startPolling();
   }
 }
 
 async function stopRun(runId = activeRunIdForStop()) {
   const normalizedRunId = Number(runId);
   if (!Number.isInteger(normalizedRunId) || normalizedRunId <= 0) return;
-  const previousStatus = runStatusForId(normalizedRunId);
+  if (state.hardStopInFlight || state.stoppingRunIds.has(normalizedRunId)) return;
+  const epoch = beginStopConfirmation([normalizedRunId]);
   state.stoppingRunIds.add(normalizedRunId);
-  const runIndex = state.runs.findIndex((item) => Number(item.id) === normalizedRunId);
-  if (runIndex >= 0) {
-    state.runs[runIndex] = { ...state.runs[runIndex], status: "canceling" };
-  }
-  state.runStatuses.set(normalizedRunId, "canceling");
   syncStopButton();
+  syncActionButtons();
   renderRuns();
-  renderRunFolders();
   try {
-    await api(`/api/runs/${normalizedRunId}/cancel`, { method: "POST" });
-    state.runDetails.delete(normalizedRunId);
-    await loadRun(normalizedRunId, { force: true });
-    await loadRuns();
+    const result = await api(`/api/runs/${normalizedRunId}/cancel`, {
+      method: "POST", timeoutMs: STOP_REQUEST_TIMEOUT_MS,
+    });
+    await refreshAfterStop([normalizedRunId], epoch);
+    return result;
   } catch (error) {
-    if (runIndex >= 0 && previousStatus) {
-      state.runs[runIndex] = { ...state.runs[runIndex], status: previousStatus };
-    }
-    if (previousStatus) state.runStatuses.set(normalizedRunId, previousStatus);
+    if (state.stopConfirmationPending) showStopUnconfirmed();
     throw error;
   } finally {
     state.stoppingRunIds.delete(normalizedRunId);
     syncStopButton();
     syncActionButtons();
     renderRuns();
+    if (state.stopConfirmationPending || hasRunningRuns()) startPolling();
   }
 }
 
-async function loadRuns() {
+async function loadRuns(options = {}) {
+  const epoch = state.runReadEpoch;
   const limit = PAGE === "monitor" ? 20 : 100;
-  const data = await api(`/api/runs?limit=${limit}`);
+  const data = await api(`/api/runs?limit=${limit}`, { timeoutMs: options.timeoutMs });
+  if (epoch !== state.runReadEpoch) return false;
   state.runs = data.runs || [];
   const runIds = new Set(state.runs.map((run) => run.id));
   if (state.expandedRunFolderId && !runIds.has(state.expandedRunFolderId)) {
@@ -816,7 +968,11 @@ async function loadRuns() {
   Array.from(state.runStatuses.keys()).forEach((runId) => {
     if (!runIds.has(runId) && runId !== state.selectedRunId) state.runStatuses.delete(runId);
   });
-  state.runs.forEach((run) => state.runStatuses.set(run.id, run.status));
+  state.runs.forEach((run) => {
+    state.runStatuses.set(Number(run.id), run.status);
+    rememberFreshRunStatus(run);
+  });
+  confirmStoppedRuns();
   if (!state.selectedRunId && state.runs.length) state.selectedRunId = state.runs[0].id;
   syncStopButton();
   syncActionButtons();
@@ -826,6 +982,7 @@ async function loadRuns() {
 
 async function loadRun(runId, options = {}) {
   if (!runId) return;
+  const epoch = state.runReadEpoch;
   const cached = state.runDetails.get(runId);
   const canUseCache = cached && !options.force && !runningStatus(cached.run?.status);
   const includeFindings = Boolean(options.includeFindings || PAGE === "monitor");
@@ -846,7 +1003,19 @@ async function loadRun(runId, options = {}) {
   const suffix = query ? `?${query}` : "";
   const data = canUseCache && (!includeFindings || cached.findings)
     ? cached
-    : await api(`/api/runs/${runId}${suffix}`);
+    : await api(`/api/runs/${runId}${suffix}`, { timeoutMs: options.timeoutMs });
+  if (epoch !== state.runReadEpoch) return false;
+  if (options.statusOnly) {
+    state.runStatuses.set(Number(data.run.id), data.run.status);
+    const index = state.runs.findIndex((run) => Number(run.id) === Number(data.run.id));
+    if (index >= 0) state.runs[index] = { ...state.runs[index], ...data.run };
+    rememberFreshRunStatus(data.run);
+    confirmStoppedRuns();
+    syncStopButton();
+    syncActionButtons();
+    renderRuns();
+    return true;
+  }
   if (incremental) {
     const logsById = new Map();
     [...(cached.logs || []), ...(data.logs || [])].forEach((log) => logsById.set(log.id, log));
@@ -857,7 +1026,8 @@ async function loadRun(runId, options = {}) {
   const run = data.run;
   const previousStatus = state.runStatuses.get(run.id);
   state.selectedRunId = run.id;
-  state.runStatuses.set(run.id, run.status);
+  state.runStatuses.set(Number(run.id), run.status);
+  if (!(canUseCache && (!includeFindings || cached.findings))) rememberFreshRunStatus(run);
   const runIndex = state.runs.findIndex((item) => item.id === run.id);
   if (runIndex >= 0) {
     state.runs[runIndex] = { ...state.runs[runIndex], ...run };
@@ -865,6 +1035,7 @@ async function loadRun(runId, options = {}) {
     state.runs.unshift(run);
   }
 
+  confirmStoppedRuns();
   if (els.currentRun) els.currentRun.textContent = `#${run.id}`;
   const liveFindingCount = Number(run.finding_count || 0);
   if (els.runStatus) els.runStatus.textContent = `${runStatusLabel(run)} · ${liveFindingCount}/${run.candidate_count || 0}`;
@@ -876,6 +1047,8 @@ async function loadRun(runId, options = {}) {
   renderLogs(data.logs || [], run.status);
   renderRuns();
   renderRunFolders();
+
+  if (options.stopVerification) return true;
 
   if (
     runningStatus(run.status)
@@ -928,9 +1101,9 @@ function renderRuns() {
     const runningClass = running ? "running" : "";
     const signal = runningStatus(run.status) ? "live" : run.status === "failed" ? "bad" : run.status === "interrupted" ? "warn" : "done";
     const hint = ["failed", "interrupted"].includes(run.status) && run.error ? run.error : `${run.finding_count || 0} находок`;
-    const stopping = state.stoppingRunIds.has(Number(run.id));
+    const stopping = state.hardStopInFlight || state.stoppingRunIds.has(Number(run.id));
     const stopControl = running
-      ? `<button class="run-stop-btn" data-stop-run-id="${run.id}" type="button" ${stopping ? "disabled" : ""}>${stopping ? "Останавливаю" : "Остановить запуск"}</button>`
+      ? `<button class="run-stop-btn" data-stop-run-id="${run.id}" type="button" ${stopping ? "disabled" : ""}>${stopping ? "Прерываю" : "Жёсткий стоп запуска"}</button>`
       : "";
     return `
       <div class="run-item ${active} ${runningClass}" data-run-id="${run.id}" role="button" tabindex="0">
@@ -1216,10 +1389,12 @@ function renderLogs(logs, runStatus = "") {
 }
 
 async function loadCases(options = {}) {
+  const epoch = state.runReadEpoch;
   const params = new URLSearchParams({ archived: "false", limit: "250" });
   if (els.caseSearch?.value.trim()) params.set("q", els.caseSearch.value.trim());
   if (els.caseMinRisk?.value) params.set("min_risk", els.caseMinRisk.value);
   const data = await api(`/api/cases?${params.toString()}`);
+  if (epoch !== state.runReadEpoch) return false;
   state.lastCasesRefreshAt = Date.now();
   state.cases = data.cases || [];
   const category = els.categoryFilter?.value || "";
@@ -1896,6 +2071,7 @@ function stopPolling() {
 
 async function pollSelectedRun() {
   state.pollTimer = null;
+  const epoch = state.runReadEpoch;
   if (state.pollInFlight) {
     startPolling();
     return;
@@ -1906,14 +2082,17 @@ async function pollSelectedRun() {
     if (state.pollRunsCounter % 2 === 0) {
       await loadRuns();
     }
+    if (epoch !== state.runReadEpoch) return;
     if (state.selectedRunId) {
       await loadRun(state.selectedRunId, { force: true, incremental: true });
     }
   } catch (error) {
     console.error(error);
   } finally {
-    state.pollInFlight = false;
-    if (hasRunningRuns()) startPolling();
+    if (epoch === state.runReadEpoch) {
+      state.pollInFlight = false;
+      if (state.stopConfirmationPending || hasRunningRuns()) startPolling();
+    }
   }
 }
 
@@ -1933,7 +2112,7 @@ els.manualTarget?.addEventListener("keydown", (event) => {
   }
 });
 els.stopBtn?.addEventListener("click", () => {
-  stopRun().catch((error) => alert(`Не удалось остановить запуск: ${error.message}`));
+  hardStopAll().catch((error) => alert(`Остановка не подтверждена: ${error.message}`));
 });
 els.runHistoryToggle?.addEventListener("click", () => {
   setRunHistoryExpanded(!state.runHistoryExpanded);

@@ -50,6 +50,13 @@ class ScreenshotDeadlineTests(unittest.IsolatedAsyncioTestCase):
             screenshot_settle_ms=0,
             screenshot_fallback_enabled=False,
         )
+        # These tests model an in-memory Playwright driver and tiny asyncio
+        # deadlines. Real OS enumeration belongs to the process-cleanup
+        # integration tests, where actual child processes are launched.
+        self.process_scope_patch = patch("app.services.screenshots.ScreenshotProcessScope", autospec=True)
+        process_scope = self.process_scope_patch.start().return_value
+        process_scope.cleanup.return_value = True
+        self.addCleanup(self.process_scope_patch.stop)
         self.service = ScreenshotService(self.settings)
         self.service._capture_result = Mock(return_value=ScreenshotResult(path="evidence/test.png"))
         self.page = Mock(

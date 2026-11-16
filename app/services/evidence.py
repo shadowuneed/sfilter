@@ -18,6 +18,10 @@ from app.config import Settings
 from app.services.domains import extract_domain, normalize_url, registered_domain, suspicious_tld
 
 
+MAX_PAGE_BODY_BYTES = 2 * 1024 * 1024
+_PAGE_READ_CHUNK_BYTES = 16 * 1024
+
+
 CASINO_KEYWORDS = {
     "casino",
     "казино",
@@ -89,6 +93,8 @@ class EvidenceResult:
     html_sha256: str | None = None
     response_time_ms: int | None = None
     page_size_bytes: int | None = None
+    response_body_truncated: bool = False
+    response_body_limit_bytes: int = MAX_PAGE_BODY_BYTES
     redirect_count: int = 0
     redirect_chain: list[dict[str, Any]] = field(default_factory=list)
     tls_verified_fetch: bool | None = None
@@ -109,6 +115,8 @@ class EvidenceResult:
             "errors": self.errors,
             "response_time_ms": self.response_time_ms,
             "page_size_bytes": self.page_size_bytes,
+            "response_body_truncated": self.response_body_truncated,
+            "response_body_limit_bytes": self.response_body_limit_bytes,
             "redirect_count": self.redirect_count,
             "redirect_chain": self.redirect_chain,
             "tls_verified_fetch": self.tls_verified_fetch,
@@ -156,12 +164,12 @@ class EvidenceCollector:
                 verified_fetch = candidate.startswith("https://")
                 try:
                     started = time.perf_counter()
-                    response = await client.get(candidate)
+                    response, html, body_size, truncated = await self._fetch_page(client, candidate)
                 except Exception as exc:  # noqa: BLE001 - keep evidence of network failures.
                     result.errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
                     try:
                         started = time.perf_counter()
-                        response = await insecure_client.get(candidate)
+                        response, html, body_size, truncated = await self._fetch_page(insecure_client, candidate)
                         verified_fetch = False
                         result.errors.append(
                             f"{candidate}: strict TLS/redirect check failed; fetched with certificate verification disabled"
@@ -176,7 +184,10 @@ class EvidenceCollector:
                 result.response_time_ms = int((time.perf_counter() - started) * 1000)
                 result.status_code = response.status_code
                 result.final_url = str(response.url)
-                result.page_size_bytes = len(response.content)
+                # This is the captured body size. The explicit truncation flag
+                # distinguishes a bounded prefix from a complete response.
+                result.page_size_bytes = body_size
+                result.response_body_truncated = truncated
                 result.redirect_count = len(response.history)
                 result.redirect_chain = [
                     {"status_code": item.status_code, "url": str(item.url)}
@@ -185,14 +196,49 @@ class EvidenceCollector:
                 result.tls_verified_fetch = verified_fetch if str(response.url).startswith("https://") else None
                 result.active = 200 <= response.status_code < 400
                 content_type = response.headers.get("content-type", "")
-                if "text/html" in content_type or response.text:
-                    self._parse_html(result, response.text[:1_500_000], run_id)
+                if "text/html" in content_type or html:
+                    self._parse_html(result, html[:1_500_000], run_id)
                 if response.status_code == 451 or self._looks_blocked(result):
                     result.blocked_by_policy = True
                     result.active = False
                 break
 
         return result
+
+    async def _fetch_page(
+        self, client: httpx.AsyncClient, url: str,
+    ) -> tuple[httpx.Response, str, int, bool]:
+        request = client.build_request("GET", url)
+        history: list[httpx.Response] = []
+        while True:
+            # HTTPX's automatic redirect handling reads each redirect body in
+            # full, even with stream=True. Follow its prepared next_request
+            # ourselves so a large redirect page cannot bypass the body cap.
+            response = await client.send(request, stream=True, follow_redirects=False)
+            try:
+                if response.next_request is not None:
+                    if len(history) >= client.max_redirects:
+                        raise httpx.TooManyRedirects("Exceeded maximum allowed redirects.", request=request)
+                    history.append(response)
+                    request = response.next_request
+                    continue
+
+                response.history = history
+                body = bytearray()
+                async for chunk in response.aiter_bytes(chunk_size=_PAGE_READ_CHUNK_BYTES):
+                    remaining = MAX_PAGE_BODY_BYTES + 1 - len(body)
+                    body.extend(chunk[:remaining])
+                    if len(body) > MAX_PAGE_BODY_BYTES:
+                        break
+                truncated = len(body) > MAX_PAGE_BODY_BYTES
+                if truncated:
+                    del body[MAX_PAGE_BODY_BYTES:]
+                # Use the same Content-Type charset / UTF-8 fallback as
+                # Response.text, without materializing the full response.
+                html = body.decode(response.encoding or "utf-8", errors="replace")
+                return response, html, len(body), truncated
+            finally:
+                await response.aclose()
 
     def _url_candidates(self, url: str) -> list[str]:
         parsed = urlparse(url)
