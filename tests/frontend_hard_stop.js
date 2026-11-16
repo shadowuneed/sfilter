@@ -252,14 +252,17 @@ test("evidence facts distinguish a rendered screenshot from a fallback card", ()
   assert.ok(staticCapture.some((value) => value.includes("снимок HTML/CSS страницы")));
   const frozenCapture = h.ui.positiveSignals({ ...finding, evidence: { screenshot_error: "Browser screenshot captured after JavaScript was paused; dynamic content may be incomplete" } });
   assert.ok(frozenCapture.some((value) => value.includes("после приостановки JavaScript")));
+  const unconfirmed = h.ui.positiveSignals({ ...finding, evidence: { screenshot_error: "Page content readiness was not confirmed; browser frame may be incomplete" } });
+  assert.ok(unconfirmed.some((value) => value.includes("готовность содержимого не подтверждена")));
+  assert.ok(!unconfirmed.includes("Скриншот страницы сохранен"));
 });
 
-test("frozen browser mode explains that page contents render before scripts are paused", async () => {
+test("frozen browser mode explains capture preparation and separate content readiness", async () => {
   const h = harness();
   h.health = { low_memory_mode: true, screenshot_runtime: { javascript_enabled: true, capture_mode: "browser-frozen" }, kz_proxy_ready: true };
   await h.ui.loadHealth();
   assert.equal(h.elements.takeScreenshots.disabled, false);
-  assert.ok(h.elements.screenshotModeHint.textContent.includes("после отрисовки содержимого"));
+  assert.ok(h.elements.screenshotModeHint.textContent.includes("готовность содержимого отмечается в доказательствах"));
   assert.ok(!h.elements.screenshotModeHint.textContent.includes("JavaScript отключён"));
 });
 

@@ -25,6 +25,17 @@ _STOP_TIMEOUT_SECONDS = 2.5
 _START_TIMEOUT_SECONDS = 30.0
 
 
+def _lower_worker_priority() -> None:
+    """Yield CPU to the control API; positive niceness never raises priority."""
+    try:
+        nice = getattr(os, "nice", None)
+        if nice is not None:
+            nice(10)
+    except (OSError, AttributeError, NotImplementedError):
+        # Sandboxes may deny priority changes. That must not prevent a scan.
+        pass
+
+
 def _execute_job(settings: Any, job: dict[str, Any], emit: Callable[..., None]) -> None:
     # Imports and runtime objects belong to the child. In particular, importing
     # app.main here would create a second API and run unwanted startup actions.
@@ -71,6 +82,7 @@ def _child_entry(send: Any, launch_gate: Any, settings: Any, job: dict[str, Any]
             # Establish ownership before a driver or browser can be launched.
             # A failed setsid must not fall through and spawn unowned children.
             os.setsid()
+            _lower_worker_priority()
             identity = (os.getpid(), os.getsid(0), os.getpgrp())
             if len(set(identity)) != 1:
                 raise RuntimeError("Worker session was not isolated")

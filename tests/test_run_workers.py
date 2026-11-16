@@ -14,7 +14,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from app.services.run_workers import RunWorkerManager, _child_entry
+from app.services.run_workers import RunWorkerManager, _child_entry, _lower_worker_priority
 
 
 def _fixture_tree(settings, job, emit):
@@ -55,6 +55,10 @@ def _fixture_delayed_bootstrap(send, launch_gate, settings, job, entry):
 def _fixture_job_marker(settings, job, emit):
     Path(job["job_marker"]).write_text("entered", encoding="ascii")
     emit(job["run_id"], "info", "fixture job entered", None)
+
+
+def _fixture_priority(settings, job, emit):
+    emit(job["run_id"], "info", "fixture worker priority", {"nice": os.nice(0)})
 
 
 def _fixture_leave_descendant(settings, job, emit):
@@ -160,6 +164,35 @@ class _BrokenContext:
 
 
 class RunWorkerTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "POSIX process niceness")
+    def test_child_has_lower_cpu_priority_without_changing_parent(self):
+        parent_nice = os.nice(0)
+        logs, exits = [], []
+        exited = threading.Event()
+        manager = RunWorkerManager(lambda *args: logs.append(args),
+                                   lambda *args: (exits.append(args), exited.set()),
+                                   _entry=_fixture_priority)
+        self.addCleanup(manager.stop_all)
+        manager.start(134, None, {"kind": "manual", "run_id": 134})
+        self.assertTrue(exited.wait(6))
+        self.assertEqual(exits, [(134, 0, False)])
+        self.assertGreaterEqual(logs[0][3]["nice"], min(19, parent_nice + 10))
+        self.assertEqual(os.nice(0), parent_nice)
+
+    def test_priority_change_only_uses_positive_increment(self):
+        with patch("app.services.run_workers.os.nice", create=True) as nice:
+            _lower_worker_priority()
+        nice.assert_called_once_with(10)
+
+    def test_denied_or_unsupported_priority_change_does_not_prevent_worker_start(self):
+        for error in (PermissionError("fixture denied"), NotImplementedError("fixture unsupported")):
+            with self.subTest(error=type(error).__name__), \
+                    patch("app.services.run_workers.os.nice", side_effect=error, create=True) as nice:
+                _lower_worker_priority()
+                nice.assert_called_once_with(10)
+        with patch("app.services.run_workers.os.nice", None, create=True):
+            _lower_worker_priority()
+
     def test_cold_boot_over_three_seconds_does_not_block_start_or_fail_the_job(self):
         exited = threading.Event()
         exits = []

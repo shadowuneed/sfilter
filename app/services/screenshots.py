@@ -229,6 +229,7 @@ class ScreenshotService:
         stage = "waiting for browser slot"
         javascript_paused = False
         capture_client = None
+        browser_warnings: list[str] = []
         try:
             while not self._browser_slots.acquire(blocking=False):
                 await self._within_deadline(asyncio.sleep(0.2), operation_deadline)
@@ -317,20 +318,26 @@ class ScreenshotService:
                 # Verified low-memory settings provide 90 seconds overall and
                 # reserve at least 15 seconds for capture after content is ready.
                 capture_reserve = min(15.0, timeout_seconds / 3)
-                readiness_deadline = operation_deadline - capture_reserve
+                readiness_deadline = min(operation_deadline - capture_reserve, loop.time() + 20.0)
                 stage = "waiting for visible page content"
                 if not await self._wait_for_visible_content(page, readiness_deadline):
-                    raise TimeoutError("Page is still loading: insufficient visible main content; no usable browser screenshot captured")
+                    # CSS backgrounds/canvas can produce a useful frame without
+                    # satisfying this DOM heuristic. Keep the real browser frame
+                    # and report the uncertainty instead of replacing it.
+                    browser_warnings.append("Page content readiness was not confirmed; browser frame may be incomplete")
                 stage = "pausing JavaScript after rendering"
                 # Session setup and pause may use a little of the reserved time
                 # when content becomes ready at the last moment. Keep at least
                 # ten seconds for PNG on the 90-second low-memory budget.
                 freeze_deadline = min(operation_deadline - min(10.0, timeout_seconds / 4), loop.time() + 3.0)
-                capture_client = await self._within_deadline(context.new_cdp_session(page), freeze_deadline)
-                await self._within_deadline(capture_client.send(
-                    "Emulation.setScriptExecutionDisabled", {"value": True},
-                ), freeze_deadline)
-                javascript_paused = True
+                try:
+                    capture_client = await self._within_deadline(context.new_cdp_session(page), freeze_deadline)
+                    await self._within_deadline(capture_client.send(
+                        "Emulation.setScriptExecutionDisabled", {"value": True},
+                    ), freeze_deadline)
+                    javascript_paused = True
+                except Exception:
+                    browser_warnings.append("JavaScript pause was not confirmed; browser frame may contain active content")
             stage = "capturing CDP browser PNG"
             try:
                 capture_deadline = loop.time() + min(15.0, max(0.0, operation_deadline - loop.time()) * 0.75)
@@ -344,7 +351,7 @@ class ScreenshotService:
                 output.write_bytes(base64.b64decode(capture["data"]))
                 result = self._capture_result(output, rel_path)
                 if result.path or not self.settings.screenshot_fallback_enabled:
-                    return self._with_browser_warnings(result, navigation_error, javascript_paused)
+                    return self._with_browser_warnings(result, navigation_error, javascript_paused, browser_warnings)
                 return self._fallback_result(
                     output,
                     rel_path,
@@ -375,7 +382,7 @@ class ScreenshotService:
                     output.write_bytes(base64.b64decode(capture["data"]))
                 result = self._capture_result(output, rel_path)
                 if result.path or not self.settings.screenshot_fallback_enabled:
-                    return self._with_browser_warnings(result, navigation_error, javascript_paused)
+                    return self._with_browser_warnings(result, navigation_error, javascript_paused, browser_warnings)
                 return self._fallback_result(
                     output,
                     rel_path,
@@ -570,7 +577,7 @@ class ScreenshotService:
             await asyncio.sleep(min(0.5, max(0.0, deadline - loop.time())))
         return False
 
-    def _with_browser_warnings(self, result: ScreenshotResult, navigation_error: Exception | None, javascript_paused: bool = False) -> ScreenshotResult:
+    def _with_browser_warnings(self, result: ScreenshotResult, navigation_error: Exception | None, javascript_paused: bool = False, browser_warnings: list[str] | None = None) -> ScreenshotResult:
         if not result.path:
             return result
         warnings = [result.error] if result.error else []
@@ -578,6 +585,7 @@ class ScreenshotService:
             warnings.append("Browser screenshot captured with JavaScript disabled (HTML, CSS and images); dynamic content may be missing")
         elif javascript_paused:
             warnings.append("Browser screenshot captured after JavaScript was paused; dynamic content may be incomplete")
+        warnings.extend(browser_warnings or [])
         if navigation_error:
             warnings.append(f"navigation warning: {type(navigation_error).__name__}: {navigation_error}")
         return ScreenshotResult(path=result.path, error="; ".join(warnings) or None)

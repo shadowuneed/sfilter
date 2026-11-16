@@ -283,8 +283,13 @@ class ScreenshotDeadlineTests(unittest.IsolatedAsyncioTestCase):
         clock = {"now": 100.0}
 
         async def late_content(*args):
+            self.assertEqual(args[1], 175.0)
             clock["now"] = 174.99  # Content arrives just before the 75-second readiness boundary.
             return True
+
+        async def cold_browser(*args, **kwargs):
+            clock["now"] = 155.0
+            return self.browser
 
         async def create_session(*args):
             clock["now"] += 0.1  # Session setup legitimately crosses that boundary.
@@ -298,6 +303,7 @@ class ScreenshotDeadlineTests(unittest.IsolatedAsyncioTestCase):
 
         self.service._wait_for_visible_content = AsyncMock(side_effect=late_content)
         self.service._within_deadline = within_deadline
+        self.playwright.chromium.launch.side_effect = cold_browser
         self.context.new_cdp_session.side_effect = create_session
         self.cdp.send.return_value = {"data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/l6wG6QAAAABJRU5ErkJggg=="}
         # Every operation is in-memory and immediate; the synthetic clock never
@@ -309,16 +315,46 @@ class ScreenshotDeadlineTests(unittest.IsolatedAsyncioTestCase):
         self.cdp.send.assert_any_await("Emulation.setScriptExecutionDisabled", {"value": True})
         self.assertGreaterEqual(190 - clock["now"], 10, "At least ten seconds remain for actual PNG capture")
 
-    async def test_loading_skeleton_is_not_accepted_as_a_successful_frozen_screenshot(self) -> None:
+    async def test_unconfirmed_readiness_keeps_real_browser_frame_with_explicit_warning(self) -> None:
         self.service.settings = replace(self.settings, screenshot_freeze_after_render=True)
         self.page.evaluate = AsyncMock(return_value={"ready": False, "text_length": 10, "large_image_count": 1})
+        self.cdp.send.return_value = {"data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/l6wG6QAAAABJRU5ErkJggg=="}
+
+        result = await self._bounded_result(asyncio.create_task(self.service.capture("https://example.com", 7)))
+
+        self.assertEqual(result.path, "evidence/test.png")
+        self.assertIn("Page content readiness was not confirmed; browser frame may be incomplete", result.error)
+        self.assertNotIn("fallback evidence image", result.error)
+        self.service._capture_result.assert_called_once()
+        self._assert_slot_released()
+
+    async def test_unconfirmed_javascript_pause_still_attempts_real_capture_without_paused_claim(self) -> None:
+        self.service.settings = replace(self.settings, screenshot_freeze_after_render=True)
+        self.page.evaluate = AsyncMock(return_value={"ready": True})
+
+        async def command(method, params=None):
+            if method == "Emulation.setScriptExecutionDisabled":
+                raise TimeoutError("pause not acknowledged")
+            return {"data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/l6wG6QAAAABJRU5ErkJggg=="}
+
+        self.cdp.send.side_effect = command
+        result = await self._bounded_result(asyncio.create_task(self.service.capture("https://example.com", 7)))
+
+        self.assertEqual(result.path, "evidence/test.png")
+        self.assertIn("JavaScript pause was not confirmed", result.error)
+        self.assertNotIn("JavaScript was paused", result.error)
+        self.assertNotIn("fallback evidence image", result.error)
+
+    async def test_advisory_readiness_and_failed_pause_cannot_extend_global_capture_deadline(self) -> None:
+        self.service.settings = replace(self.settings, screenshot_freeze_after_render=True)
+        self.page.evaluate = AsyncMock(return_value={"ready": False})
+        self.cdp.send.side_effect = self._hang
+        self.page.screenshot.side_effect = self._hang
 
         result = await self._bounded_result(asyncio.create_task(self.service.capture("https://example.com", 7)))
 
         self.assertIsNone(result.path)
-        self.assertIn("insufficient visible main content", result.error)
-        self.service._capture_result.assert_not_called()
-        self.cdp.send.assert_not_awaited()
+        self.assertIn("tim", result.error.lower())
         self._assert_slot_released()
 
     async def test_stop_interrupts_content_readiness_wait_and_cleans_up(self) -> None:

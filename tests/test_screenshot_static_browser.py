@@ -19,6 +19,54 @@ from app.services.screenshots import ScreenshotService, _VISIBLE_CONTENT_SCRIPT
 
 @unittest.skipUnless(os.getenv("QALQAN_RUN_BROWSER_TESTS") == "1", "Opt-in real Chromium rendering test")
 class StaticBrowserRenderingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_canvas_frame_is_retained_with_unconfirmed_readiness_warning(self):
+        html = b'<!doctype html><html><body style="background:#172d49;color:white;margin:24px"><main><canvas id="canvas" width="640" height="260"></canvas><p>Frame</p></main><script>const context=document.getElementById("canvas").getContext("2d");context.fillStyle="#20b8b4";context.fillRect(0,0,640,260);context.fillStyle="#f3d532";context.beginPath();context.arc(320,130,90,0,Math.PI*2);context.fill();context.fillStyle="black";context.font="36px Arial";context.fillText("REAL CANVAS FRAME",120,140);</script></body></html>'
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(html)))
+                self.end_headers()
+                self.wfile.write(html)
+
+            def log_message(self, *args):
+                pass
+
+        class UnconfirmedCanvasService(ScreenshotService):
+            async def _wait_for_visible_content(self, page, deadline):
+                # The real DOM heuristic cannot see canvas text or image pixels.
+                self.content = await page.evaluate(_VISIBLE_CONTENT_SCRIPT)
+                return self.content["ready"]
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.daemon_threads = True
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        service = UnconfirmedCanvasService(Settings(
+            evidence_dir=root / "evidence", screenshot_timeout_seconds=10,
+            screenshot_settle_ms=100, screenshot_fallback_enabled=False,
+            screenshot_freeze_after_render=True,
+        ))
+        result = await service.capture(f"http://127.0.0.1:{server.server_port}/", 506)
+        self.assertFalse(service.content["ready"])
+        self.assertIsNotNone(result.path, result.error)
+        self.assertIn("Page content readiness was not confirmed; browser frame may be incomplete", result.error)
+        self.assertNotIn("fallback evidence image", result.error)
+        from PIL import Image
+
+        output = root / result.path
+        with Image.open(output).convert("RGB") as image:
+            self.assertEqual(image.size, (1280, 720))
+            self.assertEqual(image.getpixel((50, 50)), (32, 184, 180))
+        artifact = Path(tempfile.gettempdir()) / f"qalqan-unconfirmed-canvas-{uuid.uuid4().hex}.png"
+        shutil.copy2(output, artifact)
+        print(json.dumps({"actual_unconfirmed_frame": str(artifact), "warning": result.error}))
+
     async def test_dynamic_content_renders_before_javascript_is_frozen(self):
         allow_render = threading.Event()
         resources = {

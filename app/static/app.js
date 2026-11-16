@@ -723,7 +723,7 @@ async function loadHealth() {
   try {
     const health = await api("/api/health");
     const captureModeHint = health.screenshot_runtime?.capture_mode === "browser-frozen"
-      ? " Перед снимком внешнего сайта JavaScript приостанавливается после отрисовки содержимого."
+      ? " Перед кадром внешнего сайта JavaScript приостанавливается; готовность содержимого отмечается в доказательствах."
       : health.screenshot_runtime?.javascript_enabled === false
         ? " Снимки внешних сайтов: HTML, CSS и изображения; JavaScript отключён."
         : "";
@@ -1840,6 +1840,10 @@ function screenshotIsFallback(finding) {
   return String(finding.evidence?.screenshot_error || "").includes("fallback evidence image saved");
 }
 
+function screenshotIsUnconfirmed(finding) {
+  return /content readiness was not confirmed|JavaScript pause was not confirmed/i.test(String(finding.evidence?.screenshot_error || ""));
+}
+
 function positiveSignals(finding) {
   const evidence = finding.evidence || {};
   const ml = evidence.ml || {};
@@ -1856,11 +1860,13 @@ function positiveSignals(finding) {
   if (finding.screenshot_path) {
     signals.push(screenshotIsFallback(finding)
       ? "Сохранена резервная карточка доказательств; снимок сайта не получен"
-      : String(evidence.screenshot_error || "").includes("JavaScript disabled")
-        ? "Сохранен снимок HTML/CSS страницы с изображениями, без JavaScript"
-        : String(evidence.screenshot_error || "").includes("JavaScript was paused")
-          ? "Скриншот страницы сохранен после приостановки JavaScript"
-          : "Скриншот страницы сохранен");
+      : screenshotIsUnconfirmed(finding)
+        ? "Сохранен кадр браузера; готовность содержимого не подтверждена"
+        : String(evidence.screenshot_error || "").includes("JavaScript disabled")
+          ? "Сохранен снимок HTML/CSS страницы с изображениями, без JavaScript"
+          : String(evidence.screenshot_error || "").includes("JavaScript was paused")
+            ? "Скриншот страницы сохранен после приостановки JavaScript"
+            : "Скриншот страницы сохранен");
   }
   if (evidence.response_time_ms && evidence.response_time_ms < 1500) signals.push(`Быстрый ответ: ${formatResponseTime(evidence.response_time_ms)}`);
   if (evidence.access_origin) signals.push(`Проверено через: ${evidence.access_origin}`);
@@ -1946,7 +1952,7 @@ function renderCaseDetail(item, findings) {
         <p>${escapeHtml((finding.reasons || [])[0] || "Домен добавлен в мониторинг по результатам OSINT-поиска.")}</p>
         <div class="detail-actions">
           <a class="primary-btn" href="${escapeHtml(finding.final_url || item.final_url || item.url || "#")}" target="_blank" rel="noreferrer">Открыть сайт</a>
-          ${screenshot ? `<a class="secondary-btn" href="/${escapeHtml(screenshot)}" target="_blank" rel="noreferrer">${screenshotIsFallback(finding) ? "Карточка доказательств" : "Скриншот"}</a>` : ""}
+          ${screenshot ? `<a class="secondary-btn" href="/${escapeHtml(screenshot)}" target="_blank" rel="noreferrer">${screenshotIsFallback(finding) ? "Карточка доказательств" : screenshotIsUnconfirmed(finding) ? "Кадр браузера" : "Скриншот"}</a>` : ""}
           ${html ? `<a class="secondary-btn" href="/${escapeHtml(html)}" target="_blank" rel="noreferrer">HTML</a>` : ""}
           ${firstSource ? `<a class="secondary-btn" href="${escapeHtml(firstSource)}" target="_blank" rel="noreferrer">Источник</a>` : ""}
         </div>
