@@ -22,7 +22,7 @@ from app.services.process_cleanup import (
 
 _LOGGER = logging.getLogger(__name__)
 _STOP_TIMEOUT_SECONDS = 2.5
-_START_TIMEOUT_SECONDS = 3.0
+_START_TIMEOUT_SECONDS = 30.0
 
 
 def _execute_job(settings: Any, job: dict[str, Any], emit: Callable[..., None]) -> None:
@@ -95,6 +95,7 @@ def _child_entry(send: Any, launch_gate: Any, settings: Any, job: dict[str, Any]
 class _Worker:
     process: Any
     receive: Any
+    launch_gate: Any = None
     stop_lock: threading.Lock = field(default_factory=threading.Lock)
     force_stopped: bool = False
     session_ready: bool = False
@@ -113,10 +114,14 @@ class RunWorkerManager:
         *,
         _entry: Callable[..., None] = _execute_job,
         _context: Any = None,
+        _bootstrap: Callable[..., None] = _child_entry,
+        _start_timeout: float = _START_TIMEOUT_SECONDS,
     ) -> None:
         self._on_log = on_log
         self._on_exit = on_exit
         self._entry = _entry
+        self._bootstrap = _bootstrap
+        self._start_timeout = max(0.01, float(_start_timeout))
         self._context = _context or multiprocessing.get_context("spawn")
         self._lock = threading.RLock()
         self._workers: dict[int, _Worker] = {}
@@ -124,37 +129,29 @@ class RunWorkerManager:
     def start(self, run_id: int, settings: Any, job: dict[str, Any]) -> None:
         run_id = int(run_id)
         child_job = dict(job, run_id=run_id)
-        # Hold this lock through Process.start and registration. A concurrent
-        # Stop can never mistake the before-start window for a dead worker.
+        # Hold the registry lock only through process registration/start, not
+        # cold Python imports or the ownership handshake. A starting worker
+        # remains visible and stoppable while its watcher awaits readiness.
         with self._lock:
             if run_id in self._workers:
                 raise RuntimeError("A worker for this run is already registered")
             receive, send = self._context.Pipe(duplex=False)
             launch_gate = self._context.Event()
             process = self._context.Process(
-                target=_child_entry, args=(send, launch_gate, settings, child_job, self._entry),
+                target=self._bootstrap, args=(send, launch_gate, settings, child_job, self._entry),
                 name=f"qalqan-run-{run_id}", daemon=True,
             )
-            worker = _Worker(process, receive)
+            worker = _Worker(process, receive, launch_gate=launch_gate)
             self._workers[run_id] = worker
             try:
                 process.start()
                 worker.identity = process_identity(process.pid)
-                if not receive.poll(_START_TIMEOUT_SECONDS):
-                    raise RuntimeError("Run worker did not establish ownership before the launch deadline")
-                ready = receive.recv()
-                pid = process.pid
-                expected = ("ready", pid, None, None) if os.name == "nt" else ("ready", pid, pid, pid)
-                if ready != expected:
-                    raise RuntimeError("Run worker ownership handshake failed")
-                worker.session_ready = os.name != "nt"
                 watcher = threading.Thread(
                     target=self._watch, args=(run_id, worker),
                     name=f"qalqan-run-watch-{run_id}", daemon=True,
                 )
                 watcher.start()
                 worker.watcher_started = True
-                launch_gate.set()
             except BaseException:
                 cleanup_failed = False
                 try:
@@ -323,7 +320,17 @@ class RunWorkerManager:
 
     def _watch(self, run_id: int, worker: _Worker) -> None:
         receive = worker.receive
+        ownership_ready = False
+        startup_error = None
         try:
+            try:
+                ownership_ready = self._await_ownership(worker)
+            except Exception as exc:
+                if not worker.force_stopped:
+                    startup_error = {"phase": "startup", "error_type": type(exc).__name__,
+                                     "timeout_seconds": self._start_timeout}
+            if not ownership_ready:
+                return
             while True:
                 self._remember_owned_processes(worker)
                 try:
@@ -346,6 +353,29 @@ class RunWorkerManager:
                 if not worker.process.is_alive():
                     break
         finally:
+            if not ownership_ready:
+                # No job passed the launch gate. Kill a failed/cancelled cold
+                # start before waiting for the process or invoking callbacks.
+                with worker.stop_lock:
+                    try:
+                        if not worker.tree_stopped:
+                            deadline = time.monotonic() + _STOP_TIMEOUT_SECONDS
+                            if worker.process.is_alive():
+                                self._kill_tree(worker, deadline)
+                                worker.process.join(timeout=max(0.0, deadline - time.monotonic()))
+                            if worker.process.is_alive():
+                                raise RuntimeError("Starting worker could not be stopped")
+                            self._cleanup_owned_session(worker, timeout=max(0.0, deadline - time.monotonic()))
+                            worker.tree_stopped = True
+                    except Exception:
+                        worker.watcher_started = False
+                        _LOGGER.error("Starting worker cleanup failed; ownership is retained")
+                        return
+            if startup_error is not None and not worker.force_stopped:
+                try:
+                    self._on_log(run_id, "error", "Run worker failed during ownership handshake", startup_error)
+                except Exception:
+                    _LOGGER.error("Run worker startup log callback failed")
             # EOF normally arrives only when the root has exited, but close
             # the pipe first and wait for actual liveness before finalization.
             receive.close()
@@ -365,6 +395,31 @@ class RunWorkerManager:
                 self._on_exit(run_id, int(worker.process.exitcode or 0), worker.force_stopped)
             except Exception:
                 _LOGGER.error("Run worker exit callback failed")
+
+    def _await_ownership(self, worker: _Worker) -> bool:
+        deadline = time.monotonic() + self._start_timeout
+        while True:
+            if worker.force_stopped or worker.tree_stopped:
+                return False
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Run worker did not establish ownership before the launch deadline")
+            if worker.receive.poll(min(0.05, remaining)):
+                ready = worker.receive.recv()
+                pid = worker.process.pid
+                expected = ("ready", pid, None, None) if os.name == "nt" else ("ready", pid, pid, pid)
+                if ready != expected:
+                    raise RuntimeError("Run worker ownership handshake failed")
+                with worker.stop_lock:
+                    worker.session_ready = os.name != "nt"
+                    if worker.force_stopped or worker.tree_stopped:
+                        return False
+                    # Gate and Stop share this lock: cancellation can never be
+                    # followed by a delayed watcher starting the actual job.
+                    worker.launch_gate.set()
+                return True
+            if not worker.process.is_alive():
+                raise RuntimeError("Run worker exited before the ownership handshake")
 
     @staticmethod
     def _remember_owned_processes(worker: _Worker) -> None:

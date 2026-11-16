@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 os.environ["DATABASE_URL"] = ""
 os.environ.setdefault("DATABASE_PATH", "data/test_run_lifecycle.db")
@@ -195,6 +196,18 @@ class RunLifecycleTests(unittest.TestCase):
             main.resume_active_runs_after_restart()
         self.assertEqual(self.db.get_run(self.run_id)["status"], "canceled")
         self.manager.start.assert_not_called()
+
+    def test_failed_resume_worker_does_not_abort_api_startup(self) -> None:
+        self.manager.start.side_effect = RuntimeError("fixture cold worker launch failure")
+        with patch.object(main, "settings", replace(main.settings, resume_active_runs=True)):
+            # Exercise the actual lifespan, as an uncaught HTTPException here
+            # makes Uvicorn exit rather than returning a normal API error.
+            with TestClient(main.app) as client:
+                response = client.get("/api/health")
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response.json()["ok"])
+                self.assertEqual(self.db.get_run(self.run_id)["status"], "failed")
+                self.assertIsNotNone(self.db.get_run(self.run_id)["finished_at"])
 
     def test_late_completed_callback_after_stop_does_not_restart_browser_repair(self) -> None:
         # A process can commit its completed row immediately before Stop takes

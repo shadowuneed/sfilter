@@ -231,12 +231,18 @@ def resume_active_runs_after_restart() -> None:
             "Сервер перезапустился: продолжаю проверку до выбранной цели",
             {"target_findings": max_candidates, "already_saved": db.count_findings(run_id)},
         )
-        with run_launch_lock:
-            _start_run_worker(run_id, {
-                "kind": "auto", "seed_query": run.get("seed_query"),
-                "max_candidates": max_candidates,
-                "take_screenshots": bool(run.get("take_screenshots")), "search_mode": "auto",
-            })
+        try:
+            with run_launch_lock:
+                _start_run_worker(run_id, {
+                    "kind": "auto", "seed_query": run.get("seed_query"),
+                    "max_candidates": max_candidates,
+                    "take_screenshots": bool(run.get("take_screenshots")), "search_mode": "auto",
+                })
+        except HTTPException:
+            # _start_run_worker already persisted a terminal failure. A
+            # failed scan resume must not abort the entire API lifespan and
+            # make health, the registry, and the Stop button unavailable.
+            print(f"run={run_id} resume_worker_start_failed", flush=True)
 
     if latest_automatic_run_id is not None:
         return

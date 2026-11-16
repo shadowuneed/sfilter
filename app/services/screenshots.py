@@ -167,16 +167,21 @@ class ScreenshotService:
         acquired = False
         process_scope = None
         process_tracking_failed = False
+        stage = "waiting for browser slot"
         try:
             while not self._browser_slots.acquire(blocking=False):
                 await self._within_deadline(asyncio.sleep(0.2), operation_deadline)
             acquired = True
             if self.settings.screenshot_concurrency == 1:
+                stage = "tracking browser processes"
                 process_scope = ScreenshotProcessScope()
             manager = async_playwright()
+            stage = "starting Playwright driver"
             playwright = await self._within_deadline(manager.start(), operation_deadline)
             if process_scope is not None:
+                stage = "tracking browser processes"
                 process_scope.track()
+            stage = "launching Chromium"
             browser = await self._within_deadline(playwright.chromium.launch(
                 headless=True,
                 args=[
@@ -204,7 +209,9 @@ class ScreenshotService:
                 ],
             ), operation_deadline)
             if process_scope is not None:
+                stage = "tracking browser processes"
                 process_scope.track()
+            stage = "creating browser context"
             context = await self._within_deadline(browser.new_context(
                 ignore_https_errors=True,
                 viewport={"width": 1280, "height": 720},
@@ -214,33 +221,45 @@ class ScreenshotService:
                 timezone_id="Asia/Almaty",
                 proxy={"server": self.settings.kz_proxy_url} if self.settings.kz_proxy_url else None,
             ), operation_deadline)
+            stage = "creating browser page"
             page = await self._within_deadline(context.new_page(), operation_deadline)
-            timeout_ms = max(2_500, int(self.settings.screenshot_timeout_seconds * 1000))
+            # Navigation/readiness gets only part of the remaining total budget.
+            # Slow ads or streaming responses must leave time to photograph the
+            # actual viewport, even after an expensive cold browser launch.
+            navigation_deadline = loop.time() + max(0.0, operation_deadline - loop.time()) * 0.55
+            navigation_timeout_ms = max(1, int((navigation_deadline - loop.time()) * 1000))
             settle_ms = max(0, int(self.settings.screenshot_settle_ms))
-            page.set_default_timeout(timeout_ms)
+            page.set_default_timeout(max(1, int((operation_deadline - loop.time()) * 1000)))
             navigation_error = None
+            stage = "navigation commit"
             try:
-                await self._within_deadline(page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms), operation_deadline)
+                await self._within_deadline(
+                    page.goto(url, wait_until="commit", timeout=navigation_timeout_ms), navigation_deadline,
+                )
             except Exception as exc:  # noqa: BLE001
                 navigation_error = exc
-                try:
-                    await self._within_deadline(page.goto(url, wait_until="commit", timeout=max(1_500, timeout_ms // 2)), operation_deadline)
-                except Exception:
-                    pass
+            stage = "document readiness"
             try:
-                await self._within_deadline(page.wait_for_load_state("load", timeout=min(750, timeout_ms)), operation_deadline)
+                await self._within_deadline(
+                    page.wait_for_load_state("domcontentloaded", timeout=max(1, int((navigation_deadline - loop.time()) * 1000))),
+                    navigation_deadline,
+                )
             except Exception:
                 pass
             if settle_ms:
-                await self._within_deadline(page.wait_for_timeout(settle_ms), operation_deadline)
+                stage = "settling browser viewport"
+                settle_seconds = min(settle_ms / 1000, max(0.0, operation_deadline - loop.time()) * 0.1)
+                await self._within_deadline(asyncio.sleep(settle_seconds), operation_deadline)
+            stage = "capturing browser PNG"
             try:
+                capture_deadline = loop.time() + min(15.0, max(0.0, operation_deadline - loop.time()) * 0.75)
                 await self._within_deadline(page.screenshot(
                     path=str(output),
                     full_page=False,
-                    timeout=max(2_000, min(timeout_ms, 3_000)),
+                    timeout=max(1, int((capture_deadline - loop.time()) * 1000)),
                     animations="disabled",
                     caret="hide",
-                ), operation_deadline)
+                ), capture_deadline)
                 result = self._capture_result(output, rel_path)
                 if result.path or not self.settings.screenshot_fallback_enabled:
                     if result.path and navigation_error:
@@ -260,14 +279,17 @@ class ScreenshotService:
                 )
             except Exception:  # noqa: BLE001
                 try:
+                    stage = "retrying browser PNG"
+                    retry_deadline = loop.time() + min(5.0, max(0.0, operation_deadline - loop.time()) * 0.5)
                     await self._within_deadline(page.screenshot(
                         path=str(output),
                         full_page=False,
-                        timeout=max(1_500, min(timeout_ms // 2, 2_500)),
+                        timeout=max(1, int((retry_deadline - loop.time()) * 1000)),
                         animations="disabled",
                         caret="hide",
-                    ), operation_deadline)
+                    ), retry_deadline)
                 except Exception:  # noqa: BLE001
+                    stage = "capturing CDP browser PNG"
                     client = await self._within_deadline(context.new_cdp_session(page), operation_deadline)
                     capture = await self._within_deadline(client.send(
                         "Page.captureScreenshot",
@@ -299,7 +321,7 @@ class ScreenshotService:
                 title=title,
                 html_path=html_path,
                 status_code=status_code,
-                error=f"{type(exc).__name__}: {exc}",
+                error=f"{stage}: {type(exc).__name__}: {exc}",
             )
         finally:
             if process_scope is not None:

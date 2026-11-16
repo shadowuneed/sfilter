@@ -14,7 +14,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from app.services.run_workers import RunWorkerManager
+from app.services.run_workers import RunWorkerManager, _child_entry
 
 
 def _fixture_tree(settings, job, emit):
@@ -44,6 +44,17 @@ def _fixture_idle(settings, job, emit):
     emit(job["run_id"], "info", "fixture idle", None)
     while True:
         time.sleep(0.05)
+
+
+def _fixture_delayed_bootstrap(send, launch_gate, settings, job, entry):
+    Path(job["boot_marker"]).write_text("booting", encoding="ascii")
+    time.sleep(job["boot_delay"])
+    _child_entry(send, launch_gate, settings, job, entry)
+
+
+def _fixture_job_marker(settings, job, emit):
+    Path(job["job_marker"]).write_text("entered", encoding="ascii")
+    emit(job["run_id"], "info", "fixture job entered", None)
 
 
 def _fixture_leave_descendant(settings, job, emit):
@@ -149,6 +160,80 @@ class _BrokenContext:
 
 
 class RunWorkerTests(unittest.TestCase):
+    def test_cold_boot_over_three_seconds_does_not_block_start_or_fail_the_job(self):
+        exited = threading.Event()
+        exits = []
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = RunWorkerManager(lambda *args: None,
+                                       lambda *args: (exits.append(args), exited.set()),
+                                       _entry=_fixture_job_marker, _bootstrap=_fixture_delayed_bootstrap)
+            self.addCleanup(manager.stop_all)
+            started = time.monotonic()
+            manager.start(134, None, {"kind": "manual", "run_id": 134, "boot_delay": 3.4,
+                                      "boot_marker": str(root / "boot.txt"),
+                                      "job_marker": str(root / "job.txt")})
+            self.assertLess(time.monotonic() - started, 1.5)
+            registry_started = time.monotonic()
+            self.assertTrue(manager.is_running(134))
+            self.assertEqual(manager.running_ids(), [134])
+            self.assertLess(time.monotonic() - registry_started, 0.25)
+            self.assertTrue(exited.wait(8))
+            self.assertGreaterEqual(time.monotonic() - started, 3.3)
+            self.assertEqual(exits, [(134, 0, False)])
+            self.assertEqual((root / "job.txt").read_text(), "entered")
+            self.assertEqual(manager.running_ids(), [])
+
+    def test_stop_during_cold_boot_is_bounded_and_never_opens_the_job_gate(self):
+        parent_pid = os.getpid()
+        exited = threading.Event()
+        exits, logs = [], []
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = RunWorkerManager(lambda *args: logs.append(args),
+                                       lambda *args: (exits.append(args), exited.set()),
+                                       _entry=_fixture_job_marker, _bootstrap=_fixture_delayed_bootstrap)
+            self.addCleanup(manager.stop_all)
+            manager.start(134, None, {"kind": "manual", "run_id": 134, "boot_delay": 60,
+                                      "boot_marker": str(root / "boot.txt"),
+                                      "job_marker": str(root / "job.txt")})
+            self.assertTrue(_wait_for((root / "boot.txt").exists))
+            self.assertTrue(manager.is_running(134))
+            started = time.monotonic()
+            self.assertTrue(manager.force_stop(134))
+            self.assertLess(time.monotonic() - started, 3.1)
+            self.assertEqual(os.getpid(), parent_pid)
+            self.assertTrue(exited.wait(3))
+            self.assertTrue(exits[0][2])
+            self.assertFalse((root / "job.txt").exists())
+            self.assertEqual(logs, [])
+            self.assertFalse(manager.is_running(134))
+
+    def test_cold_boot_deadline_cleans_child_and_reports_failure_without_operator_stop(self):
+        parent_pid = os.getpid()
+        exited = threading.Event()
+        exits, logs = [], []
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = RunWorkerManager(lambda *args: logs.append(args),
+                                       lambda *args: (exits.append(args), exited.set()),
+                                       _entry=_fixture_job_marker, _bootstrap=_fixture_delayed_bootstrap,
+                                       _start_timeout=0.2)
+            self.addCleanup(manager.stop_all)
+            manager.start(134, None, {"kind": "manual", "run_id": 134, "boot_delay": 60,
+                                      "boot_marker": str(root / "boot.txt"),
+                                      "job_marker": str(root / "job.txt")})
+            self.assertTrue(exited.wait(4))
+            self.assertEqual(os.getpid(), parent_pid)
+            self.assertEqual(exits[0][0], 134)
+            self.assertFalse(exits[0][2])
+            self.assertNotEqual(exits[0][1], 0)
+            self.assertEqual(len(logs), 1)
+            self.assertEqual(logs[0][1], "error")
+            self.assertEqual(logs[0][3]["error_type"], "TimeoutError")
+            self.assertFalse((root / "job.txt").exists())
+            self.assertEqual(manager.running_ids(), [])
+
     def test_abrupt_exit_cleans_cached_detached_descendant_before_exit_callback(self):
         from app.services.process_cleanup import kill_processes, process_identity
 

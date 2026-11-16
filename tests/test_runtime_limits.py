@@ -60,6 +60,19 @@ class RuntimeLimitsTests(unittest.TestCase):
                 self.assertEqual(effective.browser_screenshots_enabled, browser)
                 self.assertEqual(effective.screenshot_fallback_enabled, fallback)
 
+    def test_verified_low_memory_gives_cold_browser_a_bounded_45_second_budget(self):
+        self.v2.write_text(str(512 * MIB), encoding="ascii")
+        effective, info = self.apply()
+        self.assertTrue(info["low_memory_mode"])
+        self.assertEqual(effective.screenshot_timeout_seconds, 45)
+        self.assertEqual(self.settings.screenshot_timeout_seconds, 10)
+
+    def test_low_memory_preserves_a_longer_explicit_screenshot_budget(self):
+        self.v2.write_text(str(512 * MIB), encoding="ascii")
+        configured = replace(self.settings, screenshot_timeout_seconds=60)
+        effective, _ = self.apply(configured)
+        self.assertEqual(effective.screenshot_timeout_seconds, 60)
+
     def test_threshold_uses_bytes_and_includes_exactly_768_mib(self):
         for limit, low in [(768 * MIB, True), (768 * MIB + 1, False)]:
             with self.subTest(limit=limit):

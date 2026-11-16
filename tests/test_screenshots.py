@@ -138,7 +138,27 @@ class ScreenshotDeadlineTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(result.path)
         self.assertIn("tim", result.error.lower())
+        self.assertIn("launching Chromium", result.error)
         self.manager.__aexit__.assert_awaited()
+        self._assert_slot_released()
+
+    async def test_cold_browser_still_captures_when_document_readiness_never_finishes(self) -> None:
+        async def cold_launch(*args, **kwargs):
+            await asyncio.sleep(0.025)
+            return self.browser
+
+        async def navigate(*args, **kwargs):
+            if kwargs.get("wait_until") == "domcontentloaded":
+                await self._hang()
+
+        self.playwright.chromium.launch.side_effect = cold_launch
+        self.page.goto.side_effect = navigate
+        self.page.wait_for_load_state.side_effect = self._hang
+
+        result = await self._bounded_result(asyncio.create_task(self.service.capture("https://example.com", 7)))
+
+        self.assertEqual(result.path, "evidence/test.png", "Cold startup and pending page resources must leave time for a real browser capture")
+        self.page.screenshot.assert_awaited()
         self._assert_slot_released()
 
     async def test_hanging_close_cannot_prevent_success_or_leak_slot(self) -> None:
