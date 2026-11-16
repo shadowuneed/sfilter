@@ -15,6 +15,10 @@ import threading
 import time
 from typing import Any, Callable
 
+from app.services.process_cleanup import (
+    ProcessIdentity, capture_owned_tree, is_process_alive, kill_processes, process_identity,
+)
+
 
 _LOGGER = logging.getLogger(__name__)
 _STOP_TIMEOUT_SECONDS = 2.5
@@ -96,6 +100,9 @@ class _Worker:
     session_ready: bool = False
     tree_stopped: bool = False
     watcher_started: bool = False
+    identity: ProcessIdentity | None = None
+    owned_processes: dict[tuple[int, float], ProcessIdentity] = field(default_factory=dict)
+    next_process_snapshot: float = 0.0
 
 
 class RunWorkerManager:
@@ -132,6 +139,7 @@ class RunWorkerManager:
             self._workers[run_id] = worker
             try:
                 process.start()
+                worker.identity = process_identity(process.pid)
                 if not receive.poll(_START_TIMEOUT_SECONDS):
                     raise RuntimeError("Run worker did not establish ownership before the launch deadline")
                 ready = receive.recv()
@@ -205,7 +213,7 @@ class RunWorkerManager:
                 worker.process.join(timeout=max(0.0, deadline - time.monotonic()))
             if worker.process.is_alive():
                 raise RuntimeError("Run worker did not stop within the deadline")
-            self._cleanup_owned_session(worker)
+            self._cleanup_owned_session(worker, timeout=max(0.0, deadline - time.monotonic()))
             worker.tree_stopped = True
             if not worker.watcher_started:
                 # A failed launch never released the job gate. There is no
@@ -258,6 +266,24 @@ class RunWorkerManager:
             if result.returncode and process.is_alive():
                 raise RuntimeError("Unable to stop the owned worker process tree")
             return
+        # Playwright can launch Chromium with detached:true. Session/group
+        # signalling alone would miss that descendant, so snapshot its stable
+        # identity before killing the worker and reparenting the browser.
+        if worker.identity is not None:
+            roots = capture_owned_tree(worker.identity)
+            for identity in list(roots):
+                for descendant in capture_owned_tree(identity):
+                    worker.owned_processes[descendant.key] = descendant
+            descendants_stopped = kill_processes(
+                list(worker.owned_processes.values()),
+                timeout=min(0.75, max(0.0, deadline - time.monotonic())),
+            )
+            RunWorkerManager._cleanup_owned_session(
+                worker, timeout=max(0.0, deadline - time.monotonic())
+            )
+            if not descendants_stopped:
+                raise RuntimeError("Owned worker descendants did not stop within the deadline")
+            return
         try:
             pgid = os.getpgid(pid)
             sid = os.getsid(pid)
@@ -279,10 +305,12 @@ class RunWorkerManager:
                 pass
 
     @staticmethod
-    def _cleanup_owned_session(worker: _Worker) -> None:
+    def _cleanup_owned_session(worker: _Worker, timeout: float = 0.75) -> None:
         # A child may exit before its driver/browser descendants. The ready
         # handshake proves this PGID belonged to our isolated child session;
         # querying the already-dead root with getpgid would lose that proof.
+        if worker.owned_processes and not kill_processes(list(worker.owned_processes.values()), timeout):
+            raise RuntimeError("Owned worker descendants did not stop within the deadline")
         if os.name == "nt" or not worker.session_ready:
             return
         pid = worker.process.pid
@@ -297,6 +325,7 @@ class RunWorkerManager:
         receive = worker.receive
         try:
             while True:
+                self._remember_owned_processes(worker)
                 try:
                     has_message = receive.poll(0.05)
                     if has_message:
@@ -305,10 +334,12 @@ class RunWorkerManager:
                             pid = worker.process.pid
                             worker.session_ready = os.name != "nt" and tuple(message[1:]) == (pid, pid, pid)
                         elif message[0] == "log":
+                            self._remember_owned_processes(worker)
                             try:
                                 self._on_log(*message[1:])
                             except Exception:
                                 _LOGGER.error("Run worker log callback failed")
+                            self._remember_owned_processes(worker)
                         continue
                 except (EOFError, OSError):
                     break
@@ -324,7 +355,7 @@ class RunWorkerManager:
                     if not worker.tree_stopped:
                         self._cleanup_owned_session(worker)
                         worker.tree_stopped = True
-                except OSError:
+                except (OSError, RuntimeError):
                     _LOGGER.error("Failed to clean up an owned worker session; ownership is retained")
                     return
             with self._lock:
@@ -334,3 +365,32 @@ class RunWorkerManager:
                 self._on_exit(run_id, int(worker.process.exitcode or 0), worker.force_stopped)
             except Exception:
                 _LOGGER.error("Run worker exit callback failed")
+
+    @staticmethod
+    def _remember_owned_processes(worker: _Worker) -> None:
+        # Cache detached descendants while the root is alive: after an OOM or
+        # os._exit they can be reparented and disappear from children(root).
+        now = time.monotonic()
+        if now < worker.next_process_snapshot:
+            return
+        with worker.stop_lock:
+            if worker.tree_stopped or now < worker.next_process_snapshot:
+                return
+            worker.next_process_snapshot = now + 0.25
+            retained = {}
+            for key, identity in worker.owned_processes.items():
+                try:
+                    if is_process_alive(identity):
+                        retained[key] = identity
+                except Exception:
+                    # Unknown identity state is not proof that cleanup finished.
+                    retained[key] = identity
+            worker.owned_processes = retained
+            if worker.identity is not None and worker.process.is_alive():
+                try:
+                    for identity in capture_owned_tree(worker.identity):
+                        if is_process_alive(identity):
+                            worker.owned_processes[identity.key] = identity
+                except Exception:
+                    if worker.process.is_alive():
+                        _LOGGER.warning("Could not refresh owned worker process identities")

@@ -19,14 +19,17 @@ function harness() {
   let timerId = 0;
   const element = () => ({
     disabled: false, textContent: "", innerHTML: "", title: "", dataset: {},
+    hidden: true, checked: true, attributes: {},
+    setAttribute(name, value) { this.attributes[name] = value; },
     listeners: {}, addEventListener(name, callback) { this.listeners[name] = callback; },
   });
   const elements = Object.fromEntries(
-    ["runBtn", "stopBtn", "manualBtn", "healthLine", "activityDiagnostic", "runStatus", "currentRun", "runsList"]
+    ["runBtn", "stopBtn", "manualBtn", "healthLine", "activityDiagnostic", "runStatus", "currentRun", "runsList", "takeScreenshots", "screenshotModeHint"]
       .map((id) => [id, element()]),
   );
   const h = { timers, elements, calls: [], runs: [{ id: 134, status: "canceled" }] };
   h.fetch = async (url, options) => {
+    if (url === "/api/health") return response(h.health || { kz_proxy_ready: true });
     if (options.method === "POST") return response({ status: "canceled", run_id: 134, run_ids: [134], force: true });
     if (url.startsWith("/api/runs?")) return response({ runs: h.runs });
     if (url.startsWith("/api/runs/")) return response({ run: h.runs[0], logs: [], findings: [] });
@@ -52,7 +55,7 @@ function harness() {
   const withoutStartup = source.replace(/bootstrap\(\)\.catch\(console\.error\);\s*$/, "");
   assert.notEqual(source, withoutStartup);
   vm.runInContext(`${withoutStartup}\n globalThis.frontend = {
-    state, api, stopRun, syncStopButton, syncActionButtons, loadRuns, loadRun,
+    state, api, stopRun, syncStopButton, syncActionButtons, loadRuns, loadRun, loadHealth,
     hardStopAll: typeof hardStopAll === "function" ? hardStopAll : null,
   };`, context);
   h.ui = context.frontend;
@@ -208,4 +211,47 @@ test("hard stop does not abort the independent health request", async () => {
   assert.equal(healthRequest.options.signal.aborted, false);
   pendingHealth.resolve(response({ status: "ok" }));
   assert.equal((await health).status, "ok");
+});
+
+test("low-memory health keeps screenshots available with an accessible visible explanation", async () => {
+  const h = harness();
+  h.health = { low_memory_mode: true, container_memory_limit_mb: 512, scan_concurrency: 1, screenshots_enabled: true, kz_proxy_ready: true };
+  await h.ui.loadHealth();
+  const hint = "Режим 512 МБ: проверки и скриншоты выполняются по одному.";
+  assert.equal(h.elements.takeScreenshots.checked, true);
+  assert.equal(h.elements.takeScreenshots.disabled, false);
+  assert.equal(h.elements.takeScreenshots.title, hint);
+  assert.equal(h.elements.takeScreenshots.attributes["aria-describedby"], "screenshotModeHint");
+  assert.equal(h.elements.screenshotModeHint.hidden, false);
+  assert.equal(h.elements.screenshotModeHint.textContent, hint);
+  assert.ok(h.elements.healthLine.textContent.includes(hint));
+  assert.ok(h.elements.healthLine.textContent.includes("Groq Compound не настроен"), "Other health details remain");
+  h.elements.takeScreenshots.checked = false;
+  await h.ui.loadHealth();
+  assert.equal(h.elements.takeScreenshots.checked, false, "The user's screenshot choice is retained");
+  assert.equal(h.elements.takeScreenshots.disabled, false);
+});
+
+test("legacy health leaves the screenshot checkbox choice unchanged", async () => {
+  const h = harness();
+  await h.ui.loadHealth();
+  assert.equal(h.elements.takeScreenshots.checked, true);
+  assert.equal(h.elements.takeScreenshots.disabled, false);
+  assert.equal(h.elements.screenshotModeHint.hidden, true);
+  h.elements.takeScreenshots.checked = false;
+  await h.ui.loadHealth();
+  assert.equal(h.elements.takeScreenshots.checked, false);
+});
+
+test("leaving low-memory mode preserves the screenshot choice", async () => {
+  const h = harness();
+  h.elements.takeScreenshots.checked = false;
+  h.health = { low_memory_mode: true, kz_proxy_ready: true };
+  await h.ui.loadHealth();
+  h.health = { low_memory_mode: false, screenshots_enabled: true, kz_proxy_ready: true };
+  await h.ui.loadHealth();
+  assert.equal(h.elements.takeScreenshots.checked, false);
+  assert.equal(h.elements.takeScreenshots.disabled, false);
+  assert.equal(h.elements.screenshotModeHint.hidden, true);
+  assert.equal(h.elements.takeScreenshots.title, "");
 });

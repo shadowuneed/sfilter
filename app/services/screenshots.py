@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import asyncio
 import importlib.util
+import logging
 import os
 import re
 import textwrap
@@ -15,6 +16,7 @@ from typing import Any, TypeVar
 
 from app.config import Settings
 from app.services.domains import extract_domain
+from app.services.process_cleanup import ProcessCleanupError, ScreenshotProcessScope
 
 
 BROWSER_SCREENSHOT_USER_AGENT = (
@@ -23,6 +25,7 @@ BROWSER_SCREENSHOT_USER_AGENT = (
 )
 
 _CLEANUP_TIMEOUT_SECONDS = 0.2
+_LOGGER = logging.getLogger(__name__)
 _Result = TypeVar("_Result")
 
 
@@ -43,6 +46,7 @@ class ScreenshotService:
         self.settings = settings
         self._browser_slots = threading.BoundedSemaphore(max(1, int(settings.screenshot_concurrency)))
         self._runtime_status_cache: dict[str, Any] | None = None
+        self._process_cleanup_failed = False
 
     def runtime_status(self) -> dict[str, Any]:
         if self._runtime_status_cache is not None:
@@ -120,6 +124,8 @@ class ScreenshotService:
     ) -> ScreenshotResult:
         if not self.settings.screenshots_enabled:
             return ScreenshotResult(path=None, error="screenshots disabled by configuration")
+        if self._process_cleanup_failed:
+            return ScreenshotResult(path=None, error="Browser process cleanup failed; restart the scan before another capture")
 
         domain = extract_domain(url) or "unknown"
         safe_domain = re.sub(r"[^a-zA-Z0-9_.-]+", "_", domain)[:80]
@@ -159,12 +165,18 @@ class ScreenshotService:
         context = None
         manager = None
         acquired = False
+        process_scope = None
+        process_tracking_failed = False
         try:
             while not self._browser_slots.acquire(blocking=False):
                 await self._within_deadline(asyncio.sleep(0.2), operation_deadline)
             acquired = True
+            if self.settings.screenshot_concurrency == 1:
+                process_scope = ScreenshotProcessScope()
             manager = async_playwright()
             playwright = await self._within_deadline(manager.start(), operation_deadline)
+            if process_scope is not None:
+                process_scope.track()
             browser = await self._within_deadline(playwright.chromium.launch(
                 headless=True,
                 args=[
@@ -191,6 +203,8 @@ class ScreenshotService:
                     "--disable-blink-features=AutomationControlled",
                 ],
             ), operation_deadline)
+            if process_scope is not None:
+                process_scope.track()
             context = await self._within_deadline(browser.new_context(
                 ignore_https_errors=True,
                 viewport={"width": 1280, "height": 720},
@@ -288,11 +302,27 @@ class ScreenshotService:
                 error=f"{type(exc).__name__}: {exc}",
             )
         finally:
+            if process_scope is not None:
+                try:
+                    process_scope.track()
+                except ProcessCleanupError:
+                    process_tracking_failed = True
             try:
                 await self._cleanup_browser(context, browser, manager)
             finally:
-                if acquired:
+                cleaned = not process_tracking_failed
+                if process_scope is not None:
+                    try:
+                        cleaned = process_scope.cleanup(timeout=0.75) and cleaned
+                    except Exception:
+                        cleaned = False
+                if acquired and cleaned:
                     self._browser_slots.release()
+                elif acquired:
+                    # Retain the slot: launching another Chromium on top of
+                    # an unconfirmed old tree can exhaust a small container.
+                    self._process_cleanup_failed = True
+                    _LOGGER.error("Browser process cleanup failed; capture slot quarantined")
 
     async def _within_deadline(
         self,
@@ -329,9 +359,9 @@ class ScreenshotService:
 
     async def _cleanup_browser(self, context: Any, browser: Any, manager: Any) -> None:
         closers = []
+        closers.extend(resource.close for resource in (context, browser) if resource is not None)
         if manager is not None:
             closers.append(manager.__aexit__)
-        closers.extend(resource.close for resource in (context, browser) if resource is not None)
         canceled = False
         loop = asyncio.get_running_loop()
         # A fresh, shared grace period lets the driver terminate after a capture

@@ -63,6 +63,7 @@ const els = {
   seedQuery: document.getElementById("seedQuery"),
   runSize: document.getElementById("runSize"),
   takeScreenshots: document.getElementById("takeScreenshots"),
+  screenshotModeHint: document.getElementById("screenshotModeHint"),
   manualTarget: document.getElementById("manualTarget"),
   manualBtn: document.getElementById("manualBtn"),
   activityPanel: document.getElementById("activityPanel"),
@@ -721,6 +722,18 @@ function setHealthDetailsOpen(open) {
 async function loadHealth() {
   try {
     const health = await api("/api/health");
+    const lowMemoryHint = health.low_memory_mode
+      ? "Режим 512 МБ: проверки и скриншоты выполняются по одному."
+      : "";
+    if (els.takeScreenshots) {
+      els.takeScreenshots.disabled = false;
+      els.takeScreenshots.title = lowMemoryHint;
+      els.takeScreenshots.setAttribute("aria-describedby", "screenshotModeHint");
+    }
+    if (els.screenshotModeHint) {
+      els.screenshotModeHint.textContent = lowMemoryHint;
+      els.screenshotModeHint.hidden = !lowMemoryHint;
+    }
     state.authRequired = Boolean(health.auth_required);
     state.authConfigured = Boolean(health.auth_configured);
     state.kzProxyConfigured = Boolean(health.kz_proxy_configured);
@@ -763,7 +776,7 @@ async function loadHealth() {
     const concurrency = health.scan_concurrency || 3;
     const timeout = health.candidate_timeout_seconds || 15;
     const maxRun = Math.min(Number(health.max_candidates_per_run || MAX_RUN_CANDIDATES), MAX_RUN_CANDIDATES);
-    els.healthLine.textContent = `${groqHint}. ${geminiHint}. ${mlHint}. ${cyberHint}. ${kzHint}. Цель запуска: до ${maxRun} находок, потоков: ${concurrency}, таймаут сайта: ${timeout} сек.`;
+    els.healthLine.textContent = `${lowMemoryHint ? `${lowMemoryHint} ` : ""}${groqHint}. ${geminiHint}. ${mlHint}. ${cyberHint}. ${kzHint}. Цель запуска: до ${maxRun} находок, потоков: ${concurrency}, таймаут сайта: ${timeout} сек.`;
     const actionBlocked = authMissing || !kzReady;
     const actionReason = authMissing
       ? "На сервере не настроен ADMIN_TOKEN"

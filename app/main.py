@@ -18,9 +18,10 @@ from app.services.gemini import GeminiClient
 from app.services.investigator import Investigator
 from app.services.kz_access import check_kz_proxy
 from app.services.run_workers import RunWorkerManager
+from app.services.runtime_limits import apply_runtime_limits
 
 
-settings = get_settings()
+settings, runtime_limits = apply_runtime_limits(get_settings())
 db = Database(settings.database_url or settings.database_path)
 db.init()
 gemini = GeminiClient(settings, db)
@@ -168,7 +169,8 @@ def _start_screenshot_repair() -> bool:
     # starts only while no automatic run is active, and the investigator
     # checks again before every screenshot if a new run appears.
     with run_launch_lock:
-        if not _allow_screenshot_repair or db.list_active_runs() or worker_manager.is_running(0):
+        if (runtime_limits["low_memory_mode"] or not _allow_screenshot_repair
+                or db.list_active_runs() or worker_manager.is_running(0)):
             return False
         try:
             worker_manager.start(0, settings, {"kind": "repair", "run_id": 0})
@@ -374,6 +376,7 @@ def health() -> dict[str, Any]:
         "resume_active_runs": settings.resume_active_runs,
         "worker_mode": "isolated-process",
         "hard_stop_supported": True,
+        **runtime_limits,
         "gemini_user_search_fallback": settings.gemini_user_search_fallback,
         "groq_configured": investigator.groq.available,
         "groq_model": settings.groq_model,

@@ -26,7 +26,8 @@ def _fixture_tree(settings, job, emit):
         "import pathlib,sys,time; p=pathlib.Path(sys.argv[1]); "
         "\nwhile True:\n p.write_text(str(time.time_ns())); time.sleep(0.03)\n"
     )
-    options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+    options = ({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt"
+               else {"start_new_session": True})
     descendant = subprocess.Popen([sys.executable, "-B", "-c", script, heartbeat], **options)
     Path(job["pid_file"]).write_text(str(descendant.pid), encoding="ascii")
     emit(job["run_id"], "info", "fixture tree ready", {"fixture": True})
@@ -49,6 +50,20 @@ def _fixture_leave_descendant(settings, job, emit):
     descendant = subprocess.Popen([sys.executable, "-B", "-c", "import time; time.sleep(60)"])
     Path(job["pid_file"]).write_text(str(descendant.pid), encoding="ascii")
     emit(job["run_id"], "info", "fixture left descendant", None)
+
+
+def _fixture_abrupt_detached_descendant(settings, job, emit):
+    script = (
+        "import pathlib,sys,time; p=pathlib.Path(sys.argv[1]); "
+        "\nwhile True:\n p.write_text(str(time.time_ns())); time.sleep(0.03)\n"
+    )
+    options = ({"creationflags": subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP}
+               if os.name == "nt" else {"start_new_session": True})
+    descendant = subprocess.Popen([sys.executable, "-B", "-c", script, job["heartbeat"]], **options)
+    Path(job["pid_file"]).write_text(str(descendant.pid), encoding="ascii")
+    emit(job["run_id"], "info", "fixture detached descendant ready", None)
+    time.sleep(1.0)
+    os._exit(17)
 
 
 class _DelayedProcess:
@@ -134,6 +149,34 @@ class _BrokenContext:
 
 
 class RunWorkerTests(unittest.TestCase):
+    def test_abrupt_exit_cleans_cached_detached_descendant_before_exit_callback(self):
+        from app.services.process_cleanup import kill_processes, process_identity
+
+        parent_pid = os.getpid()
+        exits = []
+        exited = threading.Event()
+        with TemporaryDirectory() as directory:
+            heartbeat = Path(directory) / "abrupt-heartbeat.txt"
+            pid_file = Path(directory) / "abrupt-descendant.txt"
+            manager = RunWorkerManager(lambda *args: None,
+                                       lambda *args: (exits.append(args), exited.set()),
+                                       _entry=_fixture_abrupt_detached_descendant)
+            self.addCleanup(manager.stop_all)
+            manager.start(134, None, {"kind": "auto", "run_id": 134,
+                                      "heartbeat": str(heartbeat), "pid_file": str(pid_file)})
+            self.assertTrue(_wait_for(lambda: pid_file.exists() and heartbeat.exists()))
+            descendant_pid = int(pid_file.read_text())
+            descendant = process_identity(descendant_pid)
+            self.addCleanup(kill_processes, [descendant], 0.5)
+            self.assertTrue(exited.wait(6))
+            self.assertEqual(exits, [(134, 17, False)])
+            self.assertEqual(os.getpid(), parent_pid)
+            self.assertFalse(_pid_running(descendant_pid))
+            final_heartbeat = heartbeat.read_text()
+            time.sleep(0.12)
+            self.assertEqual(heartbeat.read_text(), final_heartbeat)
+            self.assertEqual(manager.running_ids(), [])
+
     def test_production_entry_accepts_settings_and_empty_repair_database(self):
         required = ("httpx", "bs4", "requests", "tldextract")
         if any(importlib.util.find_spec(name) is None for name in required):
