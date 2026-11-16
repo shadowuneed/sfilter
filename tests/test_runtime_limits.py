@@ -36,11 +36,13 @@ class RuntimeLimitsTests(unittest.TestCase):
         self.assertEqual(effective.screenshot_concurrency, 1)
         self.assertTrue(effective.screenshots_enabled)
         self.assertTrue(effective.browser_screenshots_enabled)
+        self.assertFalse(effective.screenshot_javascript_enabled)
         self.assertTrue(effective.screenshot_fallback_enabled)
         self.assertEqual(self.settings.scan_concurrency, 3)
         self.assertEqual(self.settings.screenshot_concurrency, 3)
         self.assertTrue(self.settings.screenshots_enabled)
         self.assertTrue(self.settings.browser_screenshots_enabled)
+        self.assertTrue(self.settings.screenshot_javascript_enabled)
         self.assertTrue(self.settings.screenshot_fallback_enabled)
         self.assertEqual(effective.database_path, self.settings.database_path)
 
@@ -72,6 +74,16 @@ class RuntimeLimitsTests(unittest.TestCase):
         configured = replace(self.settings, screenshot_timeout_seconds=60)
         effective, _ = self.apply(configured)
         self.assertEqual(effective.screenshot_timeout_seconds, 60)
+
+    def test_large_container_preserves_explicit_browser_javascript_choice(self):
+        self.v2.write_text(str(2048 * MIB), encoding="ascii")
+        for javascript in (False, True):
+            with self.subTest(javascript=javascript):
+                configured = replace(self.settings, screenshot_javascript_enabled=javascript)
+                effective, info = self.apply(configured)
+                self.assertIs(effective, configured)
+                self.assertFalse(info["low_memory_mode"])
+                self.assertEqual(effective.screenshot_javascript_enabled, javascript)
 
     def test_threshold_uses_bytes_and_includes_exactly_768_mib(self):
         for limit, low in [(768 * MIB, True), (768 * MIB + 1, False)]:

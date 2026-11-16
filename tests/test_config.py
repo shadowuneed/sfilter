@@ -8,6 +8,13 @@ from app.config import _api_keys_from_env, _bool_env, _first_env, _optional_env,
 
 
 class ConfigTests(unittest.TestCase):
+    @patch("app.config._load_dotenv", lambda: None)
+    def test_browser_javascript_is_enabled_by_default_and_can_be_disabled_explicitly(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(get_settings().screenshot_javascript_enabled)
+        with patch.dict(os.environ, {"SCREENSHOT_JAVASCRIPT_ENABLED": "false"}, clear=True):
+            self.assertFalse(get_settings().screenshot_javascript_enabled)
+
     def test_split_env_accepts_commas_semicolons_and_newlines(self) -> None:
         with patch.dict(os.environ, {"ITEMS": "one, two;three\nfour"}, clear=False):
             self.assertEqual(_split_env("ITEMS"), ["one", "two", "three", "four"])

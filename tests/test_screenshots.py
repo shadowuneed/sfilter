@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -12,6 +13,13 @@ from app.services.screenshots import BROWSER_SCREENSHOT_USER_AGENT, ScreenshotRe
 
 
 class ScreenshotServiceTests(unittest.TestCase):
+    def test_runtime_status_exposes_static_browser_mode(self) -> None:
+        service = ScreenshotService(Settings(screenshot_javascript_enabled=False))
+        with patch("app.services.screenshots.importlib.util.find_spec", return_value=None):
+            status = service.runtime_status()
+        self.assertFalse(status["javascript_enabled"])
+        self.assertEqual(status["capture_mode"], "browser-static")
+
     def test_browser_screenshot_user_agent_is_not_service_bot(self) -> None:
         self.assertIn("Mozilla/5.0", BROWSER_SCREENSHOT_USER_AGENT)
         self.assertNotIn("Argus", BROWSER_SCREENSHOT_USER_AGENT)
@@ -143,8 +151,10 @@ class ScreenshotDeadlineTests(unittest.IsolatedAsyncioTestCase):
         self._assert_slot_released()
 
     async def test_cold_browser_still_captures_when_document_readiness_never_finishes(self) -> None:
+        self.service.settings = replace(self.settings, screenshot_timeout_seconds=0.3)
+
         async def cold_launch(*args, **kwargs):
-            await asyncio.sleep(0.025)
+            await asyncio.sleep(0.08)
             return self.browser
 
         async def navigate(*args, **kwargs):
@@ -154,11 +164,12 @@ class ScreenshotDeadlineTests(unittest.IsolatedAsyncioTestCase):
         self.playwright.chromium.launch.side_effect = cold_launch
         self.page.goto.side_effect = navigate
         self.page.wait_for_load_state.side_effect = self._hang
+        self.cdp.send.return_value = {"data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/l6wG6QAAAABJRU5ErkJggg=="}
 
         result = await self._bounded_result(asyncio.create_task(self.service.capture("https://example.com", 7)))
 
         self.assertEqual(result.path, "evidence/test.png", "Cold startup and pending page resources must leave time for a real browser capture")
-        self.page.screenshot.assert_awaited()
+        self.cdp.send.assert_awaited()
         self._assert_slot_released()
 
     async def test_real_viewport_capture_does_not_wait_for_playwright_font_gate(self) -> None:
@@ -211,6 +222,39 @@ class ScreenshotDeadlineTests(unittest.IsolatedAsyncioTestCase):
         self._assert_slot_released()
         await asyncio.sleep(0)
         self.assertFalse(asyncio.all_tasks() - {asyncio.current_task()}, "CDP capture task leaked after stop")
+
+    async def test_static_browser_capture_disables_javascript_and_reports_honest_warning(self) -> None:
+        self.service.settings = replace(self.settings, screenshot_javascript_enabled=False)
+
+        result = await self._bounded_result(asyncio.create_task(self.service.capture("https://example.com", 7)))
+
+        self.assertEqual(result.path, "evidence/test.png")
+        self.assertFalse(self.browser.new_context.await_args.kwargs["java_script_enabled"])
+        self.assertIn("Browser screenshot captured with JavaScript disabled (HTML, CSS and images)", result.error)
+        self.assertIn("dynamic content may be missing", result.error)
+        self._assert_slot_released()
+
+    async def test_static_browser_still_rejects_blank_screenshots(self) -> None:
+        self.service.settings = replace(self.settings, screenshot_javascript_enabled=False)
+        self.service._capture_result.return_value = ScreenshotResult(path=None, error="screenshot was blank")
+
+        result = await self._bounded_result(asyncio.create_task(self.service.capture("https://example.com", 7)))
+
+        self.assertIsNone(result.path)
+        self.assertEqual(result.error, "screenshot was blank")
+
+    async def test_static_warning_survives_playwright_fallback_and_navigation_warning(self) -> None:
+        self.service.settings = replace(self.settings, screenshot_javascript_enabled=False)
+        self.page.goto.side_effect = RuntimeError("navigation interrupted")
+        self.cdp.send.side_effect = RuntimeError("protocol capture unavailable")
+
+        result = await self._bounded_result(asyncio.create_task(self.service.capture("https://example.com", 7)))
+
+        self.assertEqual(result.path, "evidence/test.png")
+        self.page.screenshot.assert_awaited()
+        self.assertIn("JavaScript disabled", result.error)
+        self.assertIn("navigation warning", result.error)
+        self.assertNotIn("fallback evidence image", result.error)
 
     async def test_hanging_close_cannot_prevent_success_or_leak_slot(self) -> None:
         self.context.close.side_effect = self._hang

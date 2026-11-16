@@ -63,6 +63,7 @@ def apply_runtime_limits(
         settings,
         scan_concurrency=1,
         screenshot_concurrency=1,
+        screenshot_javascript_enabled=False,
         # A cold Chromium launch on the small shared-CPU plan needs more than
         # the normal ten seconds, while capture and hard stop stay bounded.
         screenshot_timeout_seconds=max(45, settings.screenshot_timeout_seconds),

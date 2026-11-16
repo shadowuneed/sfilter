@@ -55,7 +55,7 @@ function harness() {
   const withoutStartup = source.replace(/bootstrap\(\)\.catch\(console\.error\);\s*$/, "");
   assert.notEqual(source, withoutStartup);
   vm.runInContext(`${withoutStartup}\n globalThis.frontend = {
-    state, api, stopRun, syncStopButton, syncActionButtons, loadRuns, loadRun, loadHealth,
+    state, api, stopRun, syncStopButton, syncActionButtons, loadRuns, loadRun, loadHealth, positiveSignals,
     hardStopAll: typeof hardStopAll === "function" ? hardStopAll : null,
   };`, context);
   h.ui = context.frontend;
@@ -230,6 +230,26 @@ test("low-memory health keeps screenshots available with an accessible visible e
   await h.ui.loadHealth();
   assert.equal(h.elements.takeScreenshots.checked, false, "The user's screenshot choice is retained");
   assert.equal(h.elements.takeScreenshots.disabled, false);
+});
+
+test("static browser mode is visible while the screenshot checkbox stays available", async () => {
+  const h = harness();
+  h.health = { low_memory_mode: true, screenshot_runtime: { javascript_enabled: false }, kz_proxy_ready: true };
+  await h.ui.loadHealth();
+  assert.equal(h.elements.takeScreenshots.checked, true);
+  assert.equal(h.elements.takeScreenshots.disabled, false);
+  assert.ok(h.elements.screenshotModeHint.textContent.includes("HTML, CSS и изображения; JavaScript отключён"));
+});
+
+test("evidence facts distinguish a rendered screenshot from a fallback card", () => {
+  const h = harness();
+  const finding = { screenshot_path: "evidence/screenshots/captured.png" };
+  assert.ok(h.ui.positiveSignals(finding).includes("Скриншот страницы сохранен"));
+  const fallback = h.ui.positiveSignals({ ...finding, evidence: { screenshot_error: "TimeoutError; fallback evidence image saved" } });
+  assert.ok(fallback.some((value) => value.includes("снимок сайта не получен")));
+  assert.ok(!fallback.includes("Скриншот страницы сохранен"));
+  const staticCapture = h.ui.positiveSignals({ ...finding, evidence: { screenshot_error: "Browser screenshot captured with JavaScript disabled (HTML, CSS and images)" } });
+  assert.ok(staticCapture.some((value) => value.includes("снимок HTML/CSS страницы")));
 });
 
 test("legacy health leaves the screenshot checkbox choice unchanged", async () => {
