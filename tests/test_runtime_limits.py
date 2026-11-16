@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from app.config import Settings
-from app.services.runtime_limits import apply_runtime_limits
+from app.services.runtime_limits import apply_runtime_limits, read_cgroup_memory_usage
 
 
 MIB = 1024 * 1024
@@ -154,6 +154,61 @@ class RuntimeLimitsTests(unittest.TestCase):
         effective, info = self.apply()
         self.assertIs(effective, self.settings)
         self.assertIsNone(info["container_memory_limit_mb"])
+
+
+class MemoryUsageTelemetryTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        root = Path(self.directory.name)
+        self.current = root / "memory.current"
+        self.stat = root / "memory.stat"
+        self.events = root / "memory.events"
+
+    def read(self):
+        return read_cgroup_memory_usage(_memory_current_path=self.current,
+                                        _memory_stat_path=self.stat, _memory_events_path=self.events)
+
+    def test_usage_file_cache_and_anonymous_memory_are_reported_separately(self):
+        self.current.write_text(str(511 * MIB + MIB // 2), encoding="ascii")
+        self.stat.write_text(f"anon {128 * MIB}\nfile {350 * MIB}\nslab 12345\n", encoding="ascii")
+        self.events.write_text("low 0\nhigh 1\nmax 50\noom 3\noom_kill 2\n", encoding="ascii")
+        self.assertEqual(self.read(), {
+            "container_memory_usage_mb": 511.5,
+            "container_memory_anon_mb": 128.0,
+            "container_memory_file_mb": 350.0,
+            "container_memory_oom_kill_count": 2,
+        })
+
+    def test_unsupported_sources_are_unknown_and_zero_events_are_preserved(self):
+        self.assertTrue(all(value is None for value in self.read().values()))
+        self.events.write_text("oom_kill 0\n", encoding="ascii")
+        result = self.read()
+        self.assertIsNone(result["container_memory_usage_mb"])
+        self.assertIsNone(result["container_memory_anon_mb"])
+        self.assertEqual(result["container_memory_oom_kill_count"], 0)
+
+    def test_bad_partial_or_duplicate_fields_do_not_invent_counts(self):
+        self.current.write_text("not-a-number", encoding="ascii")
+        self.stat.write_text(f"anon -1\nfile {20 * MIB}\nfile_thp 999\n", encoding="ascii")
+        self.events.write_text("oom_kill 1\noom_kill 2\n", encoding="ascii")
+        result = self.read()
+        self.assertIsNone(result["container_memory_usage_mb"])
+        self.assertIsNone(result["container_memory_anon_mb"])
+        self.assertEqual(result["container_memory_file_mb"], 20.0)
+        self.assertIsNone(result["container_memory_oom_kill_count"])
+
+    def test_reads_are_bounded_and_non_ascii_or_oversized_sources_are_unknown(self):
+        self.current.write_text("9" * 8193, encoding="ascii")
+        self.stat.write_text("anon 100\nfile 200\n" + "x" * 8193, encoding="ascii")
+        self.events.write_bytes(b"oom_kill \xff\n")
+        self.assertTrue(all(value is None for value in self.read().values()))
+
+    def test_counter_overflow_and_directories_are_unknown(self):
+        self.current.mkdir()
+        self.stat.write_text(f"anon {1 << 100}\nfile invalid\n", encoding="ascii")
+        self.events.write_text(f"oom_kill {1 << 80}\n", encoding="ascii")
+        self.assertTrue(all(value is None for value in self.read().values()))
 
 
 if __name__ == "__main__":

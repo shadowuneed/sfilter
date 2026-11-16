@@ -41,9 +41,13 @@ class ApiAuthTests(unittest.TestCase):
         # Tests which read a queued fixture represent an owned live process.
         # Orphan recovery has dedicated negative cases in test_run_lifecycle.
         self.manager.is_running.return_value = True
+        self.manager.running_ids.return_value = []
         manager_patch = patch.object(main, "worker_manager", self.manager)
         manager_patch.start()
         self.addCleanup(manager_patch.stop)
+        stop_intent_patch = patch.object(main, "_hard_stop_requested_run_ids", {})
+        stop_intent_patch.start()
+        self.addCleanup(stop_intent_patch.stop)
         repair_patch = patch.object(main, "_start_screenshot_repair", return_value=False)
         repair_patch.start()
         self.addCleanup(repair_patch.stop)

@@ -161,6 +161,57 @@ class ScreenshotDeadlineTests(unittest.IsolatedAsyncioTestCase):
         self.page.screenshot.assert_awaited()
         self._assert_slot_released()
 
+    async def test_real_viewport_capture_does_not_wait_for_playwright_font_gate(self) -> None:
+        operations = []
+
+        async def pending_fonts(*args, **kwargs):
+            operations.append("waiting for fonts")
+            await self._hang()
+
+        async def viewport_png(*args, **kwargs):
+            operations.append("CDP viewport PNG")
+            return {"data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/l6wG6QAAAABJRU5ErkJggg=="}
+
+        self.page.screenshot.side_effect = pending_fonts
+        self.cdp.send.side_effect = viewport_png
+
+        result = await self._bounded_result(asyncio.create_task(self.service.capture("https://example.com", 7)))
+
+        self.assertEqual(result.path, "evidence/test.png")
+        self.assertEqual(operations, ["CDP viewport PNG"], "The genuine viewport must be captured before entering a stuck font/animation gate")
+        self._assert_slot_released()
+
+    async def test_protocol_capture_failure_keeps_playwright_browser_capture_fallback(self) -> None:
+        self.cdp.send.side_effect = RuntimeError("protocol capture unavailable")
+
+        result = await self._bounded_result(asyncio.create_task(self.service.capture("https://example.com", 7)))
+
+        self.assertEqual(result.path, "evidence/test.png")
+        self.cdp.send.assert_awaited()
+        self.page.screenshot.assert_awaited()
+        self._assert_slot_released()
+
+    async def test_stop_interrupts_primary_cdp_capture_and_releases_browser_slot(self) -> None:
+        reached = asyncio.Event()
+
+        async def pending_viewport(*args, **kwargs):
+            reached.set()
+            await self._hang()
+
+        self.cdp.send.side_effect = pending_viewport
+        task = asyncio.create_task(self.service.capture("https://example.com", 7))
+        await asyncio.wait_for(reached.wait(), timeout=0.2)
+        task.cancel()
+
+        with self.assertRaises(asyncio.CancelledError):
+            await self._bounded_result(task)
+
+        self.browser.close.assert_awaited()
+        self.manager.__aexit__.assert_awaited()
+        self._assert_slot_released()
+        await asyncio.sleep(0)
+        self.assertFalse(asyncio.all_tasks() - {asyncio.current_task()}, "CDP capture task leaked after stop")
+
     async def test_hanging_close_cannot_prevent_success_or_leak_slot(self) -> None:
         self.context.close.side_effect = self._hang
 

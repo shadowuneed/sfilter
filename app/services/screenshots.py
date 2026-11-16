@@ -219,6 +219,7 @@ class ScreenshotService:
                 user_agent=BROWSER_SCREENSHOT_USER_AGENT,
                 locale="ru-RU",
                 timezone_id="Asia/Almaty",
+                reduced_motion="reduce",
                 proxy={"server": self.settings.kz_proxy_url} if self.settings.kz_proxy_url else None,
             ), operation_deadline)
             stage = "creating browser page"
@@ -250,16 +251,17 @@ class ScreenshotService:
                 stage = "settling browser viewport"
                 settle_seconds = min(settle_ms / 1000, max(0.0, operation_deadline - loop.time()) * 0.1)
                 await self._within_deadline(asyncio.sleep(settle_seconds), operation_deadline)
-            stage = "capturing browser PNG"
+            stage = "capturing CDP browser PNG"
             try:
                 capture_deadline = loop.time() + min(15.0, max(0.0, operation_deadline - loop.time()) * 0.75)
-                await self._within_deadline(page.screenshot(
-                    path=str(output),
-                    full_page=False,
-                    timeout=max(1, int((capture_deadline - loop.time()) * 1000)),
-                    animations="disabled",
-                    caret="hide",
+                # Capture the genuine rendered viewport without Playwright's
+                # font-readiness/animation traversal holding a small container.
+                client = await self._within_deadline(context.new_cdp_session(page), capture_deadline)
+                capture = await self._within_deadline(client.send(
+                    "Page.captureScreenshot",
+                    {"format": "png", "fromSurface": True, "captureBeyondViewport": False, "optimizeForSpeed": True},
                 ), capture_deadline)
+                output.write_bytes(base64.b64decode(capture["data"]))
                 result = self._capture_result(output, rel_path)
                 if result.path or not self.settings.screenshot_fallback_enabled:
                     if result.path and navigation_error:

@@ -31,9 +31,13 @@ class RunLifecycleTests(unittest.TestCase):
         self.manager.is_running.return_value = False
         self.manager.force_stop.return_value = False
         self.manager.stop_all.return_value = []
+        self.manager.running_ids.return_value = []
         manager_patch = patch.object(main, "worker_manager", self.manager)
         manager_patch.start()
         self.addCleanup(manager_patch.stop)
+        stop_intent_patch = patch.object(main, "_hard_stop_requested_run_ids", {})
+        stop_intent_patch.start()
+        self.addCleanup(stop_intent_patch.stop)
         repair_flag_patch = patch.object(main, "_allow_screenshot_repair", True)
         repair_flag_patch.start()
         self.addCleanup(repair_flag_patch.stop)
@@ -43,7 +47,7 @@ class RunLifecycleTests(unittest.TestCase):
         self.run_id = self.db.create_run("fixture", 100, True)
         self.db.update_run(self.run_id, status="running")
 
-    def test_hard_stop_persists_request_before_killing_and_terminal_afterward(self) -> None:
+    def test_hard_stop_kills_before_database_transition_and_terminal_afterward(self) -> None:
         statuses_at_kill = []
 
         def kill(run_id: int) -> bool:
@@ -53,7 +57,7 @@ class RunLifecycleTests(unittest.TestCase):
 
         self.manager.force_stop.side_effect = kill
         result = main.cancel_run(self.run_id)
-        self.assertEqual(statuses_at_kill, ["canceling"])
+        self.assertEqual(statuses_at_kill, ["running"])
         self.assertEqual(result["status"], "canceled")
         self.assertTrue(result["force"])
         self.assertIsNotNone(self.db.get_run(self.run_id)["finished_at"])
@@ -75,7 +79,8 @@ class RunLifecycleTests(unittest.TestCase):
             result = main.cancel_run(self.run_id)
         self.assertEqual(original_get_run(self.run_id)["status"], "completed")
         self.assertEqual(result["status"], "completed")
-        self.manager.force_stop.assert_not_called()
+        self.manager.force_stop.assert_called_once_with(self.run_id)
+        self.assertNotIn(self.run_id, main._hard_stop_requested_run_ids)
 
     def test_canceling_run_without_worker_gets_terminal_status(self) -> None:
         self.db.update_run(self.run_id, status="canceling")
@@ -102,8 +107,8 @@ class RunLifecycleTests(unittest.TestCase):
 
         def stop_all() -> list[int]:
             # Include repair worker 0, which has no runs-table row.
-            self.assertEqual(self.db.get_run(self.run_id)["status"], "canceling")
-            self.assertEqual(self.db.get_run(manual_id)["status"], "canceling")
+            self.assertEqual(self.db.get_run(self.run_id)["status"], "running")
+            self.assertEqual(self.db.get_run(manual_id)["status"], "queued")
             stopped = list(running)
             running.clear()
             return stopped
@@ -116,6 +121,175 @@ class RunLifecycleTests(unittest.TestCase):
         self.assertEqual(result["stopped_count"], 2)
         self.assertEqual(self.db.count_findings(self.run_id), 1)
         self.assertTrue(all(self.db.get_run(item)["status"] == "canceled" for item in result["run_ids"]))
+
+    def test_single_stop_kills_before_a_blocked_database_read(self) -> None:
+        database_entered, release_database, killed = (threading.Event() for _ in range(3))
+        original_get = self.db.get_run
+        failures = []
+
+        def delayed_get(run_id):
+            database_entered.set()
+            if not release_database.wait(3):
+                raise TimeoutError("fixture database wait was not released")
+            return original_get(run_id)
+
+        def cancel():
+            try:
+                main.cancel_run(self.run_id)
+            except Exception as exc:
+                failures.append(type(exc).__name__)
+
+        self.manager.force_stop.side_effect = lambda run_id: killed.set() or True
+        with patch.object(self.db, "get_run", side_effect=delayed_get):
+            request = threading.Thread(target=cancel)
+            request.start()
+            try:
+                self.assertTrue(database_entered.wait(1))
+                self.assertTrue(killed.is_set(), "Database latency delayed the actual process stop")
+            finally:
+                release_database.set()
+                request.join(3)
+        self.assertFalse(request.is_alive())
+        self.assertEqual(failures, [])
+
+    def test_stop_all_kills_before_a_blocked_database_read(self) -> None:
+        database_entered, release_database, killed = (threading.Event() for _ in range(3))
+        original_list = self.db.list_active_runs
+        failures = []
+
+        def delayed_list():
+            database_entered.set()
+            if not release_database.wait(3):
+                raise TimeoutError("fixture database wait was not released")
+            return original_list()
+
+        def cancel():
+            try:
+                main.cancel_all_runs()
+            except Exception as exc:
+                failures.append(type(exc).__name__)
+
+        self.manager.stop_all.side_effect = lambda: killed.set() or []
+        with patch.object(self.db, "list_active_runs", side_effect=delayed_list):
+            request = threading.Thread(target=cancel)
+            request.start()
+            try:
+                self.assertTrue(database_entered.wait(1))
+                self.assertTrue(killed.is_set(), "Database latency delayed all process stops")
+            finally:
+                release_database.set()
+                request.join(3)
+        self.assertFalse(request.is_alive())
+        self.assertEqual(failures, [])
+
+    def test_poll_database_wait_does_not_block_single_process_stop(self) -> None:
+        database_entered, release_database, killed = (threading.Event() for _ in range(3))
+        original_list = self.db.list_active_runs
+        failures = []
+
+        def delayed_list():
+            if threading.current_thread().name == "fixture-blocked-poll":
+                database_entered.set()
+                if not release_database.wait(3):
+                    raise TimeoutError("fixture poll wait was not released")
+            return original_list()
+
+        def poll():
+            try:
+                main.list_runs()
+            except Exception as exc:
+                failures.append(type(exc).__name__)
+
+        def cancel():
+            try:
+                main.cancel_run(self.run_id)
+            except Exception as exc:
+                failures.append(type(exc).__name__)
+
+        self.manager.force_stop.side_effect = lambda run_id: killed.set() or True
+        with patch.object(self.db, "list_active_runs", side_effect=delayed_list):
+            polling = threading.Thread(target=poll, name="fixture-blocked-poll")
+            stopping = threading.Thread(target=cancel)
+            polling.start()
+            self.assertTrue(database_entered.wait(1))
+            stopping.start()
+            try:
+                self.assertTrue(killed.wait(0.5), "An unrelated poll held the launch lock during a database read")
+            finally:
+                release_database.set()
+                polling.join(3)
+                stopping.join(3)
+        self.assertFalse(polling.is_alive())
+        self.assertFalse(stopping.is_alive())
+        self.assertEqual(failures, [])
+
+    def test_stale_poll_snapshot_does_not_interrupt_a_newly_registered_worker(self) -> None:
+        self.db.update_run(self.run_id, status="queued")
+        snapshot = [self.db.get_run(self.run_id)]
+
+        def query_then_register():
+            with main.run_launch_lock:
+                self.manager.is_running.return_value = True
+                self.db.update_run(self.run_id, status="running")
+            return snapshot
+
+        with patch.object(self.db, "list_active_runs", side_effect=query_then_register):
+            main._reconcile_finished_runs()
+
+        self.assertEqual(self.db.get_run(self.run_id)["status"], "running")
+        self.assertIsNone(self.db.get_run(self.run_id)["finished_at"])
+
+    def test_stale_poll_snapshot_does_not_reopen_a_completed_run(self) -> None:
+        snapshot = [self.db.get_run(self.run_id)]
+
+        def query_then_complete():
+            self.db.update_run(self.run_id, status="completed", finished_at=utc_now())
+            return snapshot
+
+        with patch.object(self.db, "list_active_runs", side_effect=query_then_complete):
+            main._reconcile_finished_runs()
+
+        self.assertEqual(self.db.get_run(self.run_id)["status"], "completed")
+
+    def test_callback_preserves_user_stop_intent_if_database_write_is_delayed(self) -> None:
+        self.manager.force_stop.return_value = True
+        with patch.object(self.db, "get_run", side_effect=ConnectionError("fixture unavailable database")):
+            with self.assertRaises(ConnectionError):
+                main.cancel_run(self.run_id)
+        self.manager.force_stop.assert_called_once_with(self.run_id)
+
+        main._worker_finished(self.run_id, exit_code=-9, force_stopped=True)
+
+        self.assertEqual(self.db.get_run(self.run_id)["status"], "canceled")
+        self.assertIsNone(self.db.get_run(self.run_id)["error"])
+        self.assertNotIn(self.run_id, main._hard_stop_requested_run_ids)
+
+    def test_stop_all_preserves_owned_intent_if_database_read_fails(self) -> None:
+        self.manager.running_ids.return_value = [0, self.run_id]
+        with patch.object(self.db, "list_active_runs", side_effect=ConnectionError("fixture database")):
+            with self.assertRaises(ConnectionError):
+                main.cancel_all_runs()
+        self.manager.stop_all.assert_called_once_with()
+        self.assertNotIn(0, main._hard_stop_requested_run_ids)
+
+        main._worker_finished(self.run_id, exit_code=-9, force_stopped=True)
+
+        self.assertEqual(self.db.get_run(self.run_id)["status"], "canceled")
+        self.assertNotIn(self.run_id, main._hard_stop_requested_run_ids)
+
+    def test_unknown_run_releases_stop_intent_after_404(self) -> None:
+        unknown_id = self.run_id + 100
+        with self.assertRaises(HTTPException) as error:
+            main.cancel_run(unknown_id)
+        self.assertEqual(error.exception.status_code, 404)
+        self.assertNotIn(unknown_id, main._hard_stop_requested_run_ids)
+
+    def test_stop_intent_memory_is_bounded_and_ignores_repair_worker(self) -> None:
+        main._remember_stop_requests(range(main._STOP_INTENT_LIMIT + 20))
+        self.assertLessEqual(len(main._hard_stop_requested_run_ids), main._STOP_INTENT_LIMIT)
+        self.assertNotIn(0, main._hard_stop_requested_run_ids)
+        self.assertNotIn(1, main._hard_stop_requested_run_ids)
+        self.assertIn(main._STOP_INTENT_LIMIT + 19, main._hard_stop_requested_run_ids)
 
     def test_stop_all_failure_leaves_unconfirmed_runs_canceling(self) -> None:
         self.manager.stop_all.side_effect = TimeoutError("fixture")
