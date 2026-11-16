@@ -241,6 +241,7 @@ class InvestigatorRunTargetTests(unittest.TestCase):
             run_id = db.create_run(seed_query="онлайн казино", max_candidates=1, take_screenshots=True)
             investigator = object.__new__(Investigator)
             investigator.db = db
+            investigator.settings = Settings(database_path=Path(tmp) / "argus.db", scan_concurrency=3)
             passes = 0
 
             async def discovery_pass(*args, **kwargs) -> None:  # noqa: ANN002, ANN003

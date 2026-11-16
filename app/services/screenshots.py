@@ -16,6 +16,7 @@ from typing import Any, TypeVar
 
 from app.config import Settings
 from app.services.domains import extract_domain
+from app.services.native_browser import NativeCaptureResult, capture_native, find_headless_shell
 from app.services.process_cleanup import ProcessCleanupError, ScreenshotProcessScope
 
 
@@ -92,28 +93,41 @@ class ScreenshotResult:
 class ScreenshotService:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self._browser_slots = threading.BoundedSemaphore(max(1, int(settings.screenshot_concurrency)))
+        slots = 1 if self._native_eligible() else max(1, int(settings.screenshot_concurrency))
+        self._browser_slots = threading.BoundedSemaphore(slots)
         self._runtime_status_cache: dict[str, Any] | None = None
         self._process_cleanup_failed = False
+
+    def _native_eligible(self) -> bool:
+        return (self.settings.screenshot_backend == "native"
+                and self.settings.screenshot_javascript_enabled
+                and not self.settings.kz_proxy_url)
 
     def runtime_status(self) -> dict[str, Any]:
         if self._runtime_status_cache is not None:
             return dict(self._runtime_status_cache)
 
         mode = "disabled"
+        native_shell = find_headless_shell()
+        native_available = self._native_eligible() and native_shell is not None
         if self.settings.screenshots_enabled:
             if self.settings.browser_screenshots_enabled:
                 mode = "browser-static"
                 if self.settings.screenshot_javascript_enabled:
                     mode = "browser-frozen" if self.settings.screenshot_freeze_after_render else "browser-javascript"
+                if native_available:
+                    mode = "browser-native"
             elif self.settings.screenshot_fallback_enabled:
                 mode = "fallback-evidence"
         status: dict[str, Any] = {
             "enabled": self.settings.screenshots_enabled,
             "browser_enabled": self.settings.browser_screenshots_enabled,
             "javascript_enabled": self.settings.screenshot_javascript_enabled,
-            "freeze_after_render": self.settings.screenshot_freeze_after_render,
+            "freeze_after_render": self.settings.screenshot_freeze_after_render and not native_available,
             "capture_mode": mode,
+            "backend": "native" if native_available else "playwright",
+            "configured_backend": self.settings.screenshot_backend,
+            "native_shell_exists": native_shell is not None,
             "fallback_enabled": self.settings.screenshot_fallback_enabled,
             "concurrency": self.settings.screenshot_concurrency,
             "dir": str(self.settings.screenshots_dir),
@@ -127,6 +141,11 @@ class ScreenshotService:
         }
         if not self.settings.browser_screenshots_enabled:
             status["error"] = "browser screenshots disabled; fallback evidence images are enabled"
+            self._runtime_status_cache = dict(status)
+            return status
+        if native_available:
+            status["chromium_path"] = str(native_shell)
+            status["chromium_exists"] = True
             self._runtime_status_cache = dict(status)
             return status
         try:
@@ -203,6 +222,17 @@ class ScreenshotService:
                 error="browser screenshots disabled by configuration",
             )
 
+        loop = asyncio.get_running_loop()
+        timeout_seconds = max(0.01, float(self.settings.screenshot_timeout_seconds))
+        deadline = loop.time() + timeout_seconds
+        if self._native_eligible():
+            result = await self._capture_native_browser(
+                url, output, rel_path, deadline,
+                title=title, html_path=html_path, status_code=status_code,
+            )
+            if result is not None:
+                return result
+
         try:
             from playwright.async_api import async_playwright
         except Exception as exc:  # noqa: BLE001
@@ -216,9 +246,6 @@ class ScreenshotService:
                 error=f"Playwright is not installed or browsers are missing: {type(exc).__name__}: {exc}",
             )
 
-        loop = asyncio.get_running_loop()
-        timeout_seconds = max(0.01, float(self.settings.screenshot_timeout_seconds))
-        deadline = loop.time() + timeout_seconds
         operation_deadline = deadline
         browser = None
         context = None
@@ -424,6 +451,70 @@ class ScreenshotService:
                     # an unconfirmed old tree can exhaust a small container.
                     self._process_cleanup_failed = True
                     _LOGGER.error("Browser process cleanup failed; capture slot quarantined")
+
+    async def _capture_native_browser(
+        self, url: str, output: Path, rel_path: str, deadline: float,
+        *, title: str | None, html_path: str | None, status_code: int | None,
+    ) -> ScreenshotResult | None:
+        """Return None only when no native process was launched and PW is safe."""
+        acquired = False
+        process_scope = None
+        native = None
+        cleaned = True
+        try:
+            while not self._browser_slots.acquire(blocking=False):
+                await self._within_deadline(asyncio.sleep(0.2), deadline)
+            acquired = True
+            process_scope = ScreenshotProcessScope()
+            # The helper owns its wall deadline and bounded cleanup. Await it
+            # directly so its finally cannot outlive this scope or adopt the
+            # next browser after the slot has been released.
+            native = await capture_native(
+                self.settings, url, output, deadline, process_scope, BROWSER_SCREENSHOT_USER_AGENT,
+            )
+        except Exception as exc:
+            native = NativeCaptureResult(captured=False, error=f"Native Chromium capture failed: {type(exc).__name__}: {exc}")
+        finally:
+            if native is not None:
+                cleaned = native.cleanup_confirmed
+            if process_scope is not None:
+                try:
+                    process_scope.track()
+                except Exception:
+                    cleaned = False
+                try:
+                    cleaned = process_scope.cleanup(timeout=0.75) and cleaned
+                except Exception:
+                    cleaned = False
+            if acquired and cleaned:
+                self._browser_slots.release()
+            elif acquired:
+                self._process_cleanup_failed = True
+                _LOGGER.error("Native browser process cleanup failed; capture slot quarantined")
+        if not cleaned and not (native is not None and native.captured):
+            return self._fallback_result(
+                output, rel_path, url=url, title=title, html_path=html_path,
+                status_code=status_code, error="Native Chromium process cleanup could not be confirmed",
+            )
+        if native is not None and native.unavailable:
+            return None
+        if native is not None and native.captured:
+            result = self._capture_result(output, rel_path)
+            if result.path:
+                warning = "Page content readiness was not confirmed; browser frame may be incomplete"
+                warnings = [native.error] if native.error else []
+                if not native.error or "Page content readiness was not confirmed" not in native.error:
+                    warnings.append(warning)
+                if not cleaned:
+                    warnings.append("Native Chromium process cleanup was not confirmed; browser slot is quarantined")
+                return ScreenshotResult(path=result.path, error="; ".join(warnings))
+            error = result.error or "Native Chromium screenshot was not usable"
+        else:
+            error = native.error if native is not None else "Native Chromium screenshot failed"
+        return self._fallback_result(
+            output, rel_path, url=url, title=title, html_path=html_path,
+            status_code=status_code, error=error or "Native Chromium screenshot failed",
+        )
 
     async def _within_deadline(
         self,

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from app.config import Settings
+from app.services.native_browser import NativeCaptureResult
 from app.services.screenshots import BROWSER_SCREENSHOT_USER_AGENT, ScreenshotResult, ScreenshotService
 
 
@@ -425,6 +426,161 @@ class ScreenshotDeadlineTests(unittest.IsolatedAsyncioTestCase):
         self.browser.close.assert_awaited_once()
         await asyncio.sleep(0)
         self.assertFalse(asyncio.all_tasks() - {asyncio.current_task()}, "Cleanup task leaked")
+
+
+class NativeBackendRoutingTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        # Reuse the in-memory browser/cleanup fixture without inheriting and
+        # rerunning its unrelated Playwright deadline test methods.
+        await ScreenshotDeadlineTests.asyncSetUp(self)
+        self.service = ScreenshotService(replace(self.settings, screenshot_backend="native"))
+        self.service._capture_result = Mock(return_value=ScreenshotResult(path="evidence/native.png"))
+
+    def assert_slot_released(self) -> None:
+        ScreenshotDeadlineTests._assert_slot_released(self)
+
+    async def test_native_success_bypasses_playwright_driver_and_keeps_readiness_warning(self) -> None:
+        with patch("app.services.screenshots.capture_native", AsyncMock(return_value=NativeCaptureResult(True))) as native:
+            result = await self.service.capture("https://example.com", 7)
+        self.assertEqual(result.path, "evidence/native.png")
+        self.assertIn("Page content readiness was not confirmed", result.error)
+        native.assert_awaited_once()
+        self.manager.start.assert_not_awaited()
+        self.assert_slot_released()
+
+    async def test_launched_native_failure_does_not_start_playwright(self) -> None:
+        with patch("app.services.screenshots.capture_native", AsyncMock(return_value=NativeCaptureResult(False, "native deadline"))):
+            result = await self.service.capture("https://example.com", 7)
+        self.assertIsNone(result.path)
+        self.assertIn("native deadline", result.error)
+        self.manager.start.assert_not_awaited()
+        self.assert_slot_released()
+
+    async def test_unavailable_without_launch_safely_uses_playwright(self) -> None:
+        unavailable = NativeCaptureResult(False, "not installed", unavailable=True)
+        with patch("app.services.screenshots.capture_native", AsyncMock(return_value=unavailable)):
+            result = await self.service.capture("https://example.com", 7)
+        self.assertEqual(result.path, "evidence/native.png")
+        self.manager.start.assert_awaited_once()
+        self.assert_slot_released()
+
+    async def test_explicit_disabled_javascript_and_proxy_preserve_playwright_context_settings(self) -> None:
+        for settings in (
+            replace(self.settings, screenshot_backend="native", screenshot_javascript_enabled=False),
+            replace(self.settings, screenshot_backend="native", kz_proxy_url="https://proxy.example:8080"),
+        ):
+            self.manager.start.reset_mock()
+            self.browser.new_context.reset_mock()
+            service = ScreenshotService(settings)
+            service._capture_result = Mock(return_value=ScreenshotResult(path="evidence/pw.png"))
+            with patch("app.services.screenshots.capture_native", AsyncMock()) as native:
+                result = await service.capture("https://example.com", 7)
+            self.assertEqual(result.path, "evidence/pw.png")
+            native.assert_not_awaited()
+            self.assertEqual(self.browser.new_context.await_args.kwargs["java_script_enabled"], settings.screenshot_javascript_enabled)
+            self.assertEqual(self.browser.new_context.await_args.kwargs["proxy"], {"server": settings.kz_proxy_url} if settings.kz_proxy_url else None)
+
+    async def test_unconfirmed_native_cleanup_quarantines_even_a_captured_frame(self) -> None:
+        result = NativeCaptureResult(True, cleanup_confirmed=False)
+        with patch("app.services.screenshots.capture_native", AsyncMock(return_value=result)) as native:
+            first = await self.service.capture("https://example.com", 7)
+            second = await self.service.capture("https://example.com", 8)
+        self.assertEqual(first.path, "evidence/native.png", "Keep already validated evidence even if later cleanup is uncertain")
+        self.assertIn("cleanup", first.error.lower())
+        self.assertIsNone(second.path)
+        self.assertTrue(self.service._process_cleanup_failed)
+        self.assertFalse(self.service._browser_slots.acquire(blocking=False))
+        native.assert_awaited_once()
+        self.manager.start.assert_not_awaited()
+
+    async def test_native_helper_deadline_remains_bounded_and_does_not_start_playwright(self) -> None:
+        async def deadline_owning_helper(settings, url, output, deadline, scope, user_agent):
+            # The helper owns the wall deadline and completes cleanup before it
+            # returns; the service must not detach its lifetime with another task.
+            remaining = max(0, deadline - asyncio.get_running_loop().time())
+            try:
+                await asyncio.wait_for(asyncio.Event().wait(), remaining)
+            except TimeoutError:
+                return NativeCaptureResult(False, "Native Chromium timed out at its wall deadline")
+
+        with patch("app.services.screenshots.capture_native", AsyncMock(side_effect=deadline_owning_helper)):
+            result = await ScreenshotDeadlineTests._bounded_result(self, asyncio.create_task(self.service.capture("https://example.com", 7)))
+        self.assertIsNone(result.path)
+        self.assertIn("tim", result.error.lower())
+        self.manager.start.assert_not_awaited()
+        self.assert_slot_released()
+
+    async def test_native_helper_finally_finishes_before_next_capture_gets_the_slot(self) -> None:
+        self.service.settings = replace(self.service.settings, screenshot_timeout_seconds=1)
+        first_started = asyncio.Event()
+        helper_finalizing = asyncio.Event()
+        release_finally = asyncio.Event()
+        second_started = asyncio.Event()
+        lifecycle = []
+        attempts = 0
+
+        async def helper(*args):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                first_started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    helper_finalizing.set()
+                    await release_finally.wait()
+                    lifecycle.append("first helper cleanup finished")
+            else:
+                second_started.set()
+                lifecycle.append("second native capture started")
+                return NativeCaptureResult(True)
+
+        with patch("app.services.screenshots.capture_native", AsyncMock(side_effect=helper)):
+            first = asyncio.create_task(self.service.capture("https://example.com", 7))
+            second = None
+            try:
+                await asyncio.wait_for(first_started.wait(), 0.5)
+                first.cancel()
+                await asyncio.wait_for(helper_finalizing.wait(), 0.5)
+                second = asyncio.create_task(self.service.capture("https://example.com", 8))
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                self.assertFalse(first.done(), "Cancellation must wait for the helper's own cleanup")
+                self.assertFalse(second_started.is_set(), "A late helper must not track a subsequent browser")
+            finally:
+                release_finally.set()
+                await asyncio.wait_for(asyncio.gather(first, *([second] if second else []), return_exceptions=True), 1)
+                await asyncio.sleep(0)
+        self.assertLess(lifecycle.index("first helper cleanup finished"), lifecycle.index("second native capture started"))
+        self.assertTrue(first.cancelled())
+        self.assertEqual(second.result().path, "evidence/native.png")
+        self.assert_slot_released()
+        self.manager.start.assert_not_awaited()
+
+    async def test_native_cancellation_propagates_after_scope_cleanup(self) -> None:
+        reached = asyncio.Event()
+
+        async def native_capture(*args):
+            reached.set()
+            await asyncio.Event().wait()
+
+        with patch("app.services.screenshots.capture_native", AsyncMock(side_effect=native_capture)):
+            task = asyncio.create_task(self.service.capture("https://example.com", 7))
+            await asyncio.wait_for(reached.wait(), 0.2)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await ScreenshotDeadlineTests._bounded_result(self, task)
+        self.assert_slot_released()
+        self.manager.start.assert_not_awaited()
+
+    async def test_runtime_status_reports_native_shell_without_playwright_probe(self) -> None:
+        with patch("app.services.screenshots.find_headless_shell", return_value=Path("/installed/chrome-headless-shell")):
+            with patch("app.services.screenshots.importlib.util.find_spec", side_effect=AssertionError("Native status must not probe PW")):
+                status = self.service.runtime_status()
+        self.assertEqual(status["capture_mode"], "browser-native")
+        self.assertEqual(status["backend"], "native")
+        self.assertTrue(status["native_shell_exists"])
+        self.assertFalse(status["freeze_after_render"])
 
 
 if __name__ == "__main__":

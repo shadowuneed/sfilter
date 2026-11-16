@@ -63,6 +63,7 @@ def apply_runtime_limits(
         settings,
         scan_concurrency=1,
         screenshot_concurrency=1,
+        screenshot_backend="native" if settings.screenshot_backend == "auto" else settings.screenshot_backend,
         screenshot_freeze_after_render=settings.screenshot_javascript_enabled,
         # A cold Chromium launch on the small shared-CPU plan needs more than
         # the normal ten seconds, while capture and hard stop stay bounded.

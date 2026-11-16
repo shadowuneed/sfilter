@@ -12,7 +12,7 @@ from io import StringIO
 from itertools import islice
 from pathlib import Path
 from threading import Event, Lock
-from typing import Any, Iterable, Iterator
+from typing import Any, Coroutine, Iterable, Iterator
 from urllib.parse import urlencode, urljoin
 
 import httpx
@@ -619,6 +619,76 @@ class SearchRequestBudget:
         return True
 
 
+class _RunScreenshotConsumer:
+    """One bounded screenshot lane for a run, shared by all discovery passes."""
+
+    def __init__(self, investigator: Investigator, run_id: int, target: int, cancel_event: Event | None) -> None:
+        self.investigator = investigator
+        self.run_id = run_id
+        self.cancel_event = cancel_event
+        self.queue: asyncio.Queue[tuple[int, dict[str, Any]]] = asyncio.Queue(maxsize=max(1, min(target, 500)))
+        self.semaphore = asyncio.Semaphore(1)
+        # Keep failed attempts out of subsequent passes; the persisted pending
+        # flag still makes them recoverable after a restart or explicit repair.
+        self.seen: set[int] = set()
+        self.task = asyncio.create_task(self._consume())
+
+    async def _consume(self) -> None:
+        while True:
+            finding_id, finding = await self.queue.get()
+            try:
+                if self.cancel_event and self.cancel_event.is_set():
+                    return
+                if not await self.investigator._capture_screenshot_with_stop(
+                    self.run_id, finding_id, finding, self.semaphore, self.cancel_event
+                ):
+                    return
+            finally:
+                self.queue.task_done()
+
+    async def _wait_for_operation(self, operation: Coroutine[Any, Any, None]) -> bool:
+        """A dead consumer must wake both a full producer and a final join."""
+        pending = asyncio.create_task(operation)
+        try:
+            await asyncio.wait({pending, self.task}, return_when=asyncio.FIRST_COMPLETED)
+            if self.task.done():
+                self.task.result()  # Propagate a fatal persistence/consumer error.
+                return False
+            await pending
+            return not (self.cancel_event and self.cancel_event.is_set())
+        finally:
+            if not pending.done():
+                pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+
+    async def enqueue(self, item: tuple[int, dict[str, Any]]) -> bool:
+        if item[0] in self.seen:
+            return not (self.cancel_event and self.cancel_event.is_set())
+        if self.cancel_event and self.cancel_event.is_set():
+            return False
+        metadata = {
+            key: item[1].get(key)
+            for key in ("domain", "final_url", "url", "title", "html_path", "status_code")
+        }
+        # A page can put most of its response in <title>. Only the screenshot
+        # caption is shortened; the full persisted title stays in the report.
+        if metadata["title"] is not None:
+            metadata["title"] = str(metadata["title"])[:1024]
+        item = (item[0], metadata)
+        if not await self._wait_for_operation(self.queue.put(item)):
+            return False
+        self.seen.add(item[0])
+        return True
+
+    async def finish(self) -> bool:
+        return await self._wait_for_operation(self.queue.join())
+
+    async def close(self) -> None:
+        if not self.task.done():
+            self.task.cancel()
+        await asyncio.gather(self.task, return_exceptions=True)
+
+
 class Investigator:
     def __init__(self, settings: Settings, db: Database, gemini: GeminiClient):
         self.settings = settings
@@ -739,6 +809,7 @@ class Investigator:
         cancel_event: Event | None = None,
         search_mode: str = "auto",
         discovery_round: int = 0,
+        screenshot_consumer: _RunScreenshotConsumer | None = None,
     ) -> None:
         search_mode = self._effective_search_mode(seed_query, search_mode)
         self.db.update_run(run_id, status="running")
@@ -800,24 +871,26 @@ class Investigator:
             screenshot_queue: list[tuple[int, dict[str, Any]]] = []
             screenshot_semaphore = asyncio.Semaphore(max(1, int(self.settings.screenshot_concurrency)))
 
-            def queue_screenshot(finding_id: int, finding: dict[str, Any]) -> None:
+            async def queue_screenshot(finding_id: int, finding: dict[str, Any]) -> None:
                 if not take_screenshots or not finding.get("final_url"):
                     return
-                screenshot_queue.append(
-                    (
-                        finding_id,
-                        {
-                            "domain": finding.get("domain"),
-                            "final_url": finding.get("final_url"),
-                            "url": finding.get("url"),
-                            "title": finding.get("title"),
-                            "html_path": finding.get("html_path"),
-                            "status_code": finding.get("status_code"),
-                        },
-                    )
+                item = (
+                    finding_id,
+                    {
+                        "domain": finding.get("domain"),
+                        "final_url": finding.get("final_url"),
+                        "url": finding.get("url"),
+                        "title": finding.get("title"),
+                        "html_path": finding.get("html_path"),
+                        "status_code": finding.get("status_code"),
+                    },
                 )
+                if screenshot_consumer is not None:
+                    await screenshot_consumer.enqueue(item)
+                else:
+                    screenshot_queue.append(item)
 
-            def handle_inspection_result(finding: dict[str, Any]) -> None:
+            async def handle_inspection_result(finding: dict[str, Any]) -> None:
                 nonlocal findings_count
                 if finding.get("_skip"):
                     self.db.add_log(
@@ -835,7 +908,6 @@ class Investigator:
                     return
 
                 finding_id = self.db.insert_finding(run_id, finding)
-                queue_screenshot(finding_id, finding)
                 findings_count += 1
                 self.db.update_run(run_id, finding_count=findings_count)
                 self.db.add_log(
@@ -849,10 +921,19 @@ class Investigator:
                         "target": max_candidates,
                     },
                 )
+                await queue_screenshot(finding_id, finding)
 
-            async def flush_screenshots(*, recovery: bool = False) -> bool:
+            async def flush_screenshots(*, recovery: bool = False, wait_for_all: bool = False) -> bool:
                 if not take_screenshots:
                     return True
+                if screenshot_consumer is not None:
+                    if recovery and discovery_round == 0:
+                        for item in self._pending_screenshot_queue(run_id, max_candidates):
+                            if not await screenshot_consumer.enqueue(item):
+                                return False
+                    if wait_for_all:
+                        return await screenshot_consumer.finish()
+                    return not (cancel_event and cancel_event.is_set())
                 queued_ids = {finding_id for finding_id, _ in screenshot_queue}
                 screenshot_queue.extend(
                     item
@@ -880,6 +961,8 @@ class Investigator:
                 return
 
             if findings_count >= max_candidates:
+                if screenshot_consumer is not None and not await flush_screenshots(wait_for_all=True):
+                    return
                 self.db.update_run(run_id, status="completed", finished_at=utc_now(), finding_count=findings_count)
                 self.db.add_log(
                     run_id,
@@ -944,8 +1027,8 @@ class Investigator:
                 )
 
             concurrency = max(1, min(self.settings.scan_concurrency, len(candidate_pool) or 1))
-            # With one worker, flush its saved finding and screenshot before the
-            # next candidate can spend a full timeout waiting on another site.
+            # Persist each result promptly. On a small container, a separate
+            # async lane captures one browser while the next HTTP check runs.
             batch_size = 1 if self.settings.scan_concurrency == 1 else max(12, min(36, concurrency * 8))
             semaphore = asyncio.Semaphore(concurrency)
 
@@ -1005,7 +1088,7 @@ class Investigator:
                             search_mode,
                         )
                         checked_total += 1
-                        handle_inspection_result(finding)
+                        await handle_inspection_result(finding)
                     self.db.update_run(run_id, candidate_count=checked_total)
                     if not await flush_screenshots():
                         return
@@ -1048,7 +1131,7 @@ class Investigator:
                             break
                         finding = await task
                         checked_total += 1
-                        handle_inspection_result(finding)
+                        await handle_inspection_result(finding)
                 finally:
                     for task in tasks:
                         if not task.done():
@@ -1072,7 +1155,7 @@ class Investigator:
                 )
 
             target_reached = findings_count >= max_candidates
-            if not await flush_screenshots():
+            if not await flush_screenshots(wait_for_all=target_reached):
                 return
 
             if target_reached:
@@ -1117,12 +1200,55 @@ class Investigator:
         cancel_event: Event | None = None,
         search_mode: str = "auto",
     ) -> None:
+        if not take_screenshots or self.settings.scan_concurrency != 1:
+            await self._run_loop(run_id, seed_query, max_candidates, take_screenshots, cancel_event, search_mode)
+            return
+
+        consumer = _RunScreenshotConsumer(self, run_id, max_candidates, cancel_event)
+        runner = asyncio.create_task(
+            self._run_loop(run_id, seed_query, max_candidates, take_screenshots, cancel_event, search_mode, consumer)
+        )
+        stopped = False
+        try:
+            try:
+                await asyncio.wait({runner, consumer.task}, return_when=asyncio.FIRST_COMPLETED)
+                if consumer.task.done():
+                    consumer.task.result()
+                    if not (cancel_event and cancel_event.is_set()):
+                        raise RuntimeError("Screenshot consumer exited before the run finished")
+                    stopped = True
+                else:
+                    await runner
+            finally:
+                if not runner.done():
+                    runner.cancel()
+                await asyncio.gather(runner, return_exceptions=True)
+                await consumer.close()
+            if stopped or (cancel_event and cancel_event.is_set()):
+                findings_count = self.db.count_findings(run_id)
+                if self.db.update_active_run(run_id, status="canceled", finished_at=utc_now(), finding_count=findings_count):
+                    self.db.add_log(run_id, "warning", "Проверка остановлена пользователем", {"findings": findings_count})
+        except Exception as exc:  # noqa: BLE001
+            if self.db.update_active_run(run_id, status="failed", finished_at=utc_now(), error=f"{type(exc).__name__}: {exc}"):
+                self.db.add_log(run_id, "error", "Поиск завершился ошибкой", {"error": str(exc)})
+
+    async def _run_loop(
+        self,
+        run_id: int,
+        seed_query: str | None,
+        max_candidates: int,
+        take_screenshots: bool,
+        cancel_event: Event | None = None,
+        search_mode: str = "auto",
+        screenshot_consumer: _RunScreenshotConsumer | None = None,
+    ) -> None:
         discovery_round = 0
         empty_rounds = 0
         while True:
             before = self.db.get_run(run_id) or {}
             before_checked = int(before.get("candidate_count") or 0)
             before_findings = self.db.count_findings(run_id)
+            pass_kwargs = {"screenshot_consumer": screenshot_consumer} if screenshot_consumer is not None else {}
             await self._run_discovery_pass(
                 run_id,
                 seed_query,
@@ -1131,6 +1257,7 @@ class Investigator:
                 cancel_event,
                 search_mode,
                 discovery_round,
+                **pass_kwargs,
             )
             current = self.db.get_run(run_id) or {}
             status = str(current.get("status") or "")

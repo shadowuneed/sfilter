@@ -722,11 +722,13 @@ function setHealthDetailsOpen(open) {
 async function loadHealth() {
   try {
     const health = await api("/api/health");
-    const captureModeHint = health.screenshot_runtime?.capture_mode === "browser-frozen"
-      ? " Перед кадром внешнего сайта JavaScript приостанавливается; готовность содержимого отмечается в доказательствах."
-      : health.screenshot_runtime?.javascript_enabled === false
-        ? " Снимки внешних сайтов: HTML, CSS и изображения; JavaScript отключён."
-        : "";
+    const captureModeHint = health.screenshot_runtime?.capture_mode === "browser-native"
+      ? " Сохраняется фактический кадр браузера; полнота загрузки отмечается в доказательствах."
+      : health.screenshot_runtime?.capture_mode === "browser-frozen"
+        ? " Перед кадром внешнего сайта JavaScript приостанавливается; готовность содержимого отмечается в доказательствах."
+        : health.screenshot_runtime?.javascript_enabled === false
+          ? " Снимки внешних сайтов: HTML, CSS и изображения; JavaScript отключён."
+          : "";
     const lowMemoryHint = health.low_memory_mode
       ? `Режим 512 МБ: проверки и скриншоты выполняются по одному.${captureModeHint}`
       : captureModeHint.trim();

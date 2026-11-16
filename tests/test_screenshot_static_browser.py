@@ -183,8 +183,8 @@ class StaticBrowserRenderingTests(unittest.IsolatedAsyncioTestCase):
         directory = TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
-        for javascript in (True, False):
-            with self.subTest(javascript=javascript):
+        for javascript, backend in ((True, "auto"), (False, "native"), (True, "native")):
+            with self.subTest(javascript=javascript, backend=backend):
                 requests.clear()
                 settings = Settings(
                     evidence_dir=root / "evidence",
@@ -192,6 +192,7 @@ class StaticBrowserRenderingTests(unittest.IsolatedAsyncioTestCase):
                     screenshot_settle_ms=100,
                     screenshot_fallback_enabled=False,
                     screenshot_javascript_enabled=javascript,
+                    screenshot_backend=backend,
                 )
                 started = time.monotonic()
                 result = await ScreenshotService(settings).capture(f"http://127.0.0.1:{server.server_port}/", 504)
@@ -199,10 +200,13 @@ class StaticBrowserRenderingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("/style.css", requests)
                 self.assertIn("/image.svg", requests)
                 self.assertEqual("/executed" in requests, javascript)
-                if javascript:
+                if javascript and backend != "native":
                     self.assertIsNone(result.error)
-                else:
+                elif not javascript:
                     self.assertIn("JavaScript disabled", result.error)
+                    self.assertNotIn("fallback evidence", result.error)
+                else:
+                    self.assertIn("Page content readiness was not confirmed", result.error)
                     self.assertNotIn("fallback evidence", result.error)
                 from PIL import Image
 
@@ -213,7 +217,7 @@ class StaticBrowserRenderingTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(image.getpixel((50, 120)), (32, 184, 180), "The external image and CSS layout must remain visible")
                 artifact = Path(tempfile.gettempdir()) / f"qalqan-ssr-js-{javascript}-{uuid.uuid4().hex}.png"
                 shutil.copy2(output, artifact)
-                print(json.dumps({"javascript_enabled": javascript, "actual_png": str(artifact), "seconds": round(time.monotonic() - started, 3), "warning": result.error}))
+                print(json.dumps({"javascript_enabled": javascript, "backend": backend, "actual_png": str(artifact), "seconds": round(time.monotonic() - started, 3), "warning": result.error}))
 
 
 if __name__ == "__main__":

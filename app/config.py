@@ -172,6 +172,7 @@ class Settings:
     screenshot_settle_ms: int = 700
     screenshots_enabled: bool = True
     browser_screenshots_enabled: bool = True
+    screenshot_backend: str = "auto"
     screenshot_javascript_enabled: bool = True
     screenshot_freeze_after_render: bool = False
     screenshot_fallback_enabled: bool = True
@@ -195,6 +196,10 @@ class Settings:
     kz_proxy_check_url: str = "https://api.country.is/"
     seed_queries: list[str] = field(default_factory=lambda: DEFAULT_SEED_QUERIES.copy())
     osint_feeds: list[str] = field(default_factory=lambda: DEFAULT_OSINT_FEEDS.copy())
+
+    def __post_init__(self) -> None:
+        if self.screenshot_backend not in {"auto", "native", "playwright"}:
+            raise ValueError("SCREENSHOT_BACKEND must be auto, native, or playwright")
 
     @property
     def screenshots_dir(self) -> Path:
@@ -257,6 +262,7 @@ def get_settings() -> Settings:
         screenshot_timeout_seconds=max(4, _int_env("SCREENSHOT_TIMEOUT_SECONDS", 10)),
         screenshot_settle_ms=max(0, _int_env("SCREENSHOT_SETTLE_MS", 700)),
         screenshots_enabled=_bool_env("SCREENSHOTS_ENABLED", True),
+        screenshot_backend=os.getenv("SCREENSHOT_BACKEND", "auto").strip().lower(),
         screenshot_javascript_enabled=_bool_env("SCREENSHOT_JAVASCRIPT_ENABLED", True),
         browser_screenshots_enabled=_bool_env(
             "BROWSER_SCREENSHOTS_ENABLED",
